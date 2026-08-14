@@ -81,27 +81,40 @@ async def process_workflow(data: dict):
             # --- STEP 4: FILL MAIN FORM TEXT FIELDS ---
             print(f"[*] Filling main form text fields...")
             for field_id, value in data.get("text_fields", {}).items():
-                if value is not None:
+                if value is not None and str(value).strip() != "":
                     selector = f"#{field_id}"
                     if await page.locator(selector).count() > 0:
                         await page.fill(selector, str(value))
+                        print(f"    [✓] Filled text field #{field_id} = {str(value)[:40]}...")
+                    else:
+                        print(f"    [!] Field #{field_id} not present on page (skipped)")
 
             # --- STEP 5: SELECT DROPDOWN OPTIONS ---
             print(f"[*] Selecting dropdown options...")
             for field_id, value in data.get("select_fields", {}).items():
-                if value is not None:
+                if value is not None and str(value).strip() != "":
                     selector = f"#{field_id}"
                     if await page.locator(selector).count() > 0:
-                        await page.select_option(selector, str(value))
+                        try:
+                            await page.select_option(selector, str(value))
+                            print(f"    [✓] Selected #{field_id} = {value}")
+                        except Exception as e:
+                            print(f"    [!] Option '{value}' in #{field_id} not found: {e} (skipped)")
+                    else:
+                        print(f"    [!] Dropdown #{field_id} not present on page (skipped)")
 
             # --- STEP 6: TOGGLE CHECKBOXES ---
             print(f"[*] Toggling checkboxes...")
             for field_id, is_checked in data.get("checkboxes", {}).items():
                 selector = f"#{field_id}"
                 if await page.locator(selector).count() > 0:
-                    if await page.locator(selector).is_checked() != is_checked:
+                    current_state = await page.locator(selector).is_checked()
+                    if current_state != is_checked:
                         await page.click(selector)
                         await page.wait_for_timeout(200)
+                        print(f"    [✓] Toggled checkbox #{field_id} -> {is_checked}")
+                else:
+                    print(f"    [!] Checkbox #{field_id} not present on page (skipped)")
 
             # --- STEP 7: INSERT LINE ITEMS (RUBRIQUES) ---
             rubriques = data.get("rubriques", [])
