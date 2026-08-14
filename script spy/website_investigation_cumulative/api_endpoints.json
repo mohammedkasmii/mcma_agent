@@ -1,0 +1,2252 @@
+{
+  "application": "https://sinauto.mamda-mcma.ma/",
+  "scope_domain": "mamda-mcma.ma",
+  "endpoints": [
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/FrontExpert/listeMissions",
+      "path": "/SinAuto_MCMA/expertise/FrontExpert/listeMissions",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [],
+      "pages_seen_on": [
+        3,
+        5,
+        9
+      ],
+      "triggers": [
+        {
+          "method": "POST",
+          "action": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/front/otp/verify",
+          "id": "otp-form",
+          "name": null,
+          "page": 3,
+          "trigger_type": "form_submit"
+        },
+        {
+          "method": "POST",
+          "action": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/front/otp/verify",
+          "id": "otp-form",
+          "name": null,
+          "page": 3,
+          "trigger_type": "form_submit"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/frontExpert/",
+          "page": 5,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/frontExpert/",
+          "page": 5,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/frontExpert/",
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/frontExpert/",
+          "page": 9,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": null,
+      "request_schema_source": null,
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/gestionExpert/createRapportDefDet",
+      "path": "/SinAuto_MCMA/expertise/gestionExpert/createRapportDefDet",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [
+        "application/x-www-form-urlencoded"
+      ],
+      "pages_seen_on": [
+        8
+      ],
+      "triggers": [
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": {
+        "types": [
+          "object"
+        ],
+        "observed": 8,
+        "fields": {
+          "IdMission": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          },
+          "IdRapportDefDet": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          },
+          "IdRubrique": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          },
+          "LibRubrique": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          },
+          "MontantHT": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          },
+          "MontantTTC": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          },
+          "MontantVetuste": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          },
+          "TauxVetuste": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          },
+          "Taxe": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          },
+          "delete": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          },
+          "edit": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          }
+        }
+      },
+      "request_schema_source": "network",
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/gestionExpert/expertEnregistrerMission",
+      "path": "/SinAuto_MCMA/expertise/gestionExpert/expertEnregistrerMission",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [
+        "application/x-www-form-urlencoded"
+      ],
+      "pages_seen_on": [
+        8,
+        9
+      ],
+      "triggers": [
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": {
+        "types": [
+          "object"
+        ],
+        "observed": 14,
+        "fields": {
+          "AccordAdverse__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "DateDevis__DA": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "DateFinTravaux__DA": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "DateMECVeh__DA": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "DateRdvSoc__DA": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "DateValDevis__DA": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "Depasse20000__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "Epaviste__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "HeureFinTravaux__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "HeureRdv__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "IdMission__I": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "IdSinistre__I": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "IsConfirmMTACM__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "Kilometrage__I": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "MontantChargeMutuelle__M": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "MontantChargeSocietaire__M": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "MontantDommage__M": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "MontantEpave__M": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "MontantFranchise__M": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "MontantRemise__M": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "MontantReparation__M": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "MontantTVA__M": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "MontantVetuste__M": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "MotifDesaccord__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "NbreJourImmobilisation__I": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "ObservationMission__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "OffreEpave__M": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "RappCarence__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "ReferenceDossier__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "TelEpaviste__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "TvaRecup__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "TypeReforme__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "ValeurVenaleEstime__M": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "ValeurVenale__M": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          },
+          "VehReforme__S": {
+            "types": [
+              "string"
+            ],
+            "observed": 14
+          }
+        }
+      },
+      "request_schema_source": "network",
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/gestionExpert/getMission/idMission/532805",
+      "path": "/SinAuto_MCMA/expertise/gestionExpert/getMission/idMission/532805",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [],
+      "pages_seen_on": [
+        7,
+        8,
+        9
+      ],
+      "triggers": [
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": null,
+      "request_schema_source": null,
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/gestionExpert/listeMissionExpert",
+      "path": "/SinAuto_MCMA/expertise/gestionExpert/listeMissionExpert",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [],
+      "pages_seen_on": [
+        7
+      ],
+      "triggers": [],
+      "request_schema": null,
+      "request_schema_source": null,
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/gestionExpert/listeRapportDefDet",
+      "path": "/SinAuto_MCMA/expertise/gestionExpert/listeRapportDefDet",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [
+        "application/x-www-form-urlencoded"
+      ],
+      "pages_seen_on": [
+        7,
+        8,
+        9
+      ],
+      "triggers": [
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "Enregistrer",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": {
+        "types": [
+          "object"
+        ],
+        "observed": 24,
+        "fields": {
+          "IdMission": {
+            "types": [
+              "string"
+            ],
+            "observed": 24
+          }
+        }
+      },
+      "request_schema_source": "network",
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "GET",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/notification/alerte",
+      "path": "/SinAuto_MCMA/expertise/notification/alerte",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [],
+      "pages_seen_on": [
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "triggers": [
+        {
+          "method": "POST",
+          "action": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/front/otp/verify",
+          "id": "otp-form",
+          "name": null,
+          "page": 3,
+          "trigger_type": "form_submit"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "MISSIONS (FACTURES REÇUES)\n12",
+          "aria_label": null,
+          "href": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/notification/notification/alerte/67D9A055-75D1-47CF-A94E-70F4245DE751",
+          "page": 4,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/frontExpert/",
+          "page": 5,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "input",
+          "id": "DateDevis",
+          "name": "DateDevis__DA",
+          "type": "text",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "",
+          "aria_label": null,
+          "href": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/frontExpert/",
+          "page": 9,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": null,
+      "request_schema_source": null,
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "GET",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/notification/ged",
+      "path": "/SinAuto_MCMA/expertise/notification/ged",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [],
+      "pages_seen_on": [
+        6,
+        8,
+        9
+      ],
+      "triggers": [
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": null,
+      "request_schema_source": null,
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/notification/getAlerte/CodeAlerte/67D9A055-75D1-47CF-A94E-70F4245DE751",
+      "path": "/SinAuto_MCMA/expertise/notification/getAlerte/CodeAlerte/67D9A055-75D1-47CF-A94E-70F4245DE751",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [],
+      "pages_seen_on": [
+        4
+      ],
+      "triggers": [
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "MISSIONS (FACTURES REÇUES)\n12",
+          "aria_label": null,
+          "href": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/notification/notification/alerte/67D9A055-75D1-47CF-A94E-70F4245DE751",
+          "page": 4,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "MISSIONS (FACTURES REÇUES)\n12",
+          "aria_label": null,
+          "href": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/notification/notification/alerte/67D9A055-75D1-47CF-A94E-70F4245DE751",
+          "page": 4,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": null,
+      "request_schema_source": null,
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/front/Login/login",
+      "path": "/SinAuto_MCMA/front/Login/login",
+      "resource_types": [
+        "document"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "html_form_submission"
+      ],
+      "content_types": [
+        "application/x-www-form-urlencoded"
+      ],
+      "pages_seen_on": [
+        2
+      ],
+      "triggers": [
+        {
+          "method": "POST",
+          "action": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/front/Login/login",
+          "id": "form",
+          "name": "formlogin",
+          "page": 2,
+          "trigger_type": "form_submit"
+        }
+      ],
+      "request_schema": {
+        "types": [
+          "object"
+        ],
+        "observed": 1,
+        "fields": {
+          "admin": {
+            "types": [
+              "string"
+            ],
+            "observed": 1
+          },
+          "hashedPassword": {
+            "types": [
+              "string"
+            ],
+            "observed": 1
+          },
+          "password": {
+            "types": [
+              "string"
+            ],
+            "observed": 1
+          },
+          "token": {
+            "types": [
+              "string"
+            ],
+            "observed": 1
+          },
+          "username": {
+            "types": [
+              "string"
+            ],
+            "observed": 1
+          }
+        }
+      },
+      "request_schema_source": "network",
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/front/otp/verify",
+      "path": "/SinAuto_MCMA/front/otp/verify",
+      "resource_types": [
+        "document"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "html_form_submission"
+      ],
+      "content_types": [
+        "application/x-www-form-urlencoded"
+      ],
+      "pages_seen_on": [
+        3
+      ],
+      "triggers": [
+        {
+          "method": "POST",
+          "action": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/front/otp/verify",
+          "id": "otp-form",
+          "name": null,
+          "page": 3,
+          "trigger_type": "form_submit"
+        }
+      ],
+      "request_schema": {
+        "types": [
+          "object"
+        ],
+        "observed": 1,
+        "fields": {
+          "otp-code": {
+            "types": [
+              "string"
+            ],
+            "observed": 1
+          }
+        }
+      },
+      "request_schema_source": "network",
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/gestion/GED/ajouterDocument",
+      "path": "/SinAuto_MCMA/gestion/GED/ajouterDocument",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [
+        "application/x-www-form-urlencoded"
+      ],
+      "pages_seen_on": [
+        8,
+        9
+      ],
+      "triggers": [
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": {
+        "types": [
+          "object"
+        ],
+        "observed": 8,
+        "fields": {
+          "CodeEcran": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          },
+          "IdComplement": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          },
+          "IdFile": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          },
+          "NatureDocument": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          }
+        }
+      },
+      "request_schema_source": "network",
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/gestion/GED/ajouterDocument/IdComplement/810692",
+      "path": "/SinAuto_MCMA/gestion/GED/ajouterDocument/IdComplement/810692",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [
+        "multipart/form-data"
+      ],
+      "pages_seen_on": [
+        8,
+        9
+      ],
+      "triggers": [
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": null,
+      "request_schema_source": null,
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/gestion/GED/listDocuments",
+      "path": "/SinAuto_MCMA/gestion/GED/listDocuments",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [
+        "application/x-www-form-urlencoded"
+      ],
+      "pages_seen_on": [
+        8,
+        9
+      ],
+      "triggers": [
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "EnregistrerGED",
+          "name": null,
+          "type": "",
+          "text": "Enregistrer",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": {
+        "types": [
+          "object"
+        ],
+        "observed": 16,
+        "fields": {
+          "CodeEcran": {
+            "types": [
+              "string"
+            ],
+            "observed": 16
+          },
+          "IdComplement": {
+            "types": [
+              "string"
+            ],
+            "observed": 16
+          }
+        }
+      },
+      "request_schema_source": "network",
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/gestion/GED/natureDocuments",
+      "path": "/SinAuto_MCMA/gestion/GED/natureDocuments",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [
+        "application/x-www-form-urlencoded"
+      ],
+      "pages_seen_on": [
+        8,
+        9
+      ],
+      "triggers": [
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": "loadGEDEX",
+          "name": null,
+          "type": "",
+          "text": "GED",
+          "aria_label": null,
+          "href": null,
+          "page": 9,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": {
+        "types": [
+          "object"
+        ],
+        "observed": 8,
+        "fields": {
+          "CodeEcran": {
+            "types": [
+              "string"
+            ],
+            "observed": 8
+          }
+        }
+      },
+      "request_schema_source": "network",
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/gestion/reparation/listeRubriqueFactureDet/",
+      "path": "/SinAuto_MCMA/gestion/reparation/listeRubriqueFactureDet/",
+      "resource_types": [
+        "xhr"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [],
+      "pages_seen_on": [
+        8
+      ],
+      "triggers": [
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "Ajouter",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "Ajouter",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "Ajouter",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "Ajouter",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "Ajouter",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "Ajouter",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "Ajouter",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "a",
+          "id": null,
+          "name": null,
+          "type": "",
+          "text": "Ajouter",
+          "aria_label": null,
+          "href": null,
+          "page": 8,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": null,
+      "request_schema_source": null,
+      "response_schemas_by_status": {}
+    },
+    {
+      "method": "POST",
+      "endpoint": "https://agclus.mamda-mcma.ma:9999/bf/4639051e-746e-412b-a942-74bd22627eea?type=[VALUE]&sn=[VALUE]&svrid=[VALUE]&flavor=[VALUE]&vi=[VALUE]&modifiedSince=[VALUE]&bp=[VALUE]&app=[VALUE]&crc=[VALUE]&en=[VALUE]&end=[VALUE]",
+      "path": "/bf/4639051e-746e-412b-a942-74bd22627eea?",
+      "resource_types": [
+        "fetch"
+      ],
+      "kinds": [
+        "form_or_navigation",
+        "xhr_fetch_or_api_path"
+      ],
+      "content_types": [
+        "text/plain"
+      ],
+      "pages_seen_on": [
+        2
+      ],
+      "triggers": [
+        {
+          "tag": "input",
+          "id": null,
+          "name": "username",
+          "type": "text",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 2,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "input",
+          "id": null,
+          "name": "username",
+          "type": "text",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 2,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "input",
+          "id": null,
+          "name": "username",
+          "type": "text",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 2,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "input",
+          "id": null,
+          "name": "username",
+          "type": "text",
+          "text": "",
+          "aria_label": null,
+          "href": null,
+          "page": 2,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "input",
+          "id": null,
+          "name": "username",
+          "type": "text",
+          "text": "shoulb",
+          "aria_label": null,
+          "href": null,
+          "page": 2,
+          "trigger_type": "click"
+        },
+        {
+          "tag": "input",
+          "id": null,
+          "name": "username",
+          "type": "text",
+          "text": "shoulb",
+          "aria_label": null,
+          "href": null,
+          "page": 2,
+          "trigger_type": "click"
+        }
+      ],
+      "request_schema": null,
+      "request_schema_source": null,
+      "response_schemas_by_status": {}
+    }
+  ]
+}

@@ -1,0 +1,395 @@
+"""
+mapper.py — WexiaToDossierMapper
+=================================
+Translates a full Wexia dossier JSON (format: wexia.dossier.full, schema_version 2.0)
+into the flat MCMA-ready payload consumed by process_workflow() in main.py.
+
+Usage (standalone test):
+    python mapper.py path/to/dossier.json
+"""
+
+import os
+import uuid
+import json
+import httpx
+from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# Configurable mappings — edit these to match your MCMA rubrique catalog
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Real MCMA IdRubrique values (confirmed from live HTML — formGED form)
+# ---------------------------------------------------------------------------
+# Maps Wexia operation_type (from lignes_mo) -> MCMA IdRubrique
+LABOR_RUBRIQUE_MAP: dict = {
+    "tolerie":     "7",    # MAIN D'OEUVRE CARROSSERIE
+    "mecanique":   "8",    # MAIN D'OEUVRE MECANIQUE
+    "peinture":    "12",   # MAIN D'OEUVRE PEINTURE
+    "electricite": "28",   # MAIN D'OEUVRE ELECTRIQUE
+}
+
+# MCMA IdRubrique used for spare parts (piece neuve d'origine by default)
+# Full catalog:
+#  1=FOURNITURES CARROSSERIE (ORIGINES)      2=CARROSSERIE (ADAPTABLES)   3=CARROSSERIE (RECUPERABLES)
+#  4=FOURNITURES MECANIQUE (ORIGINES)        5=MECANIQUE (ADAPTABLES)     6=MECANIQUE (RECUPERABLES)
+#  7=MO CARROSSERIE  8=MO MECANIQUE  9=MONTANT TOTAL  10=PEINTURE (ORIGINES)
+# 11=PEINTURE (ADAPTABLES)  12=MO PEINTURE  13=ELECTRIQUE (D'ORIGINE)  14=ELECTRIQUE (ADAPTABLES)
+# 15=ELECTRIQUE (RECUPERABLES)  16=PEINTURES ET INGREDIENTS  17=PASSAGE AU MARBRE
+# 18=PARALLELISME ET EQUILIBRAGE  19=REP VITRE  20=REMPL VITRE  21=REP PARE-BRISE
+# 22=REMPL PARE-BRISE  23=REP LUNETTE ARRIERE  24=REMPL LUNETTE ARRIERE
+# 25=COLLE  26=KIT COLLE PB ET LA  27=KIT COLLE VITRE  28=MO ELECTRIQUE
+PIECE_RUBRIQUE_ID = "1"   # FOURNITURES CARROSSERIE (ORIGINES) — change to 4 for mecanique, etc.
+
+# ---------------------------------------------------------------------------
+# Real MCMA IdNatureDocument values (confirmed from live HTML — GED dropdown)
+# ---------------------------------------------------------------------------
+DOCUMENT_NATURE_MAP: dict = {
+    # Expertise reports
+    "rapport_preliminaire":        "40",   # RAPPORT D'EXPERTISE PRELIMINAIRE DE REFORME
+    "rapport_final":               "41",   # RAPPORT D'EXPERTISE DEFINITIF DE REFORME
+    "rapport_expertise":           "39",   # RAPPORT D'EXPERTISE DE REPARATION
+    "rapport_appreciation":        "60",   # RAPPORT D'APPRECIATION
+    "rapport_valeur_venale":       "61",   # RAPPORT D'ESTIMATION DE LA VALEUR VENALE
+    # Photos
+    "photo_damage":                "62",   # PHOTOS DE L'ACCIDENT
+    "photo_avant_reparation":      "63",   # PHOTOS AVANT LA REPARATION  ← most common
+    "photo_apres_reparation":      "64",   # PHOTOS APRES REPARATION
+    # Devis / factures
+    "devis":                       "56",   # DEVIS DE REPARATION GARAGE
+    "devis_valide":                "57",   # DEVIS DE REPARATION VALIDE PAR L'EXPERT
+    "devis_client":                "37",   # DEVIS DE REPARATION CLIENT
+    "facture":                     "23",   # FACTURE DE REPARATION GARAGE
+    "facture_client":              "24",   # FACTURE DE REPARATION CLIENT
+    # Vehicle docs
+    "carte_grise":                 "6",    # LA CARTE GRISE
+    "carte_verte":                 "11",   # LA CARTE VERTE
+    "constat":                     "22",   # CONSTAT AMIABLE
+    "attestation_assurance":       "7",    # ATTESTATION D'ASSURANCE
+    "permis":                      "10",   # PERMIS DE CONDUIRE
+    "visite_technique":            "12",   # VISITE TECHNIQUE
+    # Other
+    "autre":                       "74",   # AUTRE
+}
+
+# TVA rate applied to line items that have no explicit tax field
+DEFAULT_TVA_RATE = 0.20
+
+
+# ---------------------------------------------------------------------------
+# Mapper class
+# ---------------------------------------------------------------------------
+
+class WexiaToDossierMapper:
+    """
+    Maps a Wexia full-dossier JSON dict to the flat MCMA process_workflow payload.
+
+    Example
+    -------
+    mapper  = WexiaToDossierMapper()
+    payload = mapper.map(wexia_json)
+    # payload is ready to pass straight into process_workflow()
+    """
+
+    def __init__(self, download_dir: str = "temp"):
+        self.download_dir = download_dir
+        os.makedirs(download_dir, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
+
+    def map(self, wexia: dict) -> dict:
+        """
+        Returns the MCMA-ready flat payload.
+        Documents in the result carry a 'url' key.
+        Call download_documents() to resolve them to local 'path' keys.
+        """
+        dossier   = wexia.get("dossier",  {}) or {}
+        vehicule  = wexia.get("vehicule", {}) or {}
+        assureur  = wexia.get("assureur", {}) or {}
+        obs       = wexia.get("observations_expert", {}) or {}
+        chiffrage = self._get_active_chiffrage(wexia)
+
+        return {
+            # --- Search keys (used to locate the dossier in MCMA) ---
+            "dossier_reference": (
+                assureur.get("reference_dossier")
+                or dossier.get("reference_number", "")
+            ),
+            "matricule": (
+                vehicule.get("license_plate")
+                or dossier.get("license_plate", "")
+            ),
+
+            # --- Main form text fields ---
+            "text_fields": self._build_text_fields(dossier, vehicule, chiffrage, obs),
+
+            # --- Dropdown / select fields ---
+            "select_fields": self._build_select_fields(dossier),
+
+            # --- Checkbox states ---
+            "checkboxes": self._build_checkboxes(dossier),
+
+            # --- Line items (rubriques) ---
+            "rubriques": self._build_rubriques(chiffrage),
+
+            # --- Documents (urls — resolved to paths after download) ---
+            "documents": self._build_documents(wexia),
+        }
+
+    # ------------------------------------------------------------------
+    # Internal builders
+    # ------------------------------------------------------------------
+
+    def _get_active_chiffrage(self, wexia: dict) -> dict:
+        """Returns the final/approved chiffrage, falling back to the first one."""
+        chiffrages = wexia.get("chiffrages") or []
+        if not chiffrages:
+            return {}
+        finals = [c for c in chiffrages if c.get("is_final")]
+        return finals[0] if finals else chiffrages[0]
+
+    def _build_text_fields(
+        self,
+        dossier: dict,
+        vehicule: dict,
+        chiffrage: dict,
+        obs: dict,
+    ) -> dict:
+        fields: dict = {}
+
+        # Kilometrage
+        km = vehicule.get("mileage_km") or dossier.get("mileage_km")
+        if km is not None:
+            fields["Kilometrage"] = str(int(km))
+
+        # Valeur venale (market value)
+        vv = vehicule.get("market_value") or dossier.get("market_value")
+        if vv is not None:
+            fields["ValeurVenale"] = str(int(vv))
+
+        # Financial amounts from the active chiffrage
+        if chiffrage:
+            ht   = chiffrage.get("total_cost")
+            tva  = chiffrage.get("tax_amount")
+            ttc  = chiffrage.get("final_cost") or chiffrage.get("indemnification_amount")
+            days = chiffrage.get("estimated_days")
+            sv   = chiffrage.get("salvage_value") or vehicule.get("salvage_value")
+
+            if ht   is not None: fields["MontantReparation"]     = str(int(ht))
+            if tva  is not None: fields["MontantTVA"]            = str(int(tva))
+            if ttc  is not None: fields["MontantTTC"]            = str(int(ttc))
+            if days is not None: fields["NbreJourImmobilisation"] = str(int(days))
+            if sv   is not None: fields["ValeurEpave"]            = str(int(sv))
+
+        # Expert observations (free text)
+        obs_text = obs.get("texte") or dossier.get("expert_observations", "")
+        if obs_text:
+            fields["ObservationMission"] = obs_text
+
+        # Expertise city
+        city = dossier.get("expertise_city", "")
+        if city:
+            fields["LieuExpertise"] = city
+
+        return fields
+
+    def _build_select_fields(self, dossier: dict) -> dict:
+        fields: dict = {}
+
+        # Taux de responsabilite (e.g. "100", "50")
+        rate = dossier.get("responsibility_rate")
+        if rate is not None:
+            fields["PartResponsabilite"] = str(int(rate))
+
+        # Type reforme (e.g. "E" = Economique, "T" = Technique)
+        reform_type = dossier.get("reform_type")
+        if reform_type:
+            fields["TypeReforme"] = str(reform_type)
+
+        return fields
+
+    def _build_checkboxes(self, dossier: dict) -> dict:
+        boxes: dict = {}
+
+        # Vehicle repaired indicator (real MCMA id = VehRepareI)
+        repair_status = dossier.get("repair_status", "")
+        boxes["VehRepareI"] = repair_status in ("repare", "repaired", "repare_i", "repaired_i")
+
+        # Reform flag (real MCMA id = VehReformeI, hidden field VehReforme stores 'O'/'N')
+        if dossier.get("is_reform"):
+            boxes["VehReformeI"] = True
+
+        return boxes
+
+    def _build_rubriques(self, chiffrage: dict) -> list:
+        """
+        Builds MCMA rubrique line items from chiffrage lignes_pieces + lignes_mo.
+        Edit PIECE_RUBRIQUE_ID and LABOR_RUBRIQUE_MAP at the top of this file
+        to match your MCMA rubrique catalog.
+        """
+        rubriques = []
+        if not chiffrage:
+            return rubriques
+
+        # Spare parts
+        for line in chiffrage.get("lignes_pieces") or []:
+            amount_ht = line.get("subtotal") or line.get("unit_price") or 0
+            tva       = round(amount_ht * DEFAULT_TVA_RATE)
+            rubriques.append({
+                "IdRubrique": PIECE_RUBRIQUE_ID,
+                "MontantHT":  str(int(amount_ht)),
+                "Taxe":       str(tva),
+                "_label":     line.get("item_name", ""),   # informational only
+            })
+
+        # Labor operations
+        for mo in chiffrage.get("lignes_mo") or []:
+            op_type     = mo.get("operation_type", "")
+            rubrique_id = LABOR_RUBRIQUE_MAP.get(op_type, "1")
+            amount_ht   = mo.get("subtotal", 0)
+            tva         = round(amount_ht * DEFAULT_TVA_RATE)
+            rubriques.append({
+                "IdRubrique": rubrique_id,
+                "MontantHT":  str(int(amount_ht)),
+                "Taxe":       str(tva),
+                "_label":     op_type,   # informational only
+            })
+
+        return rubriques
+
+    def _build_documents(self, wexia: dict) -> list:
+        """
+        Collects all uploadable document URLs from the Wexia JSON.
+        Returns dicts with keys: url, id_nature, label.
+        Call download_documents() to download them to local temp files.
+        """
+        docs = []
+
+        def _add(url: Optional[str], nature_key: str, label: str):
+            if not url or url.strip().endswith("..."):
+                return   # skip missing or truncated placeholder URLs
+            docs.append({
+                "url":       url,
+                "id_nature": DOCUMENT_NATURE_MAP.get(nature_key, "63"),
+                "label":     label,
+            })
+
+        # Validated devis (quote PDFs)
+        for devis in wexia.get("devis") or []:
+            if devis.get("status") in ("validated", "approved", None):
+                url = (devis.get("file") or {}).get("url")
+                _add(url, "devis", f"Devis — {devis.get('repairer_name', '')}")
+
+        # Generated expert reports
+        for rpt in wexia.get("rapports_generes") or []:
+            rpt_type   = rpt.get("report_type", "")
+            nature_key = "rapport_final" if "final" in rpt_type else "rapport_preliminaire"
+            url        = (rpt.get("file") or {}).get("url")
+            _add(url, nature_key, rpt_type)
+
+        # Carte grise and other scanned docs
+        for doc in (wexia.get("documents") or {}).get("cartes_grises_et_autres") or []:
+            doc_type = doc.get("document_type", "")
+            if doc_type in DOCUMENT_NATURE_MAP:
+                url = (doc.get("file") or {}).get("url")
+                _add(url, doc_type, doc_type)
+
+        # Invoices (factures)
+        for fac in wexia.get("factures") or []:
+            url = (fac.get("file") or {}).get("url")
+            _add(url, "facture", f"Facture — {fac.get('repairer_name', '')}")
+
+        return docs
+
+    # ------------------------------------------------------------------
+    # Document downloader
+    # ------------------------------------------------------------------
+
+    async def download_documents(self, documents: list) -> list:
+        """
+        Downloads each document from its signed URL to a local temp file.
+        Returns a new list with 'path' key set — ready for process_workflow().
+        Documents whose URL fails are skipped with a warning.
+        """
+        downloaded = []
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            for doc in documents:
+                url = doc.get("url", "")
+                if not url:
+                    continue
+                try:
+                    print(f"[Doc] Downloading: {doc.get('label', url)}")
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+
+                    local_path = os.path.join(self.download_dir, f"{uuid.uuid4()}.pdf")
+                    with open(local_path, "wb") as fh:
+                        fh.write(resp.content)
+
+                    size_kb = os.path.getsize(local_path) / 1024
+                    print(f"[Doc]   Saved -> {local_path} ({size_kb:.1f} KB)")
+
+                    downloaded.append({
+                        "path":      local_path,
+                        "id_nature": doc["id_nature"],
+                        "label":     doc.get("label", ""),
+                    })
+                except Exception as exc:
+                    print(f"[Doc] WARNING — failed to download '{doc.get('label')}': {exc}")
+
+        return downloaded
+
+
+# ---------------------------------------------------------------------------
+# CLI test runner: python mapper.py path/to/dossier.json
+# ---------------------------------------------------------------------------
+
+def _pretty_print_payload(payload: dict):
+    print("\n" + "=" * 62)
+    print("  MCMA PAYLOAD SUMMARY")
+    print("=" * 62)
+    print(f"  Dossier reference : {payload['dossier_reference']}")
+    print(f"  Matricule         : {payload['matricule']}")
+    print(f"\n  Text fields ({len(payload['text_fields'])})")
+    for k, v in payload["text_fields"].items():
+        display_v = v[:80] + "..." if len(str(v)) > 80 else v
+        print(f"      {k:<30} = {display_v}")
+    print(f"\n  Select fields ({len(payload['select_fields'])})")
+    for k, v in payload["select_fields"].items():
+        print(f"      {k:<30} = {v}")
+    print(f"\n  Checkboxes ({len(payload['checkboxes'])})")
+    for k, v in payload["checkboxes"].items():
+        print(f"      {k:<30} = {v}")
+    print(f"\n  Rubriques ({len(payload['rubriques'])})")
+    for r in payload["rubriques"]:
+        print(f"      [Id={r['IdRubrique']}] HT={r['MontantHT']}  TVA={r['Taxe']}  ({r.get('_label','')})")
+    print(f"\n  Documents ({len(payload['documents'])})")
+    for d in payload["documents"]:
+        print(f"      [nature={d['id_nature']}] {d['label']}")
+    print("=" * 62 + "\n")
+
+
+if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) < 2:
+        print("Usage: python mapper.py <path_to_wexia_dossier.json>")
+        sys.exit(1)
+
+    with open(sys.argv[1], "r", encoding="utf-8") as fh:
+        raw_text = fh.read().strip()
+        if raw_text.startswith("```"):
+            lines = raw_text.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            raw_text = "\n".join(lines)
+        wexia_data = json.loads(raw_text)
+
+    mapper  = WexiaToDossierMapper()
+    payload = mapper.map(wexia_data)
+    _pretty_print_payload(payload)
