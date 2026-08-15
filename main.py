@@ -323,23 +323,23 @@ async def process_workflow(data: dict):
                             await safe_toggle_checkbox(page, "#VehRepareI", True)
                             await page.wait_for_timeout(600)
 
-                    for item in rubriques:
-                        print(f"    • Adding rubrique [Id={item.get('IdRubrique')}] {item.get('_label')} ({item.get('MontantHT')} DH)...")
+                    for idx, item in enumerate(rubriques, 1):
+                        print(f"    [{idx}/{len(rubriques)}] Clicking 'Ajouter +' for [Id={item.get('IdRubrique')}] {item.get('_label')} ({item.get('MontantHT')} DH)...")
                         
-                        # Locate the Ajouter + button (visible when Véhicule Réparable is checked)
+                        # Step A: Click the green 'Ajouter +' button
                         ajouter_btn = page.locator("a.btn-success:has-text('Ajouter'), a[onclick*='addRow'], a:has-text('Ajouter')").first
                         
-                        added = False
+                        clicked_add = False
                         if await ajouter_btn.count() > 0:
                             try:
                                 await ajouter_btn.scroll_into_view_if_needed(timeout=1500)
-                                await ajouter_btn.click(timeout=2500)
-                                added = True
+                                await ajouter_btn.click(timeout=2500, force=True)
+                                clicked_add = True
                             except Exception:
                                 pass
                         
-                        if not added:
-                            # Direct JS trigger as backup
+                        if not clicked_add:
+                            # Direct JS call to edataTable_RapportDet.addRow()
                             try:
                                 await page.evaluate("""() => {
                                     if (typeof edataTable_RapportDet !== 'undefined' && typeof edataTable_RapportDet.addRow === 'function') {
@@ -353,22 +353,52 @@ async def process_workflow(data: dict):
                             except Exception:
                                 pass
 
-                        await page.wait_for_timeout(500)
+                        # Wait for the new row to render in the table
+                        await page.wait_for_timeout(800)
                         
-                        # Fill the newly created row fields
-                        await safe_select_option(page, "#IdRubrique, table.dataTable tr:last-child select, select[name*='IdRubrique']", str(item.get("IdRubrique")))
-                        await safe_fill_input(page, "#MontantHT, table.dataTable tr:last-child input[name*='MontantHT'], input[name*='MontantHT']", str(item.get("MontantHT", "0")))
+                        # Step B: Fill the row inputs
+                        await safe_select_option(page, "#IdRubrique, table tr:last-child select, select[name*='IdRubrique']", str(item.get("IdRubrique")))
+                        await safe_fill_input(page, "#MontantHT, table tr:last-child input[name*='MontantHT'], input[name*='MontantHT']", str(item.get("MontantHT", "0")))
                         if item.get("Taxe"):
-                            await safe_fill_input(page, "#Taxe, table.dataTable tr:last-child input[name*='Taxe'], input[name*='Taxe']", str(item.get("Taxe")))
+                            await safe_fill_input(page, "#Taxe, table tr:last-child input[name*='Taxe'], input[name*='Taxe']", str(item.get("Taxe")))
                         
-                        # Confirm the row (Enter or click save if available)
-                        try:
-                            await page.keyboard.press("Enter")
-                        except Exception:
-                            pass
-                        await page.wait_for_timeout(600)
+                        await page.wait_for_timeout(400)
+
+                        # Step C: Save / confirm the current row so the table is ready for the next one
+                        row_saved = False
+                        # 1. Try clicking row save icon (check / save icon in the editing row)
+                        save_btn = page.locator("table tr.editing a.save-row, table tr a[onclick*='saveRow'], table tr:last-child a i.fa-check, table tr:last-child a i.fa-save, a.save-row").first
+                        if await save_btn.count() > 0 and await save_btn.is_visible():
+                            try:
+                                await save_btn.click(timeout=1500)
+                                row_saved = True
+                            except Exception:
+                                pass
+
+                        # 2. Try JS saveRow or Enter key
+                        if not row_saved:
+                            try:
+                                await page.evaluate("""() => {
+                                    const saveLink = document.querySelector("table tr a.save-row, table tr a[onclick*='saveRow'], table tr:last-child a .fa-check, table tr:last-child a .fa-save");
+                                    if (saveLink) {
+                                        saveLink.click();
+                                        return true;
+                                    }
+                                    return false;
+                                }""")
+                            except Exception:
+                                pass
+                            
+                            try:
+                                await page.keyboard.press("Enter")
+                            except Exception:
+                                pass
+
+                        # Wait for row AJAX commit to complete before adding the next row
+                        await page.wait_for_timeout(1000)
+                        print(f"    [✓] Rubrique [{item.get('IdRubrique')}] committed.")
                         
-                    print(f"    [✓] Finished adding {len(rubriques)} rubriques.")
+                    print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
                 except Exception as rub_err:
                     print(f"    [!] Rubriques note: {rub_err}")
 
