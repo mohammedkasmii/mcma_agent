@@ -136,11 +136,19 @@ async def main():
     else:
         print(f"[!] No PDFs found in '{INPUT_DOCS_DIR}/'. Proceeding without document upload.")
 
+    search_num = ""
+    raw_plate = payload.get("matricule", "")
+    if raw_plate:
+        import re
+        m = re.search(r"\d+", str(raw_plate))
+        if m:
+            search_num = m.group(0)
+
     print("\n" + "="*55)
-    print(f"  Target Dossier Ref : {payload.get('dossier_reference')}")
-    print(f"  Target Matricule   : {payload.get('matricule')}")
-    print(f"  Rubriques count    : {len(payload.get('rubriques', []))}")
-    print(f"  Documents count    : {len(payload.get('documents', []))}")
+    print(f"  Target Plate (Matricule) : {raw_plate} (MCMA Search: '{search_num or raw_plate}')")
+    print(f"  Target Dossier Ref       : {payload.get('dossier_reference')}")
+    print(f"  Rubriques count          : {len(payload.get('rubriques', []))}")
+    print(f"  Documents count          : {len(payload.get('documents', []))}")
     print("="*55 + "\n")
 
     # Run browser automation
