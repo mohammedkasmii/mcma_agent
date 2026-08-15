@@ -340,34 +340,54 @@ async def process_workflow(data: dict):
                         # Wait for the row inputs to render
                         await page.wait_for_timeout(800)
                         
-                        # Step 2: Select IdRubrique & fill MontantHT / Taxe
-                        await safe_select_option(page, "#IdRubrique, table tbody tr:last-child select, select[name*='IdRubrique']", str(item.get("IdRubrique")))
-                        await safe_fill_input(page, "#MontantHT, table tbody tr:last-child input[name*='MontantHT']", str(item.get("MontantHT", "0")))
-                        if item.get("Taxe"):
-                            await safe_fill_input(page, "#Taxe, table tbody tr:last-child input[name*='Taxe']", str(item.get("Taxe")))
+                        # Step 2: Fill Rubrique & MontantHT / Taxe on the active editing row (top row)
+                        await page.evaluate("""(data) => {
+                            const row = document.querySelector("table tbody tr:has(select), table tbody tr:has(input), table tbody tr.editing, table tbody tr:first-child");
+                            if (!row) return false;
+
+                            // 1. Select Rubrique
+                            const selectEl = row.querySelector("select");
+                            if (selectEl) {
+                                selectEl.value = data.rubrique_id;
+                                selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+
+                            // 2. Fill Montant HT
+                            const htInput = row.querySelector("input[name*='MontantHT'], input[id*='MontantHT']") || row.querySelectorAll("input")[0];
+                            if (htInput) {
+                                htInput.value = data.montant_ht;
+                                htInput.dispatchEvent(new Event('input', { bubbles: true }));
+                                htInput.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+
+                            // 3. Fill Taxe
+                            if (data.taxe) {
+                                const taxeInput = row.querySelector("input[name*='Taxe'], input[id*='Taxe']") || row.querySelectorAll("input")[1];
+                                if (taxeInput) {
+                                    taxeInput.value = data.taxe;
+                                    taxeInput.dispatchEvent(new Event('input', { bubbles: true }));
+                                    taxeInput.dispatchEvent(new Event('change', { bubbles: true }));
+                                }
+                            }
+                            return true;
+                        }""", {
+                            "rubrique_id": str(item.get("IdRubrique")),
+                            "montant_ht": str(item.get("MontantHT", "0")),
+                            "taxe": str(item.get("Taxe", "0"))
+                        })
                         
                         await page.wait_for_timeout(500)
 
-                        # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓)
-                        print(f"    [{idx}/{len(rubriques)}] Clicking 7th column (green checkmark ✓) to confirm line...")
+                        # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓) ON THE ACTIVE EDITING ROW
+                        print(f"    [{idx}/{len(rubriques)}] Clicking 7th column (green checkmark ✓) on active row...")
                         
-                        # Method 1: Playwright locator on td:nth-child(7)
-                        col7_locator = page.locator("table tbody tr:last-child td:nth-child(7) a, table tbody tr:last-child td:nth-child(7), table tbody tr.editing td:nth-child(7) a, table tbody tr.editing td:nth-child(7)").first
-                        if await col7_locator.count() > 0:
-                            try:
-                                await col7_locator.scroll_into_view_if_needed(timeout=1000)
-                                await col7_locator.click(timeout=2000, force=True)
-                            except Exception:
-                                pass
-                        
-                        # Method 2: Direct JavaScript click on the 7th column (index 6)
+                        # 1. Direct JS click on 7th column of the active row (index 6)
                         await page.evaluate("""() => {
-                            const rows = document.querySelectorAll("table tbody tr");
-                            for (let i = rows.length - 1; i >= 0; i--) {
-                                const r = rows[i];
-                                const tds = r.querySelectorAll("td");
+                            const row = document.querySelector("table tbody tr:has(select), table tbody tr:has(input), table tbody tr.editing, table tbody tr:first-child");
+                            if (row) {
+                                const tds = row.querySelectorAll("td");
                                 if (tds.length >= 7) {
-                                    const col7 = tds[6]; // 7th column (0-indexed: 6)
+                                    const col7 = tds[6]; // 7th column (green checkmark)
                                     const target = col7.querySelector("a, button, i, span") || col7;
                                     target.click();
                                     return true;
@@ -376,10 +396,17 @@ async def process_workflow(data: dict):
                             return false;
                         }""")
 
-                        # Wait for AJAX commit before adding the next line
+                        # 2. Playwright locator click on active editing row's 7th column
+                        col7_locator = page.locator("table tbody tr:has(input) td:nth-child(7) a, table tbody tr:first-child td:nth-child(7) a, table tbody tr.editing td:nth-child(7) a, table tbody tr:first-child td:nth-child(7)").first
+                        if await col7_locator.count() > 0:
+                            try:
+                                await col7_locator.click(timeout=1500, force=True)
+                            except Exception:
+                                pass
+
+                        # Wait for AJAX row commit before adding the next line
                         await page.wait_for_timeout(1500)
                         print(f"    [✓] Rubrique [{item.get('IdRubrique')}] locked in with checkmark (✓).")
-
                         
                     print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
                 except Exception as rub_err:
