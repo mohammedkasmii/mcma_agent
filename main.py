@@ -309,64 +309,59 @@ async def process_workflow(data: dict):
                     print(f"    [✓] Toggled checkbox #{field_id} -> {is_checked}")
                 else:
                     print(f"    [!] Checkbox #{field_id} not present/visible (skipped)")
+            await page.wait_for_timeout(500)
 
             # --- STEP 7: INSERT LINE ITEMS (RUBRIQUES) ---
             rubriques = data.get("rubriques", [])
             if rubriques:
                 print(f"[*] Adding {len(rubriques)} line item(s) (rubriques)...")
                 try:
-                    # Check if there is a Rubriques / Détail Rapport tab to click first
-                    rubrique_tab = page.locator("a[href*='RapportDet'], a[href*='Rubrique'], a:has-text('Détail'), a:has-text('Rubriques')").first
-                    if await rubrique_tab.count() > 0 and await rubrique_tab.is_visible():
-                        try:
-                            await rubrique_tab.click()
-                            await page.wait_for_timeout(400)
-                        except Exception:
-                            pass
+                    # Ensure Véhicule Réparable (#VehRepareI) is checked to display the rubriques table
+                    repare_box = page.locator("#VehRepareI").first
+                    if await repare_box.count() > 0:
+                        if not await repare_box.is_checked():
+                            await safe_toggle_checkbox(page, "#VehRepareI", True)
+                            await page.wait_for_timeout(600)
 
                     for item in rubriques:
                         print(f"    • Adding rubrique [Id={item.get('IdRubrique')}] {item.get('_label')} ({item.get('MontantHT')} DH)...")
                         
-                        # Method 1: JS direct trigger for edataTable_RapportDet.addRow()
-                        added = False
-                        try:
-                            added = await page.evaluate("""() => {
-                                if (typeof edataTable_RapportDet !== 'undefined' && typeof edataTable_RapportDet.addRow === 'function') {
-                                    edataTable_RapportDet.addRow();
-                                    return true;
-                                }
-                                const btn = document.querySelector("a[onclick*='addRow'], a[onclick*='Ajouter'], a:has-text('Ajouter')");
-                                if (btn) {
-                                    btn.click();
-                                    return true;
-                                }
-                                return false;
-                            }""")
-                        except Exception:
-                            pass
+                        # Locate the Ajouter + button (visible when Véhicule Réparable is checked)
+                        ajouter_btn = page.locator("a.btn-success:has-text('Ajouter'), a[onclick*='addRow'], a:has-text('Ajouter')").first
                         
-                        # Method 2: Fallback Playwright click
+                        added = False
+                        if await ajouter_btn.count() > 0:
+                            try:
+                                await ajouter_btn.scroll_into_view_if_needed(timeout=1500)
+                                await ajouter_btn.click(timeout=2500)
+                                added = True
+                            except Exception:
+                                pass
+                        
                         if not added:
-                            ajouter_btn = page.locator("a[onclick*='addRow'], a[onclick*='Ajouter'], a:has-text('Ajouter'), #btnAjouter, button:has-text('Ajouter')").first
-                            if await ajouter_btn.count() > 0:
-                                try:
-                                    await ajouter_btn.scroll_into_view_if_needed(timeout=1000)
-                                    await ajouter_btn.click(timeout=2000, force=True)
-                                except Exception:
-                                    try:
-                                        await ajouter_btn.evaluate("el => el.click()")
-                                    except Exception:
-                                        pass
+                            # Direct JS trigger as backup
+                            try:
+                                await page.evaluate("""() => {
+                                    if (typeof edataTable_RapportDet !== 'undefined' && typeof edataTable_RapportDet.addRow === 'function') {
+                                        edataTable_RapportDet.addRow();
+                                        return true;
+                                    }
+                                    const btn = document.querySelector("a.btn-success, a[onclick*='addRow']");
+                                    if (btn) { btn.click(); return true; }
+                                    return false;
+                                }""")
+                            except Exception:
+                                pass
 
                         await page.wait_for_timeout(500)
                         
-                        # Fill the row fields (#IdRubrique, #MontantHT, #Taxe or last table row inputs)
-                        await safe_select_option(page, "#IdRubrique, table tr:last-child select[name*='Rubrique'], select[name*='IdRubrique']", str(item.get("IdRubrique")))
-                        await safe_fill_input(page, "#MontantHT, table tr:last-child input[name*='MontantHT'], input[name*='MontantHT']", str(item.get("MontantHT", "0")))
+                        # Fill the newly created row fields
+                        await safe_select_option(page, "#IdRubrique, table.dataTable tr:last-child select, select[name*='IdRubrique']", str(item.get("IdRubrique")))
+                        await safe_fill_input(page, "#MontantHT, table.dataTable tr:last-child input[name*='MontantHT'], input[name*='MontantHT']", str(item.get("MontantHT", "0")))
                         if item.get("Taxe"):
-                            await safe_fill_input(page, "#Taxe, table tr:last-child input[name*='Taxe'], input[name*='Taxe']", str(item.get("Taxe")))
+                            await safe_fill_input(page, "#Taxe, table.dataTable tr:last-child input[name*='Taxe'], input[name*='Taxe']", str(item.get("Taxe")))
                         
-                        # Confirm the row if needed (Enter or row save button)
+                        # Confirm the row (Enter or click save if available)
                         try:
                             await page.keyboard.press("Enter")
                         except Exception:

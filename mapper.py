@@ -265,12 +265,13 @@ class WexiaToDossierMapper:
     def _build_checkboxes(self, dossier: dict) -> dict:
         boxes: dict = {}
 
-        # Vehicle repaired indicator (real MCMA id = VehRepareI)
-        repair_status = dossier.get("repair_status", "")
-        boxes["VehRepareI"] = repair_status in ("repare", "repaired", "repare_i", "repaired_i")
+        # In MCMA, "Véhicule Réparable" (#VehRepareI) reveals the "Rapport de la réparation" and rubriques table.
+        # For all normal repair claims (non-reform), this MUST be True.
+        is_reform = bool(dossier.get("is_reform"))
+        boxes["VehRepareI"] = not is_reform
 
-        # Reform flag (real MCMA id = VehReformeI, hidden field VehReforme stores 'O'/'N')
-        if dossier.get("is_reform"):
+        # Reform flag (real MCMA id = VehReformeI)
+        if is_reform:
             boxes["VehReformeI"] = True
 
         # TVA récupérable (sociétés can recover TVA)
