@@ -324,7 +324,12 @@ async def process_workflow(data: dict):
                             await page.wait_for_timeout(600)
 
                     for idx, item in enumerate(rubriques, 1):
-                        print(f"    [{idx}/{len(rubriques)}] Clicking 'Ajouter +' for [Id={item.get('IdRubrique')}] {item.get('_label')} ({item.get('MontantHT')} DH)...")
+                        rub_id = str(item.get("IdRubrique"))
+                        montant_ht = str(item.get("MontantHT", "0"))
+                        taxe = str(item.get("Taxe", "0"))
+                        label = item.get("_label", "")
+
+                        print(f"    [{idx}/{len(rubriques)}] [Ajouter +] -> [Id={rub_id}] {label} (HT: {montant_ht} DH, TVA: {taxe} DH)...")
                         
                         # Step 1: Click the green 'Ajouter +' button
                         ajouter_btn = page.locator("a.btn-success:has-text('Ajouter'), a:has-text('Ajouter +'), a[onclick*='addRow']").first
@@ -337,51 +342,70 @@ async def process_workflow(data: dict):
                         else:
                             await page.evaluate("if (typeof edataTable_RapportDet !== 'undefined') edataTable_RapportDet.addRow();")
 
-                        # Wait for the row inputs to render
-                        await page.wait_for_timeout(800)
+                        # Wait for the editable row to appear in the table
+                        try:
+                            await page.wait_for_selector("table tbody tr select, #IdRubrique, table tbody tr input[name*='MontantHT']", timeout=5000)
+                        except Exception:
+                            await page.wait_for_timeout(1000)
                         
-                        # Step 2: Fill Rubrique & MontantHT / Taxe on the active editing row (top row)
-                        await page.evaluate("""(data) => {
+                        # Step 2: Fill the active row fields via jQuery & native DOM with verification
+                        filled_info = await page.evaluate("""(data) => {
+                            // Find the active row in edit mode
                             const row = document.querySelector("table tbody tr:has(select), table tbody tr:has(input), table tbody tr.editing, table tbody tr:first-child");
-                            if (!row) return false;
+                            if (!row) return { success: false, reason: "No active row found" };
 
-                            // 1. Select Rubrique
+                            // 1. Set IdRubrique select
                             const selectEl = row.querySelector("select");
                             if (selectEl) {
-                                selectEl.value = data.rubrique_id;
+                                selectEl.value = data.rub_id;
+                                if (window.jQuery) {
+                                    window.jQuery(selectEl).val(data.rub_id).trigger('change');
+                                }
                                 selectEl.dispatchEvent(new Event('change', { bubbles: true }));
                             }
 
-                            // 2. Fill Montant HT
+                            // 2. Set Montant HT input
                             const htInput = row.querySelector("input[name*='MontantHT'], input[id*='MontantHT']") || row.querySelectorAll("input")[0];
                             if (htInput) {
                                 htInput.value = data.montant_ht;
+                                if (window.jQuery) {
+                                    window.jQuery(htInput).val(data.montant_ht).trigger('input').trigger('change').trigger('keyup');
+                                }
                                 htInput.dispatchEvent(new Event('input', { bubbles: true }));
                                 htInput.dispatchEvent(new Event('change', { bubbles: true }));
                             }
 
-                            // 3. Fill Taxe
+                            // 3. Set Taxe input
                             if (data.taxe) {
                                 const taxeInput = row.querySelector("input[name*='Taxe'], input[id*='Taxe']") || row.querySelectorAll("input")[1];
                                 if (taxeInput) {
                                     taxeInput.value = data.taxe;
+                                    if (window.jQuery) {
+                                        window.jQuery(taxeInput).val(data.taxe).trigger('input').trigger('change').trigger('keyup');
+                                    }
                                     taxeInput.dispatchEvent(new Event('input', { bubbles: true }));
                                     taxeInput.dispatchEvent(new Event('change', { bubbles: true }));
                                 }
                             }
-                            return true;
+
+                            return {
+                                success: true,
+                                rub_val: selectEl ? selectEl.value : null,
+                                ht_val: htInput ? htInput.value : null
+                            };
                         }""", {
-                            "rubrique_id": str(item.get("IdRubrique")),
-                            "montant_ht": str(item.get("MontantHT", "0")),
-                            "taxe": str(item.get("Taxe", "0"))
+                            "rub_id": rub_id,
+                            "montant_ht": montant_ht,
+                            "taxe": taxe
                         })
                         
-                        await page.wait_for_timeout(500)
+                        print(f"        -> Verified in DOM: Rubrique={filled_info.get('rub_val')}, HT={filled_info.get('ht_val')}")
+                        await page.wait_for_timeout(600)
 
                         # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓) ON THE ACTIVE EDITING ROW
-                        print(f"    [{idx}/{len(rubriques)}] Clicking 7th column (green checkmark ✓) on active row...")
+                        print(f"        -> Clicking 7th column (green checkmark ✓)...")
                         
-                        # 1. Direct JS click on 7th column of the active row (index 6)
+                        # Click the 7th column of the active row (index 6)
                         await page.evaluate("""() => {
                             const row = document.querySelector("table tbody tr:has(select), table tbody tr:has(input), table tbody tr.editing, table tbody tr:first-child");
                             if (row) {
@@ -396,7 +420,7 @@ async def process_workflow(data: dict):
                             return false;
                         }""")
 
-                        # 2. Playwright locator click on active editing row's 7th column
+                        # Fallback locator click on 7th column of the editing row
                         col7_locator = page.locator("table tbody tr:has(input) td:nth-child(7) a, table tbody tr:first-child td:nth-child(7) a, table tbody tr.editing td:nth-child(7) a, table tbody tr:first-child td:nth-child(7)").first
                         if await col7_locator.count() > 0:
                             try:
@@ -404,9 +428,19 @@ async def process_workflow(data: dict):
                             except Exception:
                                 pass
 
-                        # Wait for AJAX row commit before adding the next line
-                        await page.wait_for_timeout(1500)
-                        print(f"    [✓] Rubrique [{item.get('IdRubrique')}] locked in with checkmark (✓).")
+                        # Step 4: WAIT FOR THE ROW TO LOCK IN AND AJAX TABLE RELOAD TO COMPLETE
+                        try:
+                            # Wait until the input elements disappear (row converted to static text)
+                            await page.wait_for_function(
+                                "() => !document.querySelector('table tbody tr select, table tbody tr input[name*=\"MontantHT\"]')",
+                                timeout=6000
+                            )
+                        except Exception:
+                            # If timeout, wait fixed 2.5s
+                            await page.wait_for_timeout(2500)
+
+                        await page.wait_for_timeout(800)
+                        print(f"    [✓] Rubrique [{rub_id}] successfully committed to table.")
                         
                     print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
                 except Exception as rub_err:
