@@ -324,7 +324,7 @@ async def process_workflow(data: dict):
                             await page.wait_for_timeout(600)
 
                     for idx, item in enumerate(rubriques, 1):
-                        print(f"    [{idx}/{len(rubriques)}] Adding rubrique [Id={item.get('IdRubrique')}] {item.get('_label')} ({item.get('MontantHT')} DH)...")
+                        print(f"    [{idx}/{len(rubriques)}] Clicking 'Ajouter +' for [Id={item.get('IdRubrique')}] {item.get('_label')} ({item.get('MontantHT')} DH)...")
                         
                         # Step 1: Click the green 'Ajouter +' button
                         ajouter_btn = page.locator("a.btn-success:has-text('Ajouter'), a:has-text('Ajouter +'), a[onclick*='addRow']").first
@@ -337,34 +337,53 @@ async def process_workflow(data: dict):
                         else:
                             await page.evaluate("if (typeof edataTable_RapportDet !== 'undefined') edataTable_RapportDet.addRow();")
 
-                        # Wait for the row to open
+                        # Wait for the row inputs to render
                         await page.wait_for_timeout(800)
                         
                         # Step 2: Select IdRubrique & fill MontantHT / Taxe
-                        await safe_select_option(page, "#IdRubrique, table tbody tr:last-child select", str(item.get("IdRubrique")))
+                        await safe_select_option(page, "#IdRubrique, table tbody tr:last-child select, select[name*='IdRubrique']", str(item.get("IdRubrique")))
                         await safe_fill_input(page, "#MontantHT, table tbody tr:last-child input[name*='MontantHT']", str(item.get("MontantHT", "0")))
                         if item.get("Taxe"):
                             await safe_fill_input(page, "#Taxe, table tbody tr:last-child input[name*='Taxe']", str(item.get("Taxe")))
                         
-                        await page.wait_for_timeout(400)
+                        await page.wait_for_timeout(500)
 
-                        # Step 3: Confirm / Save the row (click action link in the row's last column)
-                        row_action_btn = page.locator("table tbody tr:last-child td:last-child a, table tbody tr.editing td:last-child a, a.save-row, table tr:last-child a:has(.fa-check), table tr:last-child a:has(.fa-save)").first
-                        if await row_action_btn.count() > 0 and await row_action_btn.is_visible():
+                        # Step 3: CLICK THE GREEN CHECKMARK (✓) AT THE END OF THE LINE
+                        print(f"    [{idx}/{len(rubriques)}] Clicking green checkmark (✓) to confirm line...")
+                        clicked_check = False
+                        
+                        # Method A: Playwright locator targeting the checkmark icon in the editing row
+                        check_btn = page.locator("table tr .fa-check, table tr i[class*='check'], table tr a:has(.fa-check), table tr a.save-row, table tbody tr:last-child td:last-child a:first-child, table tbody tr:last-child a i.fa-check").first
+                        if await check_btn.count() > 0 and await check_btn.is_visible():
                             try:
-                                await row_action_btn.click(timeout=1500)
+                                await check_btn.click(timeout=2000, force=True)
+                                clicked_check = True
                             except Exception:
                                 pass
                         
-                        # Keyboard enter backup
-                        try:
-                            await page.keyboard.press("Enter")
-                        except Exception:
-                            pass
+                        # Method B: Direct JS click on the checkmark element / parent link
+                        if not clicked_check:
+                            try:
+                                await page.evaluate("""() => {
+                                    const check = document.querySelector("table tr .fa-check, table tr i[class*='check'], table tr .text-success, table tr a[class*='save']");
+                                    if (check) {
+                                        const btn = check.closest('a') || check.closest('button') || check;
+                                        btn.click();
+                                        return true;
+                                    }
+                                    const tdLinks = document.querySelectorAll("table tbody tr:last-child td a, table tbody tr.editing td a");
+                                    if (tdLinks.length > 0) {
+                                        tdLinks[0].click(); // First icon in actions column is the green checkmark
+                                        return true;
+                                    }
+                                    return false;
+                                }""")
+                            except Exception:
+                                pass
 
-                        # Wait for row commit and table refresh
-                        await page.wait_for_timeout(1200)
-                        print(f"    [✓] Rubrique [{item.get('IdRubrique')}] confirmed.")
+                        # Wait for row commit before clicking Ajouter + for the next line
+                        await page.wait_for_timeout(1500)
+                        print(f"    [✓] Rubrique [{item.get('IdRubrique')}] locked in with checkmark (✓).")
                         
                     print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
                 except Exception as rub_err:
