@@ -151,38 +151,63 @@ async def process_workflow(data: dict):
             for field_id, value in data.get("text_fields", {}).items():
                 if value is not None and str(value).strip() != "":
                     selector = f"#{field_id}"
-                    if await page.locator(selector).count() > 0:
-                        await page.fill(selector, str(value))
-                        print(f"    [✓] Filled text field #{field_id} = {str(value)[:40]}...")
-                    else:
-                        print(f"    [!] Field #{field_id} not present on page (skipped)")
+                    loc = page.locator(selector).first
+                    
+                    filled = False
+                    if await loc.count() > 0 and await loc.is_visible():
+                        try:
+                            await loc.fill(str(value), timeout=2500)
+                            print(f"    [✓] Filled text field #{field_id} = {str(value)[:40]}...")
+                            filled = True
+                        except Exception as e:
+                            print(f"    [!] Could not fill #{field_id}: {e} (skipped)")
+                    
+                    # Special fallback for Valeur Venale
+                    if not filled and field_id in ("ValeurVenale", "ValeurVenaleEstime"):
+                        alt_id = "ValeurVenaleEstime" if field_id == "ValeurVenale" else "ValeurVenale"
+                        alt_loc = page.locator(f"#{alt_id}").first
+                        if await alt_loc.count() > 0 and await alt_loc.is_visible():
+                            try:
+                                await alt_loc.fill(str(value), timeout=2500)
+                                print(f"    [✓] Filled text field #{alt_id} = {str(value)[:40]}...")
+                                filled = True
+                            except Exception as e:
+                                print(f"    [!] Could not fill #{alt_id}: {e} (skipped)")
+                                
+                    if not filled:
+                        print(f"    [!] Field #{field_id} not visible on page (skipped)")
 
             # --- STEP 5: SELECT DROPDOWN OPTIONS ---
             print(f"[*] Selecting dropdown options...")
             for field_id, value in data.get("select_fields", {}).items():
                 if value is not None and str(value).strip() != "":
                     selector = f"#{field_id}"
-                    if await page.locator(selector).count() > 0:
+                    loc = page.locator(selector).first
+                    if await loc.count() > 0 and await loc.is_visible():
                         try:
-                            await page.select_option(selector, str(value))
+                            await loc.select_option(str(value), timeout=2500)
                             print(f"    [✓] Selected #{field_id} = {value}")
                         except Exception as e:
                             print(f"    [!] Option '{value}' in #{field_id} not found: {e} (skipped)")
                     else:
-                        print(f"    [!] Dropdown #{field_id} not present on page (skipped)")
+                        print(f"    [!] Dropdown #{field_id} not visible on page (skipped)")
 
             # --- STEP 6: TOGGLE CHECKBOXES ---
             print(f"[*] Toggling checkboxes...")
             for field_id, is_checked in data.get("checkboxes", {}).items():
                 selector = f"#{field_id}"
-                if await page.locator(selector).count() > 0:
-                    current_state = await page.locator(selector).is_checked()
-                    if current_state != is_checked:
-                        await page.click(selector)
-                        await page.wait_for_timeout(200)
-                        print(f"    [✓] Toggled checkbox #{field_id} -> {is_checked}")
+                loc = page.locator(selector).first
+                if await loc.count() > 0 and await loc.is_visible():
+                    try:
+                        current_state = await loc.is_checked()
+                        if current_state != is_checked:
+                            await loc.click(timeout=2500)
+                            await page.wait_for_timeout(200)
+                            print(f"    [✓] Toggled checkbox #{field_id} -> {is_checked}")
+                    except Exception as e:
+                        print(f"    [!] Could not toggle checkbox #{field_id}: {e}")
                 else:
-                    print(f"    [!] Checkbox #{field_id} not present on page (skipped)")
+                    print(f"    [!] Checkbox #{field_id} not visible on page (skipped)")
 
             # --- STEP 7: INSERT LINE ITEMS (RUBRIQUES) ---
             rubriques = data.get("rubriques", [])
