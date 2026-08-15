@@ -348,42 +348,38 @@ async def process_workflow(data: dict):
                         
                         await page.wait_for_timeout(500)
 
-                        # Step 3: CLICK THE GREEN CHECKMARK (✓) AT THE END OF THE LINE
-                        print(f"    [{idx}/{len(rubriques)}] Clicking green checkmark (✓) to confirm line...")
-                        clicked_check = False
+                        # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓)
+                        print(f"    [{idx}/{len(rubriques)}] Clicking 7th column (green checkmark ✓) to confirm line...")
                         
-                        # Method A: Playwright locator targeting the checkmark icon in the editing row
-                        check_btn = page.locator("table tr .fa-check, table tr i[class*='check'], table tr a:has(.fa-check), table tr a.save-row, table tbody tr:last-child td:last-child a:first-child, table tbody tr:last-child a i.fa-check").first
-                        if await check_btn.count() > 0 and await check_btn.is_visible():
+                        # Method 1: Playwright locator on td:nth-child(7)
+                        col7_locator = page.locator("table tbody tr:last-child td:nth-child(7) a, table tbody tr:last-child td:nth-child(7), table tbody tr.editing td:nth-child(7) a, table tbody tr.editing td:nth-child(7)").first
+                        if await col7_locator.count() > 0:
                             try:
-                                await check_btn.click(timeout=2000, force=True)
-                                clicked_check = True
+                                await col7_locator.scroll_into_view_if_needed(timeout=1000)
+                                await col7_locator.click(timeout=2000, force=True)
                             except Exception:
                                 pass
                         
-                        # Method B: Direct JS click on the checkmark element / parent link
-                        if not clicked_check:
-                            try:
-                                await page.evaluate("""() => {
-                                    const check = document.querySelector("table tr .fa-check, table tr i[class*='check'], table tr .text-success, table tr a[class*='save']");
-                                    if (check) {
-                                        const btn = check.closest('a') || check.closest('button') || check;
-                                        btn.click();
-                                        return true;
-                                    }
-                                    const tdLinks = document.querySelectorAll("table tbody tr:last-child td a, table tbody tr.editing td a");
-                                    if (tdLinks.length > 0) {
-                                        tdLinks[0].click(); // First icon in actions column is the green checkmark
-                                        return true;
-                                    }
-                                    return false;
-                                }""")
-                            except Exception:
-                                pass
+                        # Method 2: Direct JavaScript click on the 7th column (index 6)
+                        await page.evaluate("""() => {
+                            const rows = document.querySelectorAll("table tbody tr");
+                            for (let i = rows.length - 1; i >= 0; i--) {
+                                const r = rows[i];
+                                const tds = r.querySelectorAll("td");
+                                if (tds.length >= 7) {
+                                    const col7 = tds[6]; // 7th column (0-indexed: 6)
+                                    const target = col7.querySelector("a, button, i, span") || col7;
+                                    target.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }""")
 
-                        # Wait for row commit before clicking Ajouter + for the next line
+                        # Wait for AJAX commit before adding the next line
                         await page.wait_for_timeout(1500)
                         print(f"    [✓] Rubrique [{item.get('IdRubrique')}] locked in with checkmark (✓).")
+
                         
                     print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
                 except Exception as rub_err:
