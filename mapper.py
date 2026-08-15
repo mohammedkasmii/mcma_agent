@@ -282,74 +282,96 @@ class WexiaToDossierMapper:
 
     def _build_rubriques(self, chiffrage: dict) -> list:
         """
-        Builds MCMA rubrique line items from chiffrage.
-        Handles both:
-          - lignes_pieces with item_type="part" → spare parts rubrique
-          - lignes_pieces with item_type="labor" → labor rubrique (uses 'notes' for operation_type)
-          - lignes_mo (legacy) → labor rubrique
+        Builds aggregated MCMA rubrique line items grouped by category:
+          1. Total Pièces Occasions / Récupérables (IdRubrique=3) or Origines (IdRubrique=1)
+          2. M.O Tôlerie / Carrosserie (IdRubrique=7)
+          3. M.O Peinture (IdRubrique=12)
+          4. Peintures et Ingrédients (IdRubrique=16)
+          5. M.O Mécanique (IdRubrique=8) / Electrique (IdRubrique=28)
         """
-        rubriques = []
         if not chiffrage:
-            return rubriques
+            return []
 
-        # Process lignes_pieces — may contain BOTH parts and labor items
+        # Dictionary to aggregate amounts by IdRubrique: { rubrique_id: { "amount_ht": float, "label": str } }
+        aggregated = {}
+
+        # Rubrique human labels
+        RUBRIQUE_LABELS = {
+            "1": "FOURNITURES CARROSSERIE (ORIGINES)",
+            "2": "FOURNITURES CARROSSERIE (ADAPTABLES)",
+            "3": "TOTAL PIECES OCCASIONS / RECUPERABLES",
+            "4": "FOURNITURES MECANIQUE (ORIGINES)",
+            "5": "FOURNITURES MECANIQUE (ADAPTABLES)",
+            "6": "FOURNITURES MECANIQUE (RECUPERABLES)",
+            "7": "M.O TOLERIE / CARROSSERIE",
+            "8": "M.O MECANIQUE",
+            "12": "M.O PEINTURE",
+            "16": "PEINTURES ET INGREDIENTS",
+            "17": "PASSAGE AU MARBRE",
+            "28": "M.O ELECTRIQUE",
+        }
+
+        def _add_to_rubrique(rub_id: str, amount: float, default_label: str = ""):
+            if amount <= 0:
+                return
+            if rub_id not in aggregated:
+                aggregated[rub_id] = {
+                    "IdRubrique": rub_id,
+                    "amount_ht": 0.0,
+                    "_label": RUBRIQUE_LABELS.get(rub_id, default_label or f"Rubrique #{rub_id}")
+                }
+            aggregated[rub_id]["amount_ht"] += amount
+
+        # Process lignes_pieces (contains parts and/or labor lines)
         for line in chiffrage.get("lignes_pieces") or []:
-            amount_ht = line.get("subtotal") or line.get("unit_price") or 0
-            if amount_ht == 0:
+            amount_ht = float(line.get("subtotal") or line.get("unit_price") or 0)
+            if amount_ht <= 0:
                 continue
-            tva = round(amount_ht * DEFAULT_TVA_RATE)
+
             item_type = (line.get("item_type") or "part").lower()
+            item_name_lower = (line.get("item_name") or "").lower()
 
             if item_type == "labor":
-                # Labor item stored inside lignes_pieces
-                # The 'notes' field contains the operation_type (e.g. 'carrosserie', 'peinture')
                 op_type = (line.get("notes") or "").lower().strip()
-                # Check for known keywords in the item name too
-                item_name_lower = (line.get("item_name") or "").lower()
-                if "peinture" in item_name_lower and "ingr" in item_name_lower:
-                    rubrique_id = "16"   # PEINTURES ET INGREDIENTS
+                if "peinture" in item_name_lower and ("ingr" in item_name_lower or "ingrédient" in item_name_lower):
+                    rub_id = "16"
                 elif op_type in LABOR_RUBRIQUE_MAP:
-                    rubrique_id = LABOR_RUBRIQUE_MAP[op_type]
+                    rub_id = LABOR_RUBRIQUE_MAP[op_type]
                 elif "peinture" in item_name_lower:
-                    rubrique_id = "12"   # MO PEINTURE
-                elif "tolerie" in item_name_lower or "carrosserie" in item_name_lower:
-                    rubrique_id = "7"    # MO CARROSSERIE
-                elif "mecanique" in item_name_lower:
-                    rubrique_id = "8"    # MO MECANIQUE
+                    rub_id = "12"
+                elif "tolerie" in item_name_lower or "tôlerie" in item_name_lower or "carrosserie" in item_name_lower:
+                    rub_id = "7"
+                elif "mecanique" in item_name_lower or "mécanique" in item_name_lower:
+                    rub_id = "8"
                 else:
-                    rubrique_id = LABOR_RUBRIQUE_MAP.get(op_type, "7")
+                    rub_id = LABOR_RUBRIQUE_MAP.get(op_type, "7")
 
-                rubriques.append({
-                    "IdRubrique": rubrique_id,
-                    "MontantHT":  str(int(amount_ht)),
-                    "Taxe":       str(tva),
-                    "_label":     line.get("item_name", ""),
-                })
+                _add_to_rubrique(rub_id, amount_ht, line.get("item_name", ""))
             else:
-                # Spare part — map part_type to rubrique ID
+                # Spare part
                 part_type = (line.get("part_type") or "").lower().strip()
-                rubrique_id = PIECE_TYPE_RUBRIQUE_MAP.get(part_type, DEFAULT_PIECE_RUBRIQUE_ID)
+                rub_id = PIECE_TYPE_RUBRIQUE_MAP.get(part_type, DEFAULT_PIECE_RUBRIQUE_ID)
+                _add_to_rubrique(rub_id, amount_ht, "TOTAL PIECES OCCASIONS / RECUPERABLES")
 
-                rubriques.append({
-                    "IdRubrique": rubrique_id,
-                    "MontantHT":  str(int(amount_ht)),
-                    "Taxe":       str(tva),
-                    "_label":     line.get("item_name", ""),
-                })
-
-        # Legacy: process lignes_mo (if populated — some dossiers use this instead)
+        # Process legacy lignes_mo if present
         for mo in chiffrage.get("lignes_mo") or []:
-            op_type     = (mo.get("operation_type") or "").lower().strip()
-            rubrique_id = LABOR_RUBRIQUE_MAP.get(op_type, "7")
-            amount_ht   = mo.get("subtotal", 0)
-            if amount_ht == 0:
+            amount_ht = float(mo.get("subtotal") or 0)
+            if amount_ht <= 0:
                 continue
-            tva = round(amount_ht * DEFAULT_TVA_RATE)
+            op_type = (mo.get("operation_type") or "").lower().strip()
+            rub_id = LABOR_RUBRIQUE_MAP.get(op_type, "7")
+            _add_to_rubrique(rub_id, amount_ht, mo.get("operation_type", ""))
+
+        # Format into final MCMA list with rounded HT and Taxe
+        rubriques = []
+        for rub_id, item in aggregated.items():
+            tot_ht = item["amount_ht"]
+            tva = round(tot_ht * DEFAULT_TVA_RATE)
             rubriques.append({
-                "IdRubrique": rubrique_id,
-                "MontantHT":  str(int(amount_ht)),
-                "Taxe":       str(tva),
-                "_label":     mo.get("operation_type", ""),
+                "IdRubrique": rub_id,
+                "MontantHT": str(int(round(tot_ht))),
+                "Taxe": str(tva),
+                "_label": item["_label"]
             })
 
         return rubriques
