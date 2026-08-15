@@ -57,48 +57,73 @@ async def safe_fill_input(page, selector: str, value: str, timeout_ms: int = 200
             return False
 
 async def safe_select_option(page, selector: str, value: str, timeout_ms: int = 2000) -> bool:
-    """Safely selects a dropdown option with Select2, jQuery, and native DOM fallback."""
+    """
+    Safely selects a dropdown option. Handles Select2 widgets by destroying them first,
+    setting the native <select> value, then re-initializing Select2.
+    """
     if not value or str(value).strip() == "":
         return False
     loc = page.locator(selector).first
     if await loc.count() == 0:
         return False
     
-    # Method 1: JS / Select2 injection (fastest and handles Select2 hidden selects)
     try:
-        await page.evaluate("""([sel, val]) => {
+        # Step 1: Destroy Select2 if present, set native value, reinit Select2
+        result = await page.evaluate("""([sel, val]) => {
             const el = document.querySelector(sel);
-            if (!el) return;
+            if (!el) return 'not_found';
+            
+            const hasSelect2 = (typeof jQuery !== 'undefined') && jQuery(sel).data('select2');
+            
+            // Destroy Select2 so native <select> becomes visible
+            if (hasSelect2) {
+                try { jQuery(sel).select2('destroy'); } catch(e) {}
+            }
+            
+            // Set the native select value
             el.value = val;
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-            if (typeof jQuery !== 'undefined') {
-                jQuery(sel).val(val).trigger('change');
-                if (jQuery(sel).data('select2')) {
-                    jQuery(sel).trigger('select2:select');
+            
+            // Verify the value was actually set
+            if (el.value != val) {
+                // Try finding option by value attribute
+                for (let opt of el.options) {
+                    if (opt.value == val) {
+                        opt.selected = true;
+                        el.value = val;
+                        break;
+                    }
                 }
             }
+            
+            // Dispatch change events
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            
+            // Re-initialize Select2
+            if (hasSelect2 && typeof jQuery !== 'undefined') {
+                try {
+                    jQuery(sel).select2();
+                    jQuery(sel).trigger('change');
+                } catch(e) {}
+            }
+            
+            return el.value == val ? 'ok' : 'mismatch';
         }""", [selector, str(value)])
-        return True
+        
+        if result == 'ok':
+            return True
     except Exception:
         pass
 
-    # Method 2: Standard Playwright select_option if visible
+    # Fallback: try standard Playwright if element is now visible
     try:
         if await loc.is_visible():
             await loc.select_option(str(value), timeout=timeout_ms)
             return True
     except Exception:
         pass
+    
+    return False
 
-    # Method 3: Fallback DOM value set
-    try:
-        await loc.evaluate("""(el, val) => {
-            el.value = val;
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-        }""", str(value))
-        return True
-    except Exception:
-        return False
 
 async def safe_toggle_checkbox(page, selector: str, is_checked: bool, timeout_ms: int = 2000) -> bool:
     """Safely toggles a checkbox with JS fallback."""
