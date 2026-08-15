@@ -87,7 +87,7 @@ async def main():
     parser.add_argument("--photos", help="Local PDF path for Photos avant (IdNature 63)")
     parser.add_argument("--rapport", help="Local PDF path for Rapport (IdNature 40)")
     parser.add_argument("--reference", help="Override dossier reference search key")
-    parser.add_argument("--matricule", help="Override vehicle license plate search key")
+    parser.add_argument("--matricule", "--immatriculation", dest="matricule", help="Override vehicle license plate / immatriculation search key")
     
     args = parser.parse_args()
 

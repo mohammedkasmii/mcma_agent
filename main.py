@@ -54,29 +54,44 @@ async def process_workflow(data: dict):
             await page.goto("https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/FrontExpert/")
             await page.wait_for_load_state("domcontentloaded")
 
-            # --- STEP 2: SEARCH USING VALUES FROM THE JSON FILE ---
-            dossier_ref = data.get("dossier_reference")
+            # --- STEP 2: SEARCH USING IMMATRICULATION (MATRICULE) ---
             matricule = data.get("matricule")
+            dossier_ref = data.get("dossier_reference")
             
-            print(f"[*] Searching for dossier reference: {dossier_ref or matricule}...")
+            search_query = matricule or dossier_ref
+            if not search_query:
+                raise Exception("No Immatriculation (matricule) or Dossier Reference provided to search!")
+
+            print(f"[*] Searching for mission by Immatriculation: '{search_query}'...")
             
-            if dossier_ref:
-                await page.fill("#ReferenceCie", dossier_ref)
-            if matricule:
-                await page.fill("#Matricule", matricule)
+            # Reset / fill search inputs
+            if await page.locator("#Matricule").count() > 0 and matricule:
+                await page.fill("#Matricule", str(matricule).strip())
+                print(f"    [✓] Filled search input #Matricule = '{matricule}'")
+            elif await page.locator("#ReferenceCie").count() > 0 and dossier_ref:
+                await page.fill("#ReferenceCie", str(dossier_ref).strip())
+                print(f"    [✓] Filled search input #ReferenceCie = '{dossier_ref}'")
 
             # Trigger the search action
-            await page.click("a:has-text('Rechercher')")
+            search_btn = page.locator("a:has-text('Rechercher'), button:has-text('Rechercher'), #btnRecherche").first
+            if await search_btn.count() > 0:
+                await search_btn.click()
+            else:
+                await page.keyboard.press("Enter")
+                
             await page.wait_for_load_state("networkidle")
+            await page.wait_for_timeout(1000)
 
             # --- STEP 3: SELECT THE DOSSIER FROM SEARCH RESULTS ---
             print(f"[*] Selecting dossier from search results table...")
-            mission_link = page.locator("a[title='Mission expertise']").first
+            mission_link = page.locator("a[title='Mission expertise'], a:has-text('Mission expertise'), table tr td a").first
             if await mission_link.count() > 0:
                 await mission_link.click()
                 await page.wait_for_load_state("domcontentloaded")
+                await page.wait_for_timeout(1000)
+                print(f"    [✓] Mission opened successfully!")
             else:
-                raise Exception(f"Dossier '{dossier_ref}' not found in MCMA search results.")
+                raise Exception(f"Vehicle with Immatriculation '{search_query}' not found in MCMA search results.")
 
             # --- STEP 4: FILL MAIN FORM TEXT FIELDS ---
             print(f"[*] Filling main form text fields...")

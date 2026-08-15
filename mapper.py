@@ -116,11 +116,16 @@ class WexiaToDossierMapper:
             # --- Search keys (used to locate the dossier in MCMA) ---
             "dossier_reference": (
                 assureur.get("reference_dossier")
-                or dossier.get("reference_number", "")
+                or dossier.get("reference_number")
+                or wexia.get("dossier_reference", "")
             ),
             "matricule": (
                 vehicule.get("license_plate")
-                or dossier.get("license_plate", "")
+                or dossier.get("license_plate")
+                or (vehicule.get("carte_grise_extractions", [{}])[0].get("immatriculation") if vehicule.get("carte_grise_extractions") else None)
+                or (assureur.get("attestation_extractions", [{}])[0].get("immatriculation") if assureur.get("attestation_extractions") else None)
+                or wexia.get("matricule")
+                or wexia.get("immatriculation", "")
             ),
 
             # --- Main form text fields ---
