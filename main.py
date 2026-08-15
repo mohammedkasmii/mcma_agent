@@ -7,6 +7,12 @@ import pymupdf as fitz
 import os
 import uuid
 
+# ============================================================
+# ⚠️  TEST MODE — Set to False to enable Save & GED Upload
+# When True: form is filled but NEVER saved or submitted.
+# ============================================================
+TEST_MODE = True
+
 app = FastAPI(title="MCMA Dossier Automation API")
 
 def extract_search_matricule(plate: str) -> str:
@@ -322,62 +328,74 @@ async def process_workflow(data: dict):
                         await page.keyboard.press("Enter")
                         await page.wait_for_timeout(1000)
 
-            # --- STEP 8: SAVE FORM BEFORE GED (as captured in spy script) ---
-            print(f"[*] Saving mission form before GED...")
-            save_mission_btn = page.locator("#Enregistrer, a:has-text('Enregistrer')").first
-            if await save_mission_btn.count() > 0 and await save_mission_btn.is_visible():
-                await save_mission_btn.click()
-                await page.wait_for_timeout(1500)
+            # --- STEP 8: SAVE FORM BEFORE GED ---
+            if TEST_MODE:
+                print(f"\n    ⚠️  SAVE DISABLED (TEST_MODE=True) — #Enregistrer NOT clicked")
+                print(f"    ⚠️  No data was saved to the MCMA server.")
+            else:
+                print(f"[*] Saving mission form before GED...")
+                save_mission_btn = page.locator("#Enregistrer, a:has-text('Enregistrer')").first
+                if await save_mission_btn.count() > 0 and await save_mission_btn.is_visible():
+                    await save_mission_btn.click()
+                    await page.wait_for_timeout(1500)
 
             # --- STEP 9: OPEN GED PANEL & UPLOAD DOCUMENTS ---
-            docs = data.get("documents", [])
-            if docs:
-                print(f"[*] Switching to GED panel for {len(docs)} document(s)...")
-                ged_btn = page.locator("#loadGED, a:has-text('GED'), button:has-text('GED')").first
-                if await ged_btn.count() > 0:
-                    await ged_btn.click()
-                    await page.wait_for_timeout(1000)
-                
-                for doc in docs:
-                    file_path = doc.get("path")
-                    id_nature = doc.get("id_nature")
+            if TEST_MODE:
+                doc_count = len(data.get("documents", []))
+                print(f"\n    ⚠️  GED UPLOAD DISABLED (TEST_MODE=True) — {doc_count} document(s) skipped")
+            else:
+                docs = data.get("documents", [])
+                if docs:
+                    print(f"[*] Switching to GED panel for {len(docs)} document(s)...")
+                    ged_btn = page.locator("#loadGED, a:has-text('GED'), button:has-text('GED')").first
+                    if await ged_btn.count() > 0:
+                        await ged_btn.click()
+                        await page.wait_for_timeout(1000)
                     
-                    if not file_path or not os.path.exists(file_path):
-                        print(f"[!] Warning: Document file not found on disk: {file_path}")
-                        continue
-                    
-                    compressed_filename = f"temp/{uuid.uuid4()}_compressed.pdf"
-                    final_file_path = compress_pdf(file_path, compressed_filename)
-                    
-                    print(f"[*] Uploading nature {id_nature} -> {os.path.basename(file_path)}...")
-                    await safe_select_option(page, "#IdNatureDocument", str(id_nature))
-                    await page.wait_for_timeout(300)
-                    
-                    file_input = page.locator("input[type='file'][name='document'], #document, input[type='file']").first
-                    if await file_input.count() > 0:
-                        await file_input.set_input_files(final_file_path)
-                        await page.wait_for_timeout(400)
+                    for doc in docs:
+                        file_path = doc.get("path")
+                        id_nature = doc.get("id_nature")
                         
-                        # Click Enregistrer inside GED
-                        enregistrer_ged = page.locator("#EnregistrerGED, #divGed a:has-text('Enregistrer'), #divGed button:has-text('Enregistrer'), a[onclick*='ajouterDocument']").first
-                        if await enregistrer_ged.count() > 0:
-                            await enregistrer_ged.click()
-                            print(f"[✓] Document nature {id_nature} uploaded successfully.")
-                            await page.wait_for_timeout(2500)
-                        else:
-                            print(f"[!] Could not locate GED Enregistrer button.")
+                        if not file_path or not os.path.exists(file_path):
+                            print(f"[!] Warning: Document file not found on disk: {file_path}")
+                            continue
+                        
+                        compressed_filename = f"temp/{uuid.uuid4()}_compressed.pdf"
+                        final_file_path = compress_pdf(file_path, compressed_filename)
+                        
+                        print(f"[*] Uploading nature {id_nature} -> {os.path.basename(file_path)}...")
+                        await safe_select_option(page, "#IdNatureDocument", str(id_nature))
+                        await page.wait_for_timeout(300)
+                        
+                        file_input = page.locator("input[type='file'][name='document'], #document, input[type='file']").first
+                        if await file_input.count() > 0:
+                            await file_input.set_input_files(final_file_path)
+                            await page.wait_for_timeout(400)
+                            
+                            enregistrer_ged = page.locator("#EnregistrerGED, #divGed a:has-text('Enregistrer'), #divGed button:has-text('Enregistrer'), a[onclick*='ajouterDocument']").first
+                            if await enregistrer_ged.count() > 0:
+                                await enregistrer_ged.click()
+                                print(f"[✓] Document nature {id_nature} uploaded successfully.")
+                                await page.wait_for_timeout(2500)
+                            else:
+                                print(f"[!] Could not locate GED Enregistrer button.")
 
             # --- STEP 10: HUMAN-IN-THE-LOOP REVIEW PAUSE ---
-            print("\n" + "="*55)
-            print(" [✓] AUTOMATION COMPLETE: Searched, filled form, & uploaded GED.")
-            print(" [!] Review the dossier carefully on screen.")
-            print(" [!] Click 'Resume' in Playwright Inspector or close when done.")
-            print("="*55 + "\n")
+            print("\n" + "="*60)
+            if TEST_MODE:
+                print(" ⚠️  TEST MODE — NOTHING WAS SAVED OR SUBMITTED")
+                print(" ⚠️  The form was filled for PREVIEW ONLY.")
+                print(" ⚠️  Close the browser or press Resume when done.")
+            else:
+                print(" [✓] AUTOMATION COMPLETE: Searched, filled form, & uploaded GED.")
+                print(" [!] Review the dossier carefully on screen.")
+            print(" [!] Close the browser window when you're done reviewing.")
+            print("="*60 + "\n")
 
             await page.pause()
 
             await browser.close()
-            return {"status": "success", "message": "Dossier filled and reviewed successfully."}
+            return {"status": "success", "message": "Dossier filled" + (" (TEST MODE — not saved)" if TEST_MODE else " and saved successfully.")}
 
         except Exception as e:
             await browser.close()

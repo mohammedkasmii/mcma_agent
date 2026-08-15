@@ -24,14 +24,16 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 # Maps Wexia operation_type (from lignes_mo) -> MCMA IdRubrique
 LABOR_RUBRIQUE_MAP: dict = {
-    "tolerie":     "7",    # MAIN D'OEUVRE CARROSSERIE
-    "mecanique":   "8",    # MAIN D'OEUVRE MECANIQUE
-    "peinture":    "12",   # MAIN D'OEUVRE PEINTURE
-    "electricite": "28",   # MAIN D'OEUVRE ELECTRIQUE
+    "tolerie":       "7",    # MAIN D'OEUVRE CARROSSERIE
+    "carrosserie":   "7",    # MAIN D'OEUVRE CARROSSERIE (alias)
+    "mecanique":     "8",    # MAIN D'OEUVRE MECANIQUE
+    "peinture":      "12",   # MAIN D'OEUVRE PEINTURE
+    "electricite":   "28",   # MAIN D'OEUVRE ELECTRIQUE
+    "ingredients":   "16",   # PEINTURES ET INGREDIENTS
+    "marbre":        "17",   # PASSAGE AU MARBRE
 }
 
-# MCMA IdRubrique used for spare parts (piece neuve d'origine by default)
-# Full catalog:
+# Full MCMA IdRubrique catalog:
 #  1=FOURNITURES CARROSSERIE (ORIGINES)      2=CARROSSERIE (ADAPTABLES)   3=CARROSSERIE (RECUPERABLES)
 #  4=FOURNITURES MECANIQUE (ORIGINES)        5=MECANIQUE (ADAPTABLES)     6=MECANIQUE (RECUPERABLES)
 #  7=MO CARROSSERIE  8=MO MECANIQUE  9=MONTANT TOTAL  10=PEINTURE (ORIGINES)
@@ -40,7 +42,14 @@ LABOR_RUBRIQUE_MAP: dict = {
 # 18=PARALLELISME ET EQUILIBRAGE  19=REP VITRE  20=REMPL VITRE  21=REP PARE-BRISE
 # 22=REMPL PARE-BRISE  23=REP LUNETTE ARRIERE  24=REMPL LUNETTE ARRIERE
 # 25=COLLE  26=KIT COLLE PB ET LA  27=KIT COLLE VITRE  28=MO ELECTRIQUE
-PIECE_RUBRIQUE_ID = "1"   # FOURNITURES CARROSSERIE (ORIGINES) — change to 4 for mecanique, etc.
+
+# Maps Wexia part_type (from lignes_pieces) -> MCMA rubrique ID for spare parts
+PIECE_TYPE_RUBRIQUE_MAP: dict = {
+    "origine":       "1",    # FOURNITURES CARROSSERIE (ORIGINES)
+    "adaptable":     "2",    # CARROSSERIE (ADAPTABLES)
+    "recuperation":  "3",    # CARROSSERIE (RECUPERABLES)
+}
+DEFAULT_PIECE_RUBRIQUE_ID = "1"   # fallback if part_type not recognized
 
 # ---------------------------------------------------------------------------
 # Real MCMA IdNatureDocument values (confirmed from live HTML — GED dropdown)
@@ -129,7 +138,7 @@ class WexiaToDossierMapper:
             ),
 
             # --- Main form text fields ---
-            "text_fields": self._build_text_fields(dossier, vehicule, chiffrage, obs),
+            "text_fields": self._build_text_fields(dossier, vehicule, chiffrage, obs, wexia),
 
             # --- Dropdown / select fields ---
             "select_fields": self._build_select_fields(dossier),
@@ -149,12 +158,24 @@ class WexiaToDossierMapper:
     # ------------------------------------------------------------------
 
     def _get_active_chiffrage(self, wexia: dict) -> dict:
-        """Returns the final/approved chiffrage, falling back to the first one."""
+        """
+        Returns the best chiffrage for MCMA filling.
+        Priority: approved chiffrage with the most line items (lignes_pieces + lignes_mo).
+        Falls back to is_final, then first approved, then first overall.
+        """
         chiffrages = wexia.get("chiffrages") or []
         if not chiffrages:
             return {}
-        finals = [c for c in chiffrages if c.get("is_final")]
-        return finals[0] if finals else chiffrages[0]
+
+        def _score(c):
+            items = len(c.get("lignes_pieces", [])) + len(c.get("lignes_mo", []))
+            is_approved = 1 if c.get("status") == "approved" else 0
+            is_final = 1 if c.get("is_final") else 0
+            cost = float(c.get("total_cost", 0) or 0)
+            # Primary: most line items, then approved, then highest cost, then is_final
+            return (items, is_approved, cost, is_final)
+
+        return max(chiffrages, key=_score)
 
     def _build_text_fields(
         self,
@@ -162,6 +183,7 @@ class WexiaToDossierMapper:
         vehicule: dict,
         chiffrage: dict,
         obs: dict,
+        wexia: dict,
     ) -> dict:
         fields: dict = {}
 
@@ -174,6 +196,7 @@ class WexiaToDossierMapper:
         vv = vehicule.get("market_value") or dossier.get("market_value")
         if vv is not None:
             fields["ValeurVenale"] = str(int(vv))
+            fields["ValeurVenaleEstime"] = str(int(vv))  # Fill both variants
 
         # Financial amounts from the active chiffrage
         if chiffrage:
@@ -181,13 +204,36 @@ class WexiaToDossierMapper:
             tva  = chiffrage.get("tax_amount")
             ttc  = chiffrage.get("final_cost") or chiffrage.get("indemnification_amount")
             days = chiffrage.get("estimated_days")
-            sv   = chiffrage.get("salvage_value") or vehicule.get("salvage_value")
+            sv   = chiffrage.get("salvage_value") or vehicule.get("salvage_value") or dossier.get("salvage_value")
 
-            if ht   is not None: fields["MontantReparation"]     = str(int(ht))
-            if tva  is not None: fields["MontantTVA"]            = str(int(tva))
-            if ttc  is not None: fields["MontantTTC"]            = str(int(ttc))
-            if days is not None: fields["NbreJourImmobilisation"] = str(int(days))
-            if sv   is not None: fields["ValeurEpave"]            = str(int(sv))
+            if ht   is not None: fields["MontantReparation"]      = str(int(ht))
+            if tva  is not None: fields["MontantTVA"]             = str(int(tva))
+            if ttc  is not None: fields["MontantTTC"]             = str(int(ttc))
+            if days is not None: fields["NbreJourImmobilisation"]  = str(int(days))
+            if sv   is not None:
+                fields["MontantEpave"]  = str(int(sv))
+                fields["ValeurEpave"]   = str(int(sv))
+
+            # Parse chiffrage notes for vetuste, franchise, remise
+            notes_raw = chiffrage.get("notes", "")
+            if notes_raw:
+                try:
+                    notes = json.loads(notes_raw)
+                    vetuste   = notes.get("vetuste", 0)
+                    franchise = notes.get("franchise", 0)
+                    remise    = notes.get("remise", 0)
+                    if vetuste:   fields["MontantVetusteTotal"]  = str(int(vetuste))
+                    if franchise: fields["MontantFranchise"]     = str(int(franchise))
+                    if remise:    fields["MontantRemise"]        = str(int(remise))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        # Date devis (from first devis extracted_data)
+        devis_list = wexia.get("devis") or []
+        if devis_list:
+            date_devis = (devis_list[0].get("extracted_data") or {}).get("date_devis")
+            if date_devis:
+                fields["DateDevis"] = str(date_devis)
 
         # Expert observations (free text)
         obs_text = obs.get("texte") or dossier.get("expert_observations", "")
@@ -227,40 +273,83 @@ class WexiaToDossierMapper:
         if dossier.get("is_reform"):
             boxes["VehReformeI"] = True
 
+        # TVA récupérable (sociétés can recover TVA)
+        insured_type = dossier.get("insured_type", "")
+        if insured_type in ("societe", "société", "company", "entreprise"):
+            boxes["TvaRecupI"] = True
+
         return boxes
 
     def _build_rubriques(self, chiffrage: dict) -> list:
         """
-        Builds MCMA rubrique line items from chiffrage lignes_pieces + lignes_mo.
-        Edit PIECE_RUBRIQUE_ID and LABOR_RUBRIQUE_MAP at the top of this file
-        to match your MCMA rubrique catalog.
+        Builds MCMA rubrique line items from chiffrage.
+        Handles both:
+          - lignes_pieces with item_type="part" → spare parts rubrique
+          - lignes_pieces with item_type="labor" → labor rubrique (uses 'notes' for operation_type)
+          - lignes_mo (legacy) → labor rubrique
         """
         rubriques = []
         if not chiffrage:
             return rubriques
 
-        # Spare parts
+        # Process lignes_pieces — may contain BOTH parts and labor items
         for line in chiffrage.get("lignes_pieces") or []:
             amount_ht = line.get("subtotal") or line.get("unit_price") or 0
-            tva       = round(amount_ht * DEFAULT_TVA_RATE)
-            rubriques.append({
-                "IdRubrique": PIECE_RUBRIQUE_ID,
-                "MontantHT":  str(int(amount_ht)),
-                "Taxe":       str(tva),
-                "_label":     line.get("item_name", ""),   # informational only
-            })
+            if amount_ht == 0:
+                continue
+            tva = round(amount_ht * DEFAULT_TVA_RATE)
+            item_type = (line.get("item_type") or "part").lower()
 
-        # Labor operations
+            if item_type == "labor":
+                # Labor item stored inside lignes_pieces
+                # The 'notes' field contains the operation_type (e.g. 'carrosserie', 'peinture')
+                op_type = (line.get("notes") or "").lower().strip()
+                # Check for known keywords in the item name too
+                item_name_lower = (line.get("item_name") or "").lower()
+                if "peinture" in item_name_lower and "ingr" in item_name_lower:
+                    rubrique_id = "16"   # PEINTURES ET INGREDIENTS
+                elif op_type in LABOR_RUBRIQUE_MAP:
+                    rubrique_id = LABOR_RUBRIQUE_MAP[op_type]
+                elif "peinture" in item_name_lower:
+                    rubrique_id = "12"   # MO PEINTURE
+                elif "tolerie" in item_name_lower or "carrosserie" in item_name_lower:
+                    rubrique_id = "7"    # MO CARROSSERIE
+                elif "mecanique" in item_name_lower:
+                    rubrique_id = "8"    # MO MECANIQUE
+                else:
+                    rubrique_id = LABOR_RUBRIQUE_MAP.get(op_type, "7")
+
+                rubriques.append({
+                    "IdRubrique": rubrique_id,
+                    "MontantHT":  str(int(amount_ht)),
+                    "Taxe":       str(tva),
+                    "_label":     line.get("item_name", ""),
+                })
+            else:
+                # Spare part — map part_type to rubrique ID
+                part_type = (line.get("part_type") or "").lower().strip()
+                rubrique_id = PIECE_TYPE_RUBRIQUE_MAP.get(part_type, DEFAULT_PIECE_RUBRIQUE_ID)
+
+                rubriques.append({
+                    "IdRubrique": rubrique_id,
+                    "MontantHT":  str(int(amount_ht)),
+                    "Taxe":       str(tva),
+                    "_label":     line.get("item_name", ""),
+                })
+
+        # Legacy: process lignes_mo (if populated — some dossiers use this instead)
         for mo in chiffrage.get("lignes_mo") or []:
-            op_type     = mo.get("operation_type", "")
-            rubrique_id = LABOR_RUBRIQUE_MAP.get(op_type, "1")
+            op_type     = (mo.get("operation_type") or "").lower().strip()
+            rubrique_id = LABOR_RUBRIQUE_MAP.get(op_type, "7")
             amount_ht   = mo.get("subtotal", 0)
-            tva         = round(amount_ht * DEFAULT_TVA_RATE)
+            if amount_ht == 0:
+                continue
+            tva = round(amount_ht * DEFAULT_TVA_RATE)
             rubriques.append({
                 "IdRubrique": rubrique_id,
                 "MontantHT":  str(int(amount_ht)),
                 "Taxe":       str(tva),
-                "_label":     op_type,   # informational only
+                "_label":     mo.get("operation_type", ""),
             })
 
         return rubriques

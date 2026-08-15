@@ -144,12 +144,20 @@ async def main():
         if m:
             search_num = m.group(0)
 
-    print("\n" + "="*55)
+    print("\n" + "="*60)
+    print("  🛡️  SAFETY MODE ACTIVE — TEST / PREVIEW ONLY")
+    print("  ⚠️  NO DATA WILL BE SAVED ON THE MCMA SERVER")
+    print("  ⚠️  NO DOCUMENTS WILL BE UPLOADED (GED DISABLED)")
+    print("="*60)
     print(f"  Target Plate (Matricule) : {raw_plate} (MCMA Search: '{search_num or raw_plate}')")
     print(f"  Target Dossier Ref       : {payload.get('dossier_reference')}")
+    print(f"  Montant Réparation (HT)  : {payload.get('text_fields', {}).get('MontantReparation')} DH")
+    print(f"  Montant TVA (20%)        : {payload.get('text_fields', {}).get('MontantTVA')} DH")
+    print(f"  Montant Total (TTC)      : {payload.get('text_fields', {}).get('MontantTTC')} DH")
     print(f"  Rubriques count          : {len(payload.get('rubriques', []))}")
-    print(f"  Documents count          : {len(payload.get('documents', []))}")
-    print("="*55 + "\n")
+    for idx, r in enumerate(payload.get('rubriques', []), 1):
+        print(f"    [{idx}] Rubrique #{r.get('IdRubrique')}: {r.get('_label')} -> {r.get('MontantHT')} DH (TVA: {r.get('Taxe')} DH)")
+    print("="*60 + "\n")
 
     # Run browser automation
     result = await process_workflow(payload)
