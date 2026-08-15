@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
 from mapper import WexiaToDossierMapper
-import fitz  # PyMuPDF
+import pymupdf as fitz
 import os
 import uuid
 
@@ -17,9 +17,9 @@ def extract_search_matricule(plate: str) -> str:
     if not plate:
         return ""
     plate_clean = str(plate).strip()
-    match = re.match(r"^(\d+)", plate_clean)
+    match = re.search(r"\d+", plate_clean)
     if match:
-        return match.group(1)
+        return match.group(0)
     return plate_clean
 
 def compress_pdf(input_path: str, output_path: str) -> str:
