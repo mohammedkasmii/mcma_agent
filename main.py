@@ -57,23 +57,46 @@ async def safe_fill_input(page, selector: str, value: str, timeout_ms: int = 200
             return False
 
 async def safe_select_option(page, selector: str, value: str, timeout_ms: int = 2000) -> bool:
-    """Safely selects a dropdown option with JS fallback."""
+    """Safely selects a dropdown option with Select2, jQuery, and native DOM fallback."""
     if not value or str(value).strip() == "":
         return False
     loc = page.locator(selector).first
     if await loc.count() == 0:
         return False
+    
+    # Method 1: JS / Select2 injection (fastest and handles Select2 hidden selects)
+    try:
+        await page.evaluate("""([sel, val]) => {
+            const el = document.querySelector(sel);
+            if (!el) return;
+            el.value = val;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            if (typeof jQuery !== 'undefined') {
+                jQuery(sel).val(val).trigger('change');
+                if (jQuery(sel).data('select2')) {
+                    jQuery(sel).trigger('select2:select');
+                }
+            }
+        }""", [selector, str(value)])
+        return True
+    except Exception:
+        pass
+
+    # Method 2: Standard Playwright select_option if visible
     try:
         if await loc.is_visible():
             await loc.select_option(str(value), timeout=timeout_ms)
             return True
-        else:
-            await loc.evaluate("""(el, val) => {
-                el.value = val;
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-                if (typeof el.onchange === 'function') el.onchange();
-            }""", str(value))
-            return True
+    except Exception:
+        pass
+
+    # Method 3: Fallback DOM value set
+    try:
+        await loc.evaluate("""(el, val) => {
+            el.value = val;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }""", str(value))
+        return True
     except Exception:
         return False
 
@@ -266,12 +289,10 @@ async def process_workflow(data: dict):
                         await ajouter_btn.click()
                         await page.wait_for_timeout(400)
                         
-                        if await page.locator("#IdRubrique").count() > 0:
-                            await page.select_option("#IdRubrique", str(item.get("IdRubrique")))
-                        if await page.locator("#MontantHT").count() > 0:
-                            await page.fill("#MontantHT", str(item.get("MontantHT", "0")))
-                        if item.get("Taxe") and await page.locator("#Taxe").count() > 0:
-                            await page.fill("#Taxe", str(item.get("Taxe")))
+                        await safe_select_option(page, "#IdRubrique", str(item.get("IdRubrique")))
+                        await safe_fill_input(page, "#MontantHT", str(item.get("MontantHT", "0")))
+                        if item.get("Taxe"):
+                            await safe_fill_input(page, "#Taxe", str(item.get("Taxe")))
                         
                         await page.keyboard.press("Enter")
                         await page.wait_for_timeout(1000)
@@ -304,8 +325,8 @@ async def process_workflow(data: dict):
                     final_file_path = compress_pdf(file_path, compressed_filename)
                     
                     print(f"[*] Uploading nature {id_nature} -> {os.path.basename(file_path)}...")
-                    if await page.locator("#IdNatureDocument").count() > 0:
-                        await page.select_option("#IdNatureDocument", str(id_nature))
+                    await safe_select_option(page, "#IdNatureDocument", str(id_nature))
+                    await page.wait_for_timeout(300)
                     
                     file_input = page.locator("input[type='file'][name='document'], #document, input[type='file']").first
                     if await file_input.count() > 0:
