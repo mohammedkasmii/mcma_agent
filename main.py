@@ -22,6 +22,80 @@ def extract_search_matricule(plate: str) -> str:
         return match.group(0)
     return plate_clean
 
+async def safe_fill_input(page, selector: str, value: str, timeout_ms: int = 2000) -> bool:
+    """
+    Safely fills an input field. If standard Playwright fill fails or if the element
+    has jQuery money masking / is hidden, sets value directly via JS event dispatch.
+    """
+    if not value or str(value).strip() == "":
+        return False
+    loc = page.locator(selector).first
+    if await loc.count() == 0:
+        return False
+    try:
+        if await loc.is_visible():
+            await loc.fill(str(value), timeout=timeout_ms)
+            return True
+        else:
+            await loc.evaluate("""(el, val) => {
+                el.value = val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                if (typeof el.onkeyup === 'function') el.onkeyup();
+                if (typeof el.onchange === 'function') el.onchange();
+            }""", str(value))
+            return True
+    except Exception:
+        try:
+            await loc.evaluate("""(el, val) => {
+                el.value = val;
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            }""", str(value))
+            return True
+        except Exception:
+            return False
+
+async def safe_select_option(page, selector: str, value: str, timeout_ms: int = 2000) -> bool:
+    """Safely selects a dropdown option with JS fallback."""
+    if not value or str(value).strip() == "":
+        return False
+    loc = page.locator(selector).first
+    if await loc.count() == 0:
+        return False
+    try:
+        if await loc.is_visible():
+            await loc.select_option(str(value), timeout=timeout_ms)
+            return True
+        else:
+            await loc.evaluate("""(el, val) => {
+                el.value = val;
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                if (typeof el.onchange === 'function') el.onchange();
+            }""", str(value))
+            return True
+    except Exception:
+        return False
+
+async def safe_toggle_checkbox(page, selector: str, is_checked: bool, timeout_ms: int = 2000) -> bool:
+    """Safely toggles a checkbox with JS fallback."""
+    loc = page.locator(selector).first
+    if await loc.count() == 0:
+        return False
+    try:
+        current = await loc.is_checked()
+        if current != is_checked:
+            if await loc.is_visible():
+                await loc.click(timeout=timeout_ms)
+            else:
+                await loc.evaluate("""(el, chk) => {
+                    el.checked = chk;
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }""", is_checked)
+        return True
+    except Exception:
+        return False
+
 def compress_pdf(input_path: str, output_path: str) -> str:
     """Compresses heavy PDF files by cleaning streams and garbage collecting objects."""
     try:
@@ -83,10 +157,10 @@ async def process_workflow(data: dict):
             
             # Reset / fill search inputs
             if await page.locator("#Matricule").count() > 0 and search_query:
-                await page.fill("#Matricule", str(search_query).strip())
+                await safe_fill_input(page, "#Matricule", str(search_query).strip())
                 print(f"    [✓] Filled search input #Matricule = '{search_query}'")
             elif await page.locator("#ReferenceCie").count() > 0 and dossier_ref:
-                await page.fill("#ReferenceCie", str(dossier_ref).strip())
+                await safe_fill_input(page, "#ReferenceCie", str(dossier_ref).strip())
                 print(f"    [✓] Filled search input #ReferenceCie = '{dossier_ref}'")
 
             # Trigger the search action
@@ -108,24 +182,20 @@ async def process_workflow(data: dict):
             target_link = None
 
             if row_count > 0:
-                # Check each row to find best match if multiple rows exist
                 for i in range(row_count):
                     row = rows.nth(i)
                     row_text = await row.inner_text()
                     
-                    # If table shows empty message, break
                     if "aucun" in row_text.lower() or "no data" in row_text.lower() or "no matching" in row_text.lower():
                         break
                         
                     link = row.locator("a[href*='gotoMission'], a[title*='Mission expertise'], div.text-blue a").first
                     if await link.count() > 0 and await link.is_visible():
-                        # If row matches the search number or full plate, choose it
                         if search_matricule_num in row_text or raw_matricule in row_text:
                             target_link = link
                             print(f"    [✓] Found matching row for plate '{raw_matricule}': {row_text.splitlines()[0] if row_text else ''}")
                             break
                         elif target_link is None:
-                            # Fallback to first row with a valid mission link
                             target_link = link
 
             if target_link and await target_link.is_visible():
@@ -151,63 +221,40 @@ async def process_workflow(data: dict):
             for field_id, value in data.get("text_fields", {}).items():
                 if value is not None and str(value).strip() != "":
                     selector = f"#{field_id}"
-                    loc = page.locator(selector).first
+                    filled = await safe_fill_input(page, selector, str(value))
                     
-                    filled = False
-                    if await loc.count() > 0 and await loc.is_visible():
-                        try:
-                            await loc.fill(str(value), timeout=2500)
-                            print(f"    [✓] Filled text field #{field_id} = {str(value)[:40]}...")
-                            filled = True
-                        except Exception as e:
-                            print(f"    [!] Could not fill #{field_id}: {e} (skipped)")
-                    
-                    # Special fallback for Valeur Venale
-                    if not filled and field_id in ("ValeurVenale", "ValeurVenaleEstime"):
+                    if filled:
+                        print(f"    [✓] Filled text field #{field_id} = {str(value)[:40]}...")
+                    elif field_id in ("ValeurVenale", "ValeurVenaleEstime"):
                         alt_id = "ValeurVenaleEstime" if field_id == "ValeurVenale" else "ValeurVenale"
-                        alt_loc = page.locator(f"#{alt_id}").first
-                        if await alt_loc.count() > 0 and await alt_loc.is_visible():
-                            try:
-                                await alt_loc.fill(str(value), timeout=2500)
-                                print(f"    [✓] Filled text field #{alt_id} = {str(value)[:40]}...")
-                                filled = True
-                            except Exception as e:
-                                print(f"    [!] Could not fill #{alt_id}: {e} (skipped)")
-                                
-                    if not filled:
-                        print(f"    [!] Field #{field_id} not visible on page (skipped)")
+                        alt_filled = await safe_fill_input(page, f"#{alt_id}", str(value))
+                        if alt_filled:
+                            print(f"    [✓] Filled text field #{alt_id} = {str(value)[:40]}...")
+                        else:
+                            print(f"    [!] Field #{field_id} skipped (not on page)")
+                    else:
+                        print(f"    [!] Field #{field_id} not present/visible (skipped)")
 
             # --- STEP 5: SELECT DROPDOWN OPTIONS ---
             print(f"[*] Selecting dropdown options...")
             for field_id, value in data.get("select_fields", {}).items():
                 if value is not None and str(value).strip() != "":
                     selector = f"#{field_id}"
-                    loc = page.locator(selector).first
-                    if await loc.count() > 0 and await loc.is_visible():
-                        try:
-                            await loc.select_option(str(value), timeout=2500)
-                            print(f"    [✓] Selected #{field_id} = {value}")
-                        except Exception as e:
-                            print(f"    [!] Option '{value}' in #{field_id} not found: {e} (skipped)")
+                    selected = await safe_select_option(page, selector, str(value))
+                    if selected:
+                        print(f"    [✓] Selected #{field_id} = {value}")
                     else:
-                        print(f"    [!] Dropdown #{field_id} not visible on page (skipped)")
+                        print(f"    [!] Dropdown #{field_id} not present/visible (skipped)")
 
             # --- STEP 6: TOGGLE CHECKBOXES ---
             print(f"[*] Toggling checkboxes...")
             for field_id, is_checked in data.get("checkboxes", {}).items():
                 selector = f"#{field_id}"
-                loc = page.locator(selector).first
-                if await loc.count() > 0 and await loc.is_visible():
-                    try:
-                        current_state = await loc.is_checked()
-                        if current_state != is_checked:
-                            await loc.click(timeout=2500)
-                            await page.wait_for_timeout(200)
-                            print(f"    [✓] Toggled checkbox #{field_id} -> {is_checked}")
-                    except Exception as e:
-                        print(f"    [!] Could not toggle checkbox #{field_id}: {e}")
+                toggled = await safe_toggle_checkbox(page, selector, is_checked)
+                if toggled:
+                    print(f"    [✓] Toggled checkbox #{field_id} -> {is_checked}")
                 else:
-                    print(f"    [!] Checkbox #{field_id} not visible on page (skipped)")
+                    print(f"    [!] Checkbox #{field_id} not present/visible (skipped)")
 
             # --- STEP 7: INSERT LINE ITEMS (RUBRIQUES) ---
             rubriques = data.get("rubriques", [])
