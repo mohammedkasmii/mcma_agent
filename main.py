@@ -62,7 +62,7 @@ async def process_workflow(data: dict):
             if not search_query:
                 raise Exception("No Immatriculation (matricule) or Dossier Reference provided to search!")
 
-            print(f"[*] Searching for mission by Immatriculation: '{search_query}'...")
+            print(f"[*] Searching for mission in MCMA by Immatriculation: '{search_query}'...")
             
             # Reset / fill search inputs
             if await page.locator("#Matricule").count() > 0 and matricule:
@@ -73,25 +73,40 @@ async def process_workflow(data: dict):
                 print(f"    [✓] Filled search input #ReferenceCie = '{dossier_ref}'")
 
             # Trigger the search action
-            search_btn = page.locator("a:has-text('Rechercher'), button:has-text('Rechercher'), #btnRecherche").first
+            search_btn = page.locator("a[onclick*='RechercheMission'], a:has-text('Rechercher'), button:has-text('Rechercher')").first
             if await search_btn.count() > 0:
                 await search_btn.click()
             else:
                 await page.keyboard.press("Enter")
                 
+            # Wait for search AJAX to complete and table to refresh
             await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(1000)
+            await page.wait_for_timeout(2000)
 
-            # --- STEP 3: SELECT THE DOSSIER FROM SEARCH RESULTS ---
-            print(f"[*] Selecting dossier from search results table...")
-            mission_link = page.locator("a[title='Mission expertise'], a:has-text('Mission expertise'), table tr td a").first
-            if await mission_link.count() > 0:
+            # --- STEP 3: SELECT THE DOSSIER FROM #listeSinistre TABLE ---
+            print(f"[*] Locating mission in results table (#listeSinistre)...")
+            
+            # Target specifically links inside the #listeSinistre table (e.g. gotoMission(idSinistre, idMission))
+            mission_link = page.locator("#listeSinistre tbody tr td a[href*='gotoMission'], #listeSinistre tbody tr td a[title*='Mission expertise'], #listeSinistre tbody tr td div.text-blue a").first
+            
+            if await mission_link.count() > 0 and await mission_link.is_visible():
+                mission_text = await mission_link.inner_text()
+                print(f"    [✓] Found mission in table: '{mission_text.strip()}'. Opening...")
                 await mission_link.click()
                 await page.wait_for_load_state("domcontentloaded")
-                await page.wait_for_timeout(1000)
-                print(f"    [✓] Mission opened successfully!")
+                await page.wait_for_timeout(1500)
+                print(f"    [✓] Mission form opened successfully!")
             else:
-                raise Exception(f"Vehicle with Immatriculation '{search_query}' not found in MCMA search results.")
+                # Check if table is empty or has no matching records
+                table_text = ""
+                if await page.locator("#listeSinistre tbody").count() > 0:
+                    table_text = await page.locator("#listeSinistre tbody").inner_text()
+                
+                raise Exception(
+                    f"Dossier with Matricule/Ref '{search_query}' NOT FOUND in your MCMA account.\n"
+                    f"Table result: {table_text.strip() or 'No rows matching search'}\n"
+                    f"Please verify that this matricule/dossier exists and is assigned to your account."
+                )
 
             # --- STEP 4: FILL MAIN FORM TEXT FIELDS ---
             print(f"[*] Filling main form text fields...")
