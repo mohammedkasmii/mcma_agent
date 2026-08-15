@@ -324,79 +324,47 @@ async def process_workflow(data: dict):
                             await page.wait_for_timeout(600)
 
                     for idx, item in enumerate(rubriques, 1):
-                        print(f"    [{idx}/{len(rubriques)}] Clicking 'Ajouter +' for [Id={item.get('IdRubrique')}] {item.get('_label')} ({item.get('MontantHT')} DH)...")
+                        print(f"    [{idx}/{len(rubriques)}] Adding rubrique [Id={item.get('IdRubrique')}] {item.get('_label')} ({item.get('MontantHT')} DH)...")
                         
-                        # Step A: Click the green 'Ajouter +' button
-                        ajouter_btn = page.locator("a.btn-success:has-text('Ajouter'), a[onclick*='addRow'], a:has-text('Ajouter')").first
-                        
-                        clicked_add = False
+                        # Step 1: Click the green 'Ajouter +' button
+                        ajouter_btn = page.locator("a.btn-success:has-text('Ajouter'), a:has-text('Ajouter +'), a[onclick*='addRow']").first
                         if await ajouter_btn.count() > 0:
                             try:
                                 await ajouter_btn.scroll_into_view_if_needed(timeout=1500)
                                 await ajouter_btn.click(timeout=2500, force=True)
-                                clicked_add = True
                             except Exception:
-                                pass
-                        
-                        if not clicked_add:
-                            # Direct JS call to edataTable_RapportDet.addRow()
-                            try:
-                                await page.evaluate("""() => {
-                                    if (typeof edataTable_RapportDet !== 'undefined' && typeof edataTable_RapportDet.addRow === 'function') {
-                                        edataTable_RapportDet.addRow();
-                                        return true;
-                                    }
-                                    const btn = document.querySelector("a.btn-success, a[onclick*='addRow']");
-                                    if (btn) { btn.click(); return true; }
-                                    return false;
-                                }""")
-                            except Exception:
-                                pass
+                                await page.evaluate("const b = document.querySelector('a.btn-success'); if(b) b.click();")
+                        else:
+                            await page.evaluate("if (typeof edataTable_RapportDet !== 'undefined') edataTable_RapportDet.addRow();")
 
-                        # Wait for the new row to render in the table
+                        # Wait for the row to open
                         await page.wait_for_timeout(800)
                         
-                        # Step B: Fill the row inputs
-                        await safe_select_option(page, "#IdRubrique, table tr:last-child select, select[name*='IdRubrique']", str(item.get("IdRubrique")))
-                        await safe_fill_input(page, "#MontantHT, table tr:last-child input[name*='MontantHT'], input[name*='MontantHT']", str(item.get("MontantHT", "0")))
+                        # Step 2: Select IdRubrique & fill MontantHT / Taxe
+                        await safe_select_option(page, "#IdRubrique, table tbody tr:last-child select", str(item.get("IdRubrique")))
+                        await safe_fill_input(page, "#MontantHT, table tbody tr:last-child input[name*='MontantHT']", str(item.get("MontantHT", "0")))
                         if item.get("Taxe"):
-                            await safe_fill_input(page, "#Taxe, table tr:last-child input[name*='Taxe'], input[name*='Taxe']", str(item.get("Taxe")))
+                            await safe_fill_input(page, "#Taxe, table tbody tr:last-child input[name*='Taxe']", str(item.get("Taxe")))
                         
                         await page.wait_for_timeout(400)
 
-                        # Step C: Save / confirm the current row so the table is ready for the next one
-                        row_saved = False
-                        # 1. Try clicking row save icon (check / save icon in the editing row)
-                        save_btn = page.locator("table tr.editing a.save-row, table tr a[onclick*='saveRow'], table tr:last-child a i.fa-check, table tr:last-child a i.fa-save, a.save-row").first
-                        if await save_btn.count() > 0 and await save_btn.is_visible():
+                        # Step 3: Confirm / Save the row (click action link in the row's last column)
+                        row_action_btn = page.locator("table tbody tr:last-child td:last-child a, table tbody tr.editing td:last-child a, a.save-row, table tr:last-child a:has(.fa-check), table tr:last-child a:has(.fa-save)").first
+                        if await row_action_btn.count() > 0 and await row_action_btn.is_visible():
                             try:
-                                await save_btn.click(timeout=1500)
-                                row_saved = True
+                                await row_action_btn.click(timeout=1500)
                             except Exception:
                                 pass
+                        
+                        # Keyboard enter backup
+                        try:
+                            await page.keyboard.press("Enter")
+                        except Exception:
+                            pass
 
-                        # 2. Try JS saveRow or Enter key
-                        if not row_saved:
-                            try:
-                                await page.evaluate("""() => {
-                                    const saveLink = document.querySelector("table tr a.save-row, table tr a[onclick*='saveRow'], table tr:last-child a .fa-check, table tr:last-child a .fa-save");
-                                    if (saveLink) {
-                                        saveLink.click();
-                                        return true;
-                                    }
-                                    return false;
-                                }""")
-                            except Exception:
-                                pass
-                            
-                            try:
-                                await page.keyboard.press("Enter")
-                            except Exception:
-                                pass
-
-                        # Wait for row AJAX commit to complete before adding the next row
-                        await page.wait_for_timeout(1000)
-                        print(f"    [✓] Rubrique [{item.get('IdRubrique')}] committed.")
+                        # Wait for row commit and table refresh
+                        await page.wait_for_timeout(1200)
+                        print(f"    [✓] Rubrique [{item.get('IdRubrique')}] confirmed.")
                         
                     print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
                 except Exception as rub_err:
