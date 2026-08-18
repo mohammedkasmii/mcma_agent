@@ -235,6 +235,11 @@ class WexiaToDossierMapper:
             if date_devis:
                 fields["DateDevis"] = str(date_devis)
 
+        # Reference Dossier (e.g. MCM14-08-26.WEX002)
+        ref_num = dossier.get("reference_number") or dossier.get("claim_number") or dossier.get("num_dossier")
+        if ref_num:
+            fields["ReferenceDossier"] = str(ref_num)
+
         # Expert observations (free text)
         obs_text = obs.get("texte") or dossier.get("expert_observations", "")
         if obs_text:
