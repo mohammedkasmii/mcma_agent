@@ -30,8 +30,9 @@ def extract_search_matricule(plate: str) -> str:
 
 async def safe_fill_input(page, selector: str, value: str, timeout_ms: int = 2000) -> bool:
     """
-    Safely fills an input field. If standard Playwright fill fails or if the element
-    has jQuery money masking / is hidden, sets value directly via JS event dispatch.
+    Safely fills an input field. Uses Playwright fill when visible and dispatches
+    input, change, and keyup events (including inline onkeyup/onchange and jQuery triggers)
+    so calculated fields update automatically.
     """
     if not value or str(value).strip() == "":
         return False
@@ -41,26 +42,99 @@ async def safe_fill_input(page, selector: str, value: str, timeout_ms: int = 200
     try:
         if await loc.is_visible():
             await loc.fill(str(value), timeout=timeout_ms)
-            return True
         else:
             await loc.evaluate("""(el, val) => {
                 el.value = val;
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-                if (typeof el.onkeyup === 'function') el.onkeyup();
-                if (typeof el.onchange === 'function') el.onchange();
             }""", str(value))
-            return True
+        
+        # Fire full event cycle to trigger MCMA JavaScript calculations
+        await loc.evaluate("""(el, val) => {
+            el.value = val;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: '0' }));
+            if (typeof el.onkeyup === 'function') {
+                try { el.onkeyup(); } catch(e) {}
+            }
+            if (typeof el.onchange === 'function') {
+                try { el.onchange(); } catch(e) {}
+            }
+            if (window.jQuery) {
+                try { window.jQuery(el).trigger('input').trigger('change').trigger('keyup'); } catch(e) {}
+            }
+        }""", str(value))
+        return True
     except Exception:
         try:
             await loc.evaluate("""(el, val) => {
                 el.value = val;
                 el.dispatchEvent(new Event('input', { bubbles: true }));
                 el.dispatchEvent(new Event('change', { bubbles: true }));
+                el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+                if (typeof el.onkeyup === 'function') el.onkeyup();
+                if (typeof el.onchange === 'function') el.onchange();
+                if (window.jQuery) window.jQuery(el).trigger('keyup').trigger('change');
             }""", str(value))
             return True
         except Exception:
             return False
+
+
+async def trigger_mcma_calculations(page):
+    """
+    Explicitly invokes MCMA's native calculation formulas:
+      - CalculerMontantDommage()  -> MontantDommage = ValeurVenale - MontantEpave
+      - CalculerMntArrete()       -> MontantArrete = MontantReparation - MontantVetuste
+                                     BaseIndemnite = MontantArrete - MontantFranchise - MontantRemise
+      - CalculerMontantTTC()      -> MontantTTC = MontantHT + Taxe
+    """
+    try:
+        res = await page.evaluate("""() => {
+            if (typeof CalculerMontantDommage === 'function') {
+                try { CalculerMontantDommage(); } catch(e) {}
+            }
+            if (typeof CalculerMntArrete === 'function') {
+                try { CalculerMntArrete(); } catch(e) {}
+            }
+            if (typeof CalculerMontantTTC === 'function') {
+                try { CalculerMontantTTC(); } catch(e) {}
+            }
+            if (typeof CalculerMontantVetuste === 'function') {
+                try { CalculerMontantVetuste(); } catch(e) {}
+            }
+
+            const calcSelectors = [
+                '#ValeurVenale', '#MontantEpave', '#MontantReparation', 
+                '#MontantTVA', '#MontantVetusteTotal', '#MontantFranchise', 
+                '#MontantRemise', '#MontantArrete', '#BaseIndemnite', '#MontantDommage'
+            ];
+            calcSelectors.forEach(sel => {
+                const el = document.querySelector(sel);
+                if (el) {
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    if (typeof el.onkeyup === 'function') {
+                        try { el.onkeyup(); } catch(e) {}
+                    }
+                    if (typeof el.onchange === 'function') {
+                        try { el.onchange(); } catch(e) {}
+                    }
+                    if (window.jQuery) {
+                        try { window.jQuery(el).trigger('keyup').trigger('change'); } catch(e) {}
+                    }
+                }
+            });
+
+            return {
+                montantArrete: document.querySelector('#MontantArrete')?.value || null,
+                baseIndemnite: document.querySelector('#BaseIndemnite')?.value || null,
+                montantDommage: document.querySelector('#MontantDommage')?.value || null
+            };
+        }""")
+        if res:
+            print(f"    [🧮 Auto-Calculations] MontantArrêté={res.get('montantArrete')}, BaseIndemnité={res.get('baseIndemnite')}, MontantDommage={res.get('montantDommage')}")
+    except Exception:
+        pass
 
 async def safe_select_option(page, selector: str, value: str, timeout_ms: int = 2000) -> bool:
     """
@@ -289,6 +363,9 @@ async def process_workflow(data: dict):
                     else:
                         print(f"    [!] Field #{field_id} not present/visible (skipped)")
 
+            # Trigger initial calculation after text fields
+            await trigger_mcma_calculations(page)
+
             # --- STEP 5: SELECT DROPDOWN OPTIONS ---
             print(f"[*] Selecting dropdown options...")
             for field_id, value in data.get("select_fields", {}).items():
@@ -384,6 +461,10 @@ async def process_workflow(data: dict):
                         print(f"    [✓] Rubrique [{rub_id}] locked in with checkmark (✓).")
                         
                     print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
+
+                    # Re-trigger calculations so all dependent fields update with the rubriques
+                    print(f"[*] Updating automatic calculation fields (Montant Arrêté, Base Indemnité, etc.)...")
+                    await trigger_mcma_calculations(page)
 
                 except Exception as rub_err:
                     print(f"    [!] Rubriques note: {rub_err}")
