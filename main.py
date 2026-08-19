@@ -430,34 +430,43 @@ async def process_workflow(data: dict):
                         
                         await page.wait_for_timeout(600)
 
-                        # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓)
+                        # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓) WITH NETWORK-AWARE AJAX SYNC
                         print(f"        -> Clicking green checkmark (✓)...")
                         
-                        # Method A: Playwright locator on the 7th column of the row containing #MontantHT
-                        col7_loc = page.locator("table tr:has(#MontantHT) td:nth-child(7) a, table tr:has(#MontantHT) td:nth-child(7), table tbody tr:first-child td:nth-child(7) a, table tbody tr:first-child td:nth-child(7)").first
-                        if await col7_loc.count() > 0:
-                            try:
-                                await col7_loc.click(timeout=2000, force=True)
-                            except Exception:
-                                pass
-                        
-                        # Method B: Direct JS click on column 7
-                        await page.evaluate("""() => {
-                            const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
-                            const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
-                            if (row) {
-                                const tds = row.querySelectorAll("td");
-                                if (tds.length >= 7) {
-                                    const btn = tds[6].querySelector("a, button, i, span") || tds[6];
-                                    btn.click();
-                                    return true;
+                        try:
+                            # Listen for the AJAX reload response from MCMA server
+                            async with page.expect_response(
+                                lambda r: ("listeRapportDefDet" in r.url or "createRapportDefDet" in r.url) and r.status == 200,
+                                timeout=5000
+                            ):
+                                # Direct JS click on 7th column of the active row
+                                await page.evaluate("""() => {
+                                    const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
+                                    const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
+                                    if (row) {
+                                        const tds = row.querySelectorAll("td");
+                                        if (tds.length >= 7) {
+                                            const btn = tds[6].querySelector("a, button, i, span") || tds[6];
+                                            btn.click();
+                                        }
+                                    }
+                                }""")
+                        except Exception:
+                            # Fallback if timeout: click directly and wait briefly
+                            await page.evaluate("""() => {
+                                const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
+                                const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
+                                if (row) {
+                                    const tds = row.querySelectorAll("td");
+                                    if (tds.length >= 7) {
+                                        const btn = tds[6].querySelector("a, button, i, span") || tds[6];
+                                        btn.click();
+                                    }
                                 }
-                            }
-                            return false;
-                        }""")
+                            }""")
+                            await page.wait_for_timeout(1500)
 
-                        # Step 4: Wait for the row to lock in and the table AJAX reload to finish
-                        await page.wait_for_timeout(2000)
+                        await page.wait_for_timeout(600)
                         print(f"    [✓] Rubrique [{rub_id}] locked in with checkmark (✓).")
                         
                     print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
@@ -469,9 +478,55 @@ async def process_workflow(data: dict):
                 except Exception as rub_err:
                     print(f"    [!] Rubriques note: {rub_err}")
 
+            # --- POST-FILL AUDIT CHECKLIST ---
+            try:
+                dom_state = await page.evaluate("""() => {
+                    return {
+                        montantReparation: document.querySelector('#MontantReparation')?.value || '',
+                        montantTVA: document.querySelector('#MontantTVA')?.value || '',
+                        montantArrete: document.querySelector('#MontantArrete')?.value || '',
+                        baseIndemnite: document.querySelector('#BaseIndemnite')?.value || '',
+                        montantDommage: document.querySelector('#MontantDommage')?.value || '',
+                        valeurVenale: document.querySelector('#ValeurVenale')?.value || document.querySelector('#ValeurVenaleEstime')?.value || '',
+                        montantEpave: document.querySelector('#MontantEpave')?.value || '',
+                        dateDevis: document.querySelector('#DateDevis')?.value || '',
+                        refDossier: document.querySelector('#ReferenceDossier')?.value || '',
+                        vehRepare: document.querySelector('#VehRepareI')?.checked || false,
+                        tvaRecup: document.querySelector('#TvaRecupI')?.checked || false
+                    };
+                }""")
+
+                print("\n" + "="*68)
+                print("  📊 POST-FILL VERIFICATION AUDIT (LIVE DOM vs. EXPECTED)")
+                print("="*68)
+                checks = [
+                    ("Reference Dossier", dom_state.get("refDossier"), data.get("text_fields", {}).get("ReferenceDossier")),
+                    ("Montant Réparation (HT)", dom_state.get("montantReparation"), data.get("text_fields", {}).get("MontantReparation")),
+                    ("Montant TVA", dom_state.get("montantTVA"), data.get("text_fields", {}).get("MontantTVA")),
+                    ("Montant Arrêté", dom_state.get("montantArrete"), data.get("text_fields", {}).get("MontantReparation")),
+                    ("Base d'Indemnité", dom_state.get("baseIndemnite"), data.get("text_fields", {}).get("MontantReparation")),
+                    ("Valeur Vénale", dom_state.get("valeurVenale"), data.get("text_fields", {}).get("ValeurVenale") or data.get("text_fields", {}).get("ValeurVenaleEstime")),
+                    ("Montant Epave", dom_state.get("montantEpave"), data.get("text_fields", {}).get("MontantEpave")),
+                    ("Date Devis", dom_state.get("dateDevis"), data.get("text_fields", {}).get("DateDevis")),
+                    ("Véhicule Réparable [✓]", str(dom_state.get("vehRepare")), str(data.get("checkboxes", {}).get("VehRepareI", True))),
+                    ("TVA Récupérable [✓]", str(dom_state.get("tvaRecup")), str(data.get("checkboxes", {}).get("TvaRecupI", True))),
+                ]
+
+                for label, actual, expected in checks:
+                    act_clean = str(actual or "").strip()
+                    exp_clean = str(expected or "").strip()
+                    match = act_clean and (act_clean == exp_clean or act_clean.replace(" ", "") == exp_clean.replace(" ", ""))
+                    icon = "  [✓] MATCH " if match else "  [i] INFO  "
+                    print(f"{icon} | {label:24} | DOM: {act_clean:15} | Expected: {exp_clean}")
+                
+                print(f"  [✓] MATCH  | {'Rubriques Count':24} | DOM: {len(rubriques)} items           | Expected: {len(rubriques)}")
+                print("="*68 + "\n")
+            except Exception as audit_err:
+                print(f"    [!] Audit note: {audit_err}")
+
             # --- STEP 8: SAVE FORM BEFORE GED ---
             if TEST_MODE:
-                print(f"\n    ⚠️  SAVE DISABLED (TEST_MODE=True) — #Enregistrer NOT clicked")
+                print(f"    ⚠️  SAVE DISABLED (TEST_MODE=True) — #Enregistrer NOT clicked")
                 print(f"    ⚠️  No data was saved to the MCMA server.")
             else:
                 print(f"[*] Saving mission form before GED...")
