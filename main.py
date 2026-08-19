@@ -388,58 +388,197 @@ async def process_workflow(data: dict):
                     print(f"    [!] Checkbox #{field_id} not present/visible (skipped)")
             await page.wait_for_timeout(500)
 
-            # --- STEP 7: INSERT LINE ITEMS (RUBRIQUES) ---
+            # --- STEP 7: HANDLE REPAIR FINANCIALS (NORMAL VS CONVENTIONNÉ) ---
+            mode_reparation = data.get("mode_reparation", "normal")
             rubriques = data.get("rubriques", [])
-            if rubriques:
-                print(f"[*] Adding {len(rubriques)} line item(s) (rubriques)...")
-                try:
-                    # Ensure Véhicule Réparable (#VehRepareI) is checked to display the rubriques table
-                    repare_box = page.locator("#VehRepareI").first
-                    if await repare_box.count() > 0:
-                        if not await repare_box.is_checked():
-                            await safe_toggle_checkbox(page, "#VehRepareI", True)
-                            await page.wait_for_timeout(600)
-
+            
+            # Check DOM to confirm if #DevisDetTableVal is present
+            has_garage_table = await page.locator("#DevisDetTableVal").count() > 0
+            if has_garage_table or mode_reparation == "conventionne":
+                print(f"[*] Mode Garage Conventionné Detected. Updating 'Devis Validé' table (#DevisDetTableVal)...")
+                
+                if rubriques:
                     for idx, item in enumerate(rubriques, 1):
                         rub_id = str(item.get("IdRubrique"))
                         montant_ht = str(item.get("MontantHT", "0"))
                         taxe = str(item.get("Taxe", "0"))
+                        taux_vetuste = str(item.get("TauxVetuste", "0"))
+                        montant_vetuste = str(item.get("MontantVetuste", "0"))
                         label = item.get("_label", "")
-
-                        print(f"    [{idx}/{len(rubriques)}] [Ajouter +] -> [Id={rub_id}] {label} (HT: {montant_ht} DH, TVA: {taxe} DH)...")
                         
-                        # Step 1: Click the green 'Ajouter +' button
-                        ajouter_btn = page.locator("a.btn-success:has-text('Ajouter'), a:has-text('Ajouter +'), a[onclick*='addRow']").first
-                        if await ajouter_btn.count() > 0:
-                            try:
-                                await ajouter_btn.scroll_into_view_if_needed(timeout=1500)
-                                await ajouter_btn.click(timeout=2500, force=True)
-                            except Exception:
-                                await page.evaluate("const b = document.querySelector('a.btn-success'); if(b) b.click();")
-                        else:
-                            await page.evaluate("if (typeof edataTable_RapportDet !== 'undefined') edataTable_RapportDet.addRow();")
-
-                        # Wait for the editable row inputs to appear
-                        await page.wait_for_timeout(1000)
+                        print(f"    [{idx}/{len(rubriques)}] Matching Rubrique [{rub_id}] {label} -> HT: {montant_ht} DH")
                         
-                        # Step 2: Fill IdRubrique, MontantHT, and Taxe using safe helpers
-                        await safe_select_option(page, "#IdRubrique, table select[name*='IdRubrique'], select[name*='IdRubrique']", rub_id)
-                        await safe_fill_input(page, "#MontantHT, table input[name*='MontantHT'], input[name*='MontantHT']", montant_ht)
-                        if taxe and taxe != "0":
-                            await safe_fill_input(page, "#Taxe, table input[name*='Taxe'], input[name*='Taxe']", taxe)
+                        # 1. Open row for editing by matching label or rubrique keywords
+                        await page.evaluate("""([r_id, r_label]) => {
+                            const expertTable = document.querySelector('#DevisDetTableVal');
+                            if (!expertTable) return;
+                            const rows = expertTable.querySelectorAll('tbody tr');
+                            rows.forEach(row => {
+                                const td = row.querySelector('td:nth-child(1)');
+                                if (td) {
+                                    const text = td.innerText.trim().toUpperCase();
+                                    const match = (r_label && text.includes(r_label.toUpperCase())) ||
+                                                  (r_id === "7" && text.includes("CARROSSERIE")) ||
+                                                  (r_id === "8" && text.includes("MECANIQUE")) ||
+                                                  (r_id === "12" && text.includes("PEINTURE")) ||
+                                                  ((r_id === "1" || r_id === "3") && (text.includes("FOURNITURES") || text.includes("PIECE") || text.includes("PIÈCE")));
+                                    if (match) {
+                                        const editBtn = row.querySelector('a.edit-row, a#Modifier, td:nth-child(7) a');
+                                        if (editBtn) editBtn.click();
+                                    }
+                                }
+                            });
+                        }""", [rub_id, label])
                         
-                        await page.wait_for_timeout(600)
-
-                        # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓) WITH NETWORK-AWARE AJAX SYNC
-                        print(f"        -> Clicking green checkmark (✓)...")
+                        await page.wait_for_timeout(800)
                         
+                        # 2. Inject HT, Taxe, and Vétusté into the active editing row and fire native events
+                        await page.evaluate("""([val_ht, val_taxe, val_taux_vet, val_mt_vet]) => {
+                            const editingRow = document.querySelector('#DevisDetTableVal tbody tr.editing, #DevisDetTableVal tbody tr');
+                            if (!editingRow) return;
+                            
+                            const setVal = (sel, val) => {
+                                const input = editingRow.querySelector(sel);
+                                if (input && val !== undefined && val !== null) {
+                                    input.value = val;
+                                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                                    input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+                                }
+                            };
+                            
+                            setVal('#MontantHTValide, input[name*="MontantHTValide"]', val_ht);
+                            setVal('#TaxeValide, input[name*="TaxeValide"]', val_taxe);
+                            if (parseFloat(val_taux_vet) > 0) setVal('#TauxVetusteValide, input[name*="TauxVetusteValide"]', val_taux_vet);
+                            if (parseFloat(val_mt_vet) > 0) setVal('#MontantVetusteValide, input[name*="MontantVetusteValide"]', val_mt_vet);
+                        }""", [montant_ht, taxe, taux_vetuste, montant_vetuste])
+                        
+                        await page.wait_for_timeout(500)
+                        
+                        # 3. Click the Column 7 checkmark and await /updateDevisDet
+                        print(f"        -> Committing row to MCMA server...")
                         try:
-                            # Listen for the AJAX reload response from MCMA server
-                            async with page.expect_response(
-                                lambda r: ("listeRapportDefDet" in r.url or "createRapportDefDet" in r.url) and r.status == 200,
-                                timeout=5000
-                            ):
-                                # Direct JS click on 7th column of the active row
+                            async with page.expect_response(lambda r: "updateDevisDet" in r.url and r.status == 200, timeout=7000):
+                                await page.evaluate("""() => {
+                                    const editingRow = document.querySelector('#DevisDetTableVal tbody tr.editing, #DevisDetTableVal tbody tr');
+                                    if (editingRow) {
+                                        const checkBtn = editingRow.querySelector('td:nth-child(7) a i.fa-check, td:nth-child(7) a.save-row') || editingRow.querySelector('td:nth-child(7) a');
+                                        if (checkBtn) {
+                                            if (checkBtn.tagName.toLowerCase() === 'i') checkBtn.parentElement.click();
+                                            else checkBtn.click();
+                                        }
+                                    }
+                                }""")
+                            print(f"    [✓] Row [{rub_id}] locked successfully.")
+                        except Exception:
+                            # Fallback click without waiting
+                            await page.evaluate("""() => {
+                                const editingRow = document.querySelector('#DevisDetTableVal tbody tr.editing');
+                                if (editingRow) {
+                                    const b = editingRow.querySelector('td:nth-child(7) a');
+                                    if (b) b.click();
+                                }
+                            }""")
+                            await page.wait_for_timeout(1000)
+
+                # 4. Trigger global summary calculation
+                print(f"[*] Triggering automatic Devis recalculation...")
+                await page.evaluate("""() => {
+                    if (typeof DevisCalculerMontantCharge === 'function') {
+                        try { DevisCalculerMontantCharge(); } catch(e) {}
+                    }
+                }""")
+                await page.wait_for_timeout(800)
+
+                # 5. Fill summary fields with correct live DOM IDs
+                print(f"[*] Synchronizing final Devis Validation block...")
+                val_data = data.get("devis_validation", {})
+                if val_data.get("MontantTVA"):
+                    await safe_fill_input(page, "#DevisMontantTVA", str(val_data["MontantTVA"]))
+                if val_data.get("MontantVetuste"):
+                    await safe_fill_input(page, "#DevisMontantVetusteTotal", str(val_data["MontantVetuste"]))
+                if val_data.get("MontantFranchise"):
+                    await safe_fill_input(page, "#DevisMontantFranchise", str(val_data["MontantFranchise"]))
+                if val_data.get("MontantRemise"):
+                    await safe_fill_input(page, "#DevisMontantRemise", str(val_data["MontantRemise"]))
+
+                # 6. Execute the final submission endpoint
+                if getattr(sys.modules[__name__], "TEST_MODE", True):
+                    print(f"    ⚠️  DEVIS VALIDATION DISABLED (TEST_MODE=True) — #DEVISDET_Btn NOT clicked.")
+                else:
+                    print(f"    -> Submitting Garage Validation to Server [Valider Devis ✓]...")
+                    try:
+                        async with page.expect_response(lambda r: "garageModifierValDevis" in r.url and r.status == 200, timeout=10000):
+                            await page.evaluate("""() => {
+                                const valBtn = document.querySelector("#DEVISDET_Btn, #blocDevisValide a.btn-success, a[onclick*='ValiderDevis']");
+                                if (valBtn) valBtn.click();
+                            }""")
+                        print("    [✓] Garage Devis Validated successfully.")
+                    except Exception as e:
+                        print(f"    [!] Failed to validate devis: {e}")
+
+            else:
+                # -------------------------------------------------------------
+                # MODE NORMAL LOGIC
+                # -------------------------------------------------------------
+                if rubriques:
+                    print(f"[*] Mode Normal Detected. Adding {len(rubriques)} line item(s) via [Ajouter +]...")
+                    try:
+                        repare_box = page.locator("#VehRepareI").first
+                        if await repare_box.count() > 0:
+                            if not await repare_box.is_checked():
+                                await safe_toggle_checkbox(page, "#VehRepareI", True)
+                                await page.wait_for_timeout(600)
+
+                        for idx, item in enumerate(rubriques, 1):
+                            rub_id = str(item.get("IdRubrique"))
+                            montant_ht = str(item.get("MontantHT", "0"))
+                            taxe = str(item.get("Taxe", "0"))
+                            label = item.get("_label", "")
+
+                            print(f"    [{idx}/{len(rubriques)}] [Ajouter +] -> [Id={rub_id}] {label} (HT: {montant_ht} DH, TVA: {taxe} DH)...")
+                            
+                            ajouter_btn = page.locator("a.btn-success:has-text('Ajouter'), a:has-text('Ajouter +'), a[onclick*='addRow']").first
+                            if await ajouter_btn.count() > 0:
+                                try:
+                                    await ajouter_btn.scroll_into_view_if_needed(timeout=1500)
+                                    await ajouter_btn.click(timeout=2500, force=True)
+                                except Exception:
+                                    await page.evaluate("const b = document.querySelector('a.btn-success'); if(b) b.click();")
+                            else:
+                                await page.evaluate("if (typeof edataTable_RapportDet !== 'undefined') edataTable_RapportDet.addRow();")
+
+                            await page.wait_for_timeout(1000)
+                            
+                            await safe_select_option(page, "#IdRubrique, table select[name*='IdRubrique'], select[name*='IdRubrique']", rub_id)
+                            await safe_fill_input(page, "#MontantHT, table input[name*='MontantHT'], input[name*='MontantHT']", montant_ht)
+                            if taxe and taxe != "0":
+                                await safe_fill_input(page, "#Taxe, table input[name*='Taxe'], input[name*='Taxe']", taxe)
+                            
+                            await page.wait_for_timeout(600)
+                            print(f"        -> Clicking green checkmark (✓)...")
+                            
+                            try:
+                                async with page.expect_response(
+                                    lambda r: ("listeRapportDefDet" in r.url or "createRapportDefDet" in r.url) and r.status == 200,
+                                    timeout=7000
+                                ):
+                                    await page.evaluate("""() => {
+                                        const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
+                                        const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
+                                        if (row) {
+                                            const saveBtn = row.querySelector("a.btn-success, i.fa-check, a[onclick*='saveRapport']");
+                                            if (saveBtn) { saveBtn.click(); } 
+                                            else {
+                                                const tds = row.querySelectorAll("td");
+                                                if (tds.length >= 7) {
+                                                    const btn = tds[6].querySelector("a, button, i, span") || tds[6];
+                                                    btn.click();
+                                                }
+                                            }
+                                        }
+                                    }""")
+                            except Exception:
                                 await page.evaluate("""() => {
                                     const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
                                     const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
@@ -451,32 +590,17 @@ async def process_workflow(data: dict):
                                         }
                                     }
                                 }""")
-                        except Exception:
-                            # Fallback if timeout: click directly and wait briefly
-                            await page.evaluate("""() => {
-                                const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
-                                const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
-                                if (row) {
-                                    const tds = row.querySelectorAll("td");
-                                    if (tds.length >= 7) {
-                                        const btn = tds[6].querySelector("a, button, i, span") || tds[6];
-                                        btn.click();
-                                    }
-                                }
-                            }""")
-                            await page.wait_for_timeout(1500)
+                                await page.wait_for_timeout(1500)
 
-                        await page.wait_for_timeout(600)
-                        print(f"    [✓] Rubrique [{rub_id}] locked in with checkmark (✓).")
-                        
-                    print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
+                            await page.wait_for_timeout(600)
+                            print(f"    [✓] Rubrique [{rub_id}] locked in with checkmark (✓).")
+                            
+                        print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
+                        await trigger_mcma_calculations(page)
 
-                    # Re-trigger calculations so all dependent fields update with the rubriques
-                    print(f"[*] Updating automatic calculation fields (Montant Arrêté, Base Indemnité, etc.)...")
-                    await trigger_mcma_calculations(page)
+                    except Exception as rub_err:
+                        print(f"    [!] Rubriques note: {rub_err}")
 
-                except Exception as rub_err:
-                    print(f"    [!] Rubriques note: {rub_err}")
 
             # --- POST-FILL AUDIT CHECKLIST ---
             try:

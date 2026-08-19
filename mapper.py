@@ -119,7 +119,45 @@ class WexiaToDossierMapper:
         vehicule  = wexia.get("vehicule", {}) or {}
         assureur  = wexia.get("assureur", {}) or {}
         obs       = wexia.get("observations_expert", {}) or {}
+        missions  = wexia.get("missions", []) or []
         chiffrage = self._get_active_chiffrage(wexia)
+
+        # Detect Garage Conventionné (Prise en Charge) Mode
+        devis_list = wexia.get("devis") or []
+        is_garage_conventionne = False
+        if devis_list and (devis_list[0].get("repairer_id") or devis_list[0].get("repairer")):
+            is_garage_conventionne = True
+        elif missions and any(m.get("mission_type") in ["pec", "conventionne", "garage_conventionne"] for m in missions):
+            is_garage_conventionne = True
+        elif dossier.get("mission_type") in ["conventionne", "garage_conventionne", "pec"] or "convention" in str(dossier.get("repair_mode", "")).lower():
+            is_garage_conventionne = True
+
+        # Extract financial values for Devis Validation payload (Garage Conventionné)
+        devis_validation = {}
+        if chiffrage:
+            notes_raw = chiffrage.get("notes", "")
+            franchise, vetuste, remise = 0.0, 0.0, 0.0
+            if isinstance(notes_raw, str) and notes_raw.startswith("{"):
+                try:
+                    notes = json.loads(notes_raw)
+                    franchise = float(notes.get("franchise", 0) or 0)
+                    vetuste = float(notes.get("vetuste", 0) or 0)
+                    remise = float(notes.get("remise", 0) or 0)
+                except Exception:
+                    pass
+            
+            charge_soc = franchise + vetuste
+            total_cost = float(chiffrage.get("total_cost") or chiffrage.get("final_cost") or 0)
+            charge_mut = max(0.0, total_cost - charge_soc - remise)
+
+            devis_validation = {
+                "MontantTVA": str(chiffrage.get("tax_amount", 0)),
+                "MontantVetuste": str(vetuste),
+                "MontantFranchise": str(franchise),
+                "MontantRemise": str(remise),
+                "MontantChargeSocietaire": str(charge_soc),
+                "MontantChargeMutuelle": str(charge_mut),
+            }
 
         return {
             # --- Search keys (used to locate the dossier in MCMA) ---
@@ -137,6 +175,10 @@ class WexiaToDossierMapper:
                 or wexia.get("immatriculation", "")
             ),
 
+            # --- Mode and Devis Validation ---
+            "mode_reparation": "conventionne" if is_garage_conventionne else "normal",
+            "devis_validation": devis_validation,
+
             # --- Main form text fields ---
             "text_fields": self._build_text_fields(dossier, vehicule, chiffrage, obs, wexia),
 
@@ -152,6 +194,7 @@ class WexiaToDossierMapper:
             # --- Documents (urls — resolved to paths after download) ---
             "documents": self._build_documents(wexia),
         }
+
 
     # ------------------------------------------------------------------
     # Internal builders
