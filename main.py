@@ -503,21 +503,8 @@ async def process_workflow(data: dict):
                 if val_data.get("MontantRemise"):
                     await safe_fill_input(page, "#DevisMontantRemise", str(val_data["MontantRemise"]))
 
-                # 6. Execute the final submission endpoint
-                if TEST_MODE:
-                    print(f"    ⚠️  DEVIS VALIDATION DISABLED (TEST_MODE=True) — #DEVISDET_Btn NOT clicked.")
-                else:
-
-                    print(f"    -> Submitting Garage Validation to Server [Valider Devis ✓]...")
-                    try:
-                        async with page.expect_response(lambda r: "garageModifierValDevis" in r.url and r.status == 200, timeout=10000):
-                            await page.evaluate("""() => {
-                                const valBtn = document.querySelector("#DEVISDET_Btn, #blocDevisValide a.btn-success, a[onclick*='ValiderDevis']");
-                                if (valBtn) valBtn.click();
-                            }""")
-                        print("    [✓] Garage Devis Validated successfully.")
-                    except Exception as e:
-                        print(f"    [!] Failed to validate devis: {e}")
+                # 6. Devis Validation button (Intentionally bypassed for human-in-the-loop review)
+                print(f"    ⏸️  [REVIEW MODE] 'Devis Validé' table updated — #DEVISDET_Btn is UNCLICKED for your manual check.")
 
             else:
                 # -------------------------------------------------------------
@@ -650,74 +637,31 @@ async def process_workflow(data: dict):
             except Exception as audit_err:
                 print(f"    [!] Audit note: {audit_err}")
 
-            # --- STEP 8: SAVE FORM BEFORE GED ---
-            if TEST_MODE:
-                print(f"    ⚠️  SAVE DISABLED (TEST_MODE=True) — #Enregistrer NOT clicked")
-                print(f"    ⚠️  No data was saved to the MCMA server.")
-            else:
-                print(f"[*] Saving mission form before GED...")
-                save_mission_btn = page.locator("#Enregistrer, a:has-text('Enregistrer')").first
-                if await save_mission_btn.count() > 0 and await save_mission_btn.is_visible():
-                    await save_mission_btn.click()
-                    await page.wait_for_timeout(1500)
+            # --- STEP 8: SAVE FORM (INTENTIONALLY DISABLED FOR MANUAL REVIEW) ---
+            print(f"    ⏸️  [REVIEW MODE] Form saving is DISABLED — #Enregistrer left UNCLICKED for manual verification.")
 
-            # --- STEP 9: OPEN GED PANEL & UPLOAD DOCUMENTS ---
-            if TEST_MODE:
-                doc_count = len(data.get("documents", []))
-                print(f"\n    ⚠️  GED UPLOAD DISABLED (TEST_MODE=True) — {doc_count} document(s) skipped")
-            else:
-                docs = data.get("documents", [])
-                if docs:
-                    print(f"[*] Switching to GED panel for {len(docs)} document(s)...")
-                    ged_btn = page.locator("#loadGED, a:has-text('GED'), button:has-text('GED')").first
-                    if await ged_btn.count() > 0:
-                        await ged_btn.click()
-                        await page.wait_for_timeout(1000)
-                    
-                    for doc in docs:
-                        file_path = doc.get("path")
-                        id_nature = doc.get("id_nature")
-                        
-                        if not file_path or not os.path.exists(file_path):
-                            print(f"[!] Warning: Document file not found on disk: {file_path}")
-                            continue
-                        
-                        compressed_filename = f"temp/{uuid.uuid4()}_compressed.pdf"
-                        final_file_path = compress_pdf(file_path, compressed_filename)
-                        
-                        print(f"[*] Uploading nature {id_nature} -> {os.path.basename(file_path)}...")
-                        await safe_select_option(page, "#IdNatureDocument", str(id_nature))
-                        await page.wait_for_timeout(300)
-                        
-                        file_input = page.locator("input[type='file'][name='document'], #document, input[type='file']").first
-                        if await file_input.count() > 0:
-                            await file_input.set_input_files(final_file_path)
-                            await page.wait_for_timeout(400)
-                            
-                            enregistrer_ged = page.locator("#EnregistrerGED, #divGed a:has-text('Enregistrer'), #divGed button:has-text('Enregistrer'), a[onclick*='ajouterDocument']").first
-                            if await enregistrer_ged.count() > 0:
-                                await enregistrer_ged.click()
-                                print(f"[✓] Document nature {id_nature} uploaded successfully.")
-                                await page.wait_for_timeout(2500)
-                            else:
-                                print(f"[!] Could not locate GED Enregistrer button.")
+            # --- STEP 9: GED DOCUMENT UPLOAD (DISABLED FOR BOTH MODES) ---
+            doc_count = len(data.get("documents", []))
+            print(f"    ⏸️  [REVIEW MODE] GED Upload is DISABLED for both modes ({doc_count} document(s) skipped).")
 
             # --- STEP 10: HUMAN-IN-THE-LOOP REVIEW PAUSE ---
-            print("\n" + "="*60)
-            if TEST_MODE:
-                print(" ⚠️  TEST MODE — NOTHING WAS SAVED OR SUBMITTED")
-                print(" ⚠️  The form was filled for PREVIEW ONLY.")
-                print(" ⚠️  Close the browser or press Resume when done.")
-            else:
-                print(" [✓] AUTOMATION COMPLETE: Searched, filled form, & uploaded GED.")
-                print(" [!] Review the dossier carefully on screen.")
-            print(" [!] Close the browser window when you're done reviewing.")
-            print("="*60 + "\n")
+            print("\n" + "="*75)
+            print("  ⏸️  AUTOMATION COMPLETE — BROWSER PAUSED FOR YOUR INSPECTION")
+            print("  👀  All fields, dropdowns, and rubriques have been populated on screen.")
+            print("  🛡️  Zero submissions were made (#DEVISDET_Btn and #Enregistrer are untouched).")
+            print("  👉  Please review everything in the browser.")
+            print("  👉  When finished, press 'Resume' in Playwright inspector or close the browser.")
+            print("="*75 + "\n")
 
             await page.pause()
 
             await browser.close()
-            return {"status": "success", "message": "Dossier filled" + (" (TEST MODE — not saved)" if TEST_MODE else " and saved successfully.")}
+            return {"status": "success", "message": "Dossier filled and paused for human inspection (no submissions made)."}
+
+        except Exception as e:
+            await browser.close()
+            return {"status": "failed", "error": str(e)}
+
 
         except Exception as e:
             await browser.close()
