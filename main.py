@@ -5,6 +5,7 @@ from playwright.async_api import async_playwright
 from mapper import WexiaToDossierMapper
 import pymupdf as fitz
 import os
+import sys
 import uuid
 
 # ============================================================
@@ -503,9 +504,10 @@ async def process_workflow(data: dict):
                     await safe_fill_input(page, "#DevisMontantRemise", str(val_data["MontantRemise"]))
 
                 # 6. Execute the final submission endpoint
-                if getattr(sys.modules[__name__], "TEST_MODE", True):
+                if TEST_MODE:
                     print(f"    ⚠️  DEVIS VALIDATION DISABLED (TEST_MODE=True) — #DEVISDET_Btn NOT clicked.")
                 else:
+
                     print(f"    -> Submitting Garage Validation to Server [Valider Devis ✓]...")
                     try:
                         async with page.expect_response(lambda r: "garageModifierValDevis" in r.url and r.status == 200, timeout=10000):
