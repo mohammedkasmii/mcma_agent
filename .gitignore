@@ -24,4 +24,7 @@ Thumbs.db
 
 # Investigation dumps, traces & screenshots
 v12_camoufox_output/
+script spy/
+script\ spy/
+
 
