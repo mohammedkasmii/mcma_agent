@@ -771,7 +771,9 @@ async def mock_ged_ajouter(request: Request):
 
 if __name__ == "__main__":
     print("==================================================================")
-    print("🚀 Starting MCMA Local Mock Simulation Server on http://127.0.0.1:8080")
-    print("   Open in browser to see and test the interactive MCMA portal.")
+    print("[*] Starting MCMA Local Mock Simulation Server on http://127.0.0.1:8080")
+    print("    Open in browser to see and test the interactive MCMA portal:")
+    print("    -> http://127.0.0.1:8080/SinAuto_MCMA/expertise/gestionexpert/index")
     print("==================================================================")
     uvicorn.run(app, host="127.0.0.1", port=8080, log_level="info")
+
