@@ -392,20 +392,12 @@ async def process_workflow(data: dict):
             # --- STEP 7: HANDLE REPAIR FINANCIALS (NORMAL VS CONVENTIONNÉ) ---
             mode_reparation = data.get("mode_reparation", "normal")
             rubriques = data.get("rubriques", [])
-            
-            # Detect Garage Conventionné only if explicitly tagged OR if #DevisDetTableVal is visibly displayed
-            is_garage_pec = (mode_reparation == "conventionne")
-            if not is_garage_pec:
-                try:
-                    table_val = page.locator("#DevisDetTableVal").first
-                    if await table_val.count() > 0 and await table_val.is_visible():
-                        is_garage_pec = True
-                except Exception:
-                    is_garage_pec = False
 
-            if is_garage_pec:
+            if mode_reparation == "conventionne":
+                # -------------------------------------------------------------
+                # MODE GARAGE CONVENTIONNÉ (PEC) - TABLE 2 INLINE EDITING
+                # -------------------------------------------------------------
                 print(f"[*] Mode Garage Conventionné Detected. Updating 'Devis Validé' table (#DevisDetTableVal)...")
-                
                 if rubriques:
                     for idx, item in enumerate(rubriques, 1):
                         rub_id = str(item.get("IdRubrique"))
@@ -414,10 +406,10 @@ async def process_workflow(data: dict):
                         taux_vetuste = str(item.get("TauxVetuste", "0"))
                         montant_vetuste = str(item.get("MontantVetuste", "0"))
                         label = item.get("_label", "")
-                        
+
                         print(f"    [{idx}/{len(rubriques)}] Matching Rubrique [{rub_id}] {label} -> HT: {montant_ht} DH")
-                        
-                        # 1. Open row for editing by matching label or rubrique keywords
+
+                        # 1. Open row for editing
                         await page.evaluate("""([r_id, r_label]) => {
                             const expertTable = document.querySelector('#DevisDetTableVal');
                             if (!expertTable) return;
@@ -438,14 +430,14 @@ async def process_workflow(data: dict):
                                 }
                             });
                         }""", [rub_id, label])
-                        
+
                         await page.wait_for_timeout(800)
-                        
-                        # 2. Inject HT, Taxe, and Vétusté into the active editing row and fire native events
+
+                        # 2. Inject values
                         await page.evaluate("""([val_ht, val_taxe, val_taux_vet, val_mt_vet]) => {
                             const editingRow = document.querySelector('#DevisDetTableVal tbody tr.editing, #DevisDetTableVal tbody tr');
                             if (!editingRow) return;
-                            
+
                             const setVal = (sel, val) => {
                                 const input = editingRow.querySelector(sel);
                                 if (input && val !== undefined && val !== null) {
@@ -455,68 +447,53 @@ async def process_workflow(data: dict):
                                     input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
                                 }
                             };
-                            
+
                             setVal('#MontantHTValide, input[name*="MontantHTValide"]', val_ht);
                             setVal('#TaxeValide, input[name*="TaxeValide"]', val_taxe);
                             if (parseFloat(val_taux_vet) > 0) setVal('#TauxVetusteValide, input[name*="TauxVetusteValide"]', val_taux_vet);
                             if (parseFloat(val_mt_vet) > 0) setVal('#MontantVetusteValide, input[name*="MontantVetusteValide"]', val_mt_vet);
                         }""", [montant_ht, taxe, taux_vetuste, montant_vetuste])
-                        
+
                         await page.wait_for_timeout(500)
-                        
-                        # 3. Click the Column 7 checkmark and await /updateDevisDet
-                        print(f"        -> Committing row to MCMA server...")
-                        try:
-                            async with page.expect_response(lambda r: "updateDevisDet" in r.url and r.status == 200, timeout=7000):
-                                await page.evaluate("""() => {
-                                    const editingRow = document.querySelector('#DevisDetTableVal tbody tr.editing, #DevisDetTableVal tbody tr');
-                                    if (editingRow) {
-                                        const checkBtn = editingRow.querySelector('td:nth-child(7) a i.fa-check, td:nth-child(7) a.save-row') || editingRow.querySelector('td:nth-child(7) a');
-                                        if (checkBtn) {
-                                            if (checkBtn.tagName.toLowerCase() === 'i') checkBtn.parentElement.click();
-                                            else checkBtn.click();
-                                        }
-                                    }
-                                }""")
-                            print(f"    [✓] Row [{rub_id}] locked successfully.")
-                        except Exception:
-                            # Fallback click without waiting
-                            await page.evaluate("""() => {
-                                const editingRow = document.querySelector('#DevisDetTableVal tbody tr.editing');
-                                if (editingRow) {
-                                    const b = editingRow.querySelector('td:nth-child(7) a');
-                                    if (b) b.click();
+
+                        # 3. Commit row
+                        await page.evaluate("""() => {
+                            const editingRow = document.querySelector('#DevisDetTableVal tbody tr.editing, #DevisDetTableVal tbody tr');
+                            if (editingRow) {
+                                const checkBtn = editingRow.querySelector('td:nth-child(7) a i.fa-check, td:nth-child(7) a.save-row') || editingRow.querySelector('td:nth-child(7) a');
+                                if (checkBtn) {
+                                    if (checkBtn.tagName.toLowerCase() === 'i') checkBtn.parentElement.click();
+                                    else checkBtn.click();
                                 }
-                            }""")
-                            await page.wait_for_timeout(1000)
+                            }
+                        }""")
+                        await page.wait_for_timeout(1000)
+                        print(f"    [✓] Row [{rub_id}] locked successfully.")
 
-                # 4. Trigger global summary calculation
-                print(f"[*] Triggering automatic Devis recalculation...")
-                await page.evaluate("""() => {
-                    if (typeof DevisCalculerMontantCharge === 'function') {
-                        try { DevisCalculerMontantCharge(); } catch(e) {}
-                    }
-                }""")
-                await page.wait_for_timeout(800)
+                    # 4. Trigger calculations
+                    print(f"[*] Triggering automatic Devis recalculation...")
+                    await page.evaluate("""() => {
+                        if (typeof DevisCalculerMontantCharge === 'function') {
+                            try { DevisCalculerMontantCharge(); } catch(e) {}
+                        }
+                    }""")
+                    await page.wait_for_timeout(800)
 
-                # 5. Fill summary fields with correct live DOM IDs
-                print(f"[*] Synchronizing final Devis Validation block...")
-                val_data = data.get("devis_validation", {})
-                if val_data.get("MontantTVA"):
-                    await safe_fill_input(page, "#DevisMontantTVA", str(val_data["MontantTVA"]))
-                if val_data.get("MontantVetuste"):
-                    await safe_fill_input(page, "#DevisMontantVetusteTotal", str(val_data["MontantVetuste"]))
-                if val_data.get("MontantFranchise"):
-                    await safe_fill_input(page, "#DevisMontantFranchise", str(val_data["MontantFranchise"]))
-                if val_data.get("MontantRemise"):
-                    await safe_fill_input(page, "#DevisMontantRemise", str(val_data["MontantRemise"]))
+                    val_data = data.get("devis_validation", {})
+                    if val_data.get("MontantTVA"):
+                        await safe_fill_input(page, "#DevisMontantTVA", str(val_data["MontantTVA"]))
+                    if val_data.get("MontantVetuste"):
+                        await safe_fill_input(page, "#DevisMontantVetusteTotal", str(val_data["MontantVetuste"]))
+                    if val_data.get("MontantFranchise"):
+                        await safe_fill_input(page, "#DevisMontantFranchise", str(val_data["MontantFranchise"]))
+                    if val_data.get("MontantRemise"):
+                        await safe_fill_input(page, "#DevisMontantRemise", str(val_data["MontantRemise"]))
 
-                # 6. Devis Validation button (Intentionally bypassed for human-in-the-loop review)
-                print(f"    ⏸️  [REVIEW MODE] 'Devis Validé' table updated — #DEVISDET_Btn is UNCLICKED for your manual check.")
+                    print(f"    ⏸️  [REVIEW MODE] 'Devis Validé' table updated — #DEVISDET_Btn is UNCLICKED for your manual check.")
 
             else:
                 # -------------------------------------------------------------
-                # MODE NORMAL LOGIC (Proven, rock-solid [Ajouter +] loop)
+                # MODE NORMAL (VÉHICULE RÉPARABLE TABLE) - EXACT WORKING FLOW FROM COMMIT cb73c21
                 # -------------------------------------------------------------
                 if rubriques:
                     print(f"[*] Adding {len(rubriques)} line item(s) (rubriques)...")
@@ -535,7 +512,7 @@ async def process_workflow(data: dict):
                             label = item.get("_label", "")
 
                             print(f"    [{idx}/{len(rubriques)}] [Ajouter +] -> [Id={rub_id}] {label} (HT: {montant_ht} DH, TVA: {taxe} DH)...")
-                            
+
                             # Step 1: Click the green 'Ajouter +' button
                             ajouter_btn = page.locator("a.btn-success:has-text('Ajouter'), a:has-text('Ajouter +'), a[onclick*='addRow']").first
                             if await ajouter_btn.count() > 0:
@@ -549,54 +526,45 @@ async def process_workflow(data: dict):
 
                             # Wait for the editable row inputs to appear
                             await page.wait_for_timeout(1000)
-                            
+
                             # Step 2: Fill IdRubrique, MontantHT, and Taxe using safe helpers
                             await safe_select_option(page, "#IdRubrique, table select[name*='IdRubrique'], select[name*='IdRubrique']", rub_id)
                             await safe_fill_input(page, "#MontantHT, table input[name*='MontantHT'], input[name*='MontantHT']", montant_ht)
                             if taxe and taxe != "0":
                                 await safe_fill_input(page, "#Taxe, table input[name*='Taxe'], input[name*='Taxe']", taxe)
-                            
+
                             await page.wait_for_timeout(600)
 
-                            # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓) WITH NETWORK-AWARE AJAX SYNC
+                            # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓) - DUAL METHOD FROM COMMIT cb73c21
                             print(f"        -> Clicking green checkmark (✓)...")
                             
-                            try:
-                                # Listen for the AJAX reload response from MCMA server
-                                async with page.expect_response(
-                                    lambda r: ("listeRapportDefDet" in r.url or "createRapportDefDet" in r.url) and r.status == 200,
-                                    timeout=5000
-                                ):
-                                    # Direct JS click on 7th column of the active row
-                                    await page.evaluate("""() => {
-                                        const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
-                                        const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
-                                        if (row) {
-                                            const tds = row.querySelectorAll("td");
-                                            if (tds.length >= 7) {
-                                                const btn = tds[6].querySelector("a, button, i, span") || tds[6];
-                                                btn.click();
-                                            }
-                                        }
-                                    }""")
-                            except Exception:
-                                # Fallback if timeout: click directly and wait briefly
-                                await page.evaluate("""() => {
-                                    const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
-                                    const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
-                                    if (row) {
-                                        const tds = row.querySelectorAll("td");
-                                        if (tds.length >= 7) {
-                                            const btn = tds[6].querySelector("a, button, i, span") || tds[6];
-                                            btn.click();
-                                        }
-                                    }
-                                }""")
-                                await page.wait_for_timeout(1500)
+                            # Method A: Playwright locator on the 7th column of the row containing #MontantHT
+                            col7_loc = page.locator("table tr:has(#MontantHT) td:nth-child(7) a, table tr:has(#MontantHT) td:nth-child(7), table tbody tr:first-child td:nth-child(7) a, table tbody tr:first-child td:nth-child(7)").first
+                            if await col7_loc.count() > 0:
+                                try:
+                                    await col7_loc.click(timeout=2000, force=True)
+                                except Exception:
+                                    pass
 
-                            await page.wait_for_timeout(600)
+                            # Method B: Direct JS click on column 7
+                            await page.evaluate("""() => {
+                                const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
+                                const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
+                                if (row) {
+                                    const tds = row.querySelectorAll("td");
+                                    if (tds.length >= 7) {
+                                        const btn = tds[6].querySelector("a, button, i, span") || tds[6];
+                                        btn.click();
+                                        return true;
+                                    }
+                                }
+                                return false;
+                            }""")
+
+                            # Step 4: Wait for the row to lock in and the table AJAX reload to finish
+                            await page.wait_for_timeout(2000)
                             print(f"    [✓] Rubrique [{rub_id}] locked in with checkmark (✓).")
-                            
+
                         print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
 
                         # Re-trigger calculations so all dependent fields update with the rubriques
@@ -605,6 +573,7 @@ async def process_workflow(data: dict):
 
                     except Exception as rub_err:
                         print(f"    [!] Rubriques note: {rub_err}")
+
 
 
 
