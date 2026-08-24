@@ -277,8 +277,19 @@ async def process_workflow(data: dict):
             print(f"[*] Navigating to MCMA search/missions page...")
             await page.goto("https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/FrontExpert/")
             await page.wait_for_load_state("domcontentloaded")
+            await page.wait_for_timeout(1000)
 
-            # --- STEP 2: SEARCH USING IMMATRICULATION NUMBER ---
+            # Check if session is expired or broken (e.g. redirected to login or PHP expert_.phtml view error)
+            page_content = await page.content()
+            if "expert_.phtml" in page_content or "login" in page.url.lower() or await page.locator("input[name='login'], #login, #password").count() > 0:
+                print("\n" + "="*70)
+                print("  ⚠️  MCMA SESSION HAS EXPIRED OR IS INVALID!")
+                print("  🔑  Your login session in 'mcma_auth_state.json' needs to be refreshed.")
+                print("  👉  Please run:  python auth_setup.py")
+                print("  👉  Complete the Login + OTP once to save a fresh session.")
+                print("="*70 + "\n")
+                raise Exception("MCMA session expired. Please run 'python auth_setup.py' to log in and renew your session.")
+
             raw_matricule = data.get("matricule", "")
             dossier_ref = data.get("dossier_reference", "")
             
