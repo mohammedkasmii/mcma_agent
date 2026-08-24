@@ -393,9 +393,17 @@ async def process_workflow(data: dict):
             mode_reparation = data.get("mode_reparation", "normal")
             rubriques = data.get("rubriques", [])
             
-            # Check DOM to confirm if #DevisDetTableVal is present
-            has_garage_table = await page.locator("#DevisDetTableVal").count() > 0
-            if has_garage_table or mode_reparation == "conventionne":
+            # Detect Garage Conventionné only if explicitly tagged OR if #DevisDetTableVal is visibly displayed
+            is_garage_pec = (mode_reparation == "conventionne")
+            if not is_garage_pec:
+                try:
+                    table_val = page.locator("#DevisDetTableVal").first
+                    if await table_val.count() > 0 and await table_val.is_visible():
+                        is_garage_pec = True
+                except Exception:
+                    is_garage_pec = False
+
+            if is_garage_pec:
                 print(f"[*] Mode Garage Conventionné Detected. Updating 'Devis Validé' table (#DevisDetTableVal)...")
                 
                 if rubriques:
@@ -508,11 +516,12 @@ async def process_workflow(data: dict):
 
             else:
                 # -------------------------------------------------------------
-                # MODE NORMAL LOGIC
+                # MODE NORMAL LOGIC (Proven, rock-solid [Ajouter +] loop)
                 # -------------------------------------------------------------
                 if rubriques:
-                    print(f"[*] Mode Normal Detected. Adding {len(rubriques)} line item(s) via [Ajouter +]...")
+                    print(f"[*] Adding {len(rubriques)} line item(s) (rubriques)...")
                     try:
+                        # Ensure Véhicule Réparable (#VehRepareI) is checked to display the rubriques table
                         repare_box = page.locator("#VehRepareI").first
                         if await repare_box.count() > 0:
                             if not await repare_box.is_checked():
@@ -527,6 +536,7 @@ async def process_workflow(data: dict):
 
                             print(f"    [{idx}/{len(rubriques)}] [Ajouter +] -> [Id={rub_id}] {label} (HT: {montant_ht} DH, TVA: {taxe} DH)...")
                             
+                            # Step 1: Click the green 'Ajouter +' button
                             ajouter_btn = page.locator("a.btn-success:has-text('Ajouter'), a:has-text('Ajouter +'), a[onclick*='addRow']").first
                             if await ajouter_btn.count() > 0:
                                 try:
@@ -537,37 +547,40 @@ async def process_workflow(data: dict):
                             else:
                                 await page.evaluate("if (typeof edataTable_RapportDet !== 'undefined') edataTable_RapportDet.addRow();")
 
+                            # Wait for the editable row inputs to appear
                             await page.wait_for_timeout(1000)
                             
+                            # Step 2: Fill IdRubrique, MontantHT, and Taxe using safe helpers
                             await safe_select_option(page, "#IdRubrique, table select[name*='IdRubrique'], select[name*='IdRubrique']", rub_id)
                             await safe_fill_input(page, "#MontantHT, table input[name*='MontantHT'], input[name*='MontantHT']", montant_ht)
                             if taxe and taxe != "0":
                                 await safe_fill_input(page, "#Taxe, table input[name*='Taxe'], input[name*='Taxe']", taxe)
                             
                             await page.wait_for_timeout(600)
+
+                            # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓) WITH NETWORK-AWARE AJAX SYNC
                             print(f"        -> Clicking green checkmark (✓)...")
                             
                             try:
+                                # Listen for the AJAX reload response from MCMA server
                                 async with page.expect_response(
                                     lambda r: ("listeRapportDefDet" in r.url or "createRapportDefDet" in r.url) and r.status == 200,
-                                    timeout=7000
+                                    timeout=5000
                                 ):
+                                    # Direct JS click on 7th column of the active row
                                     await page.evaluate("""() => {
                                         const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
                                         const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
                                         if (row) {
-                                            const saveBtn = row.querySelector("a.btn-success, i.fa-check, a[onclick*='saveRapport']");
-                                            if (saveBtn) { saveBtn.click(); } 
-                                            else {
-                                                const tds = row.querySelectorAll("td");
-                                                if (tds.length >= 7) {
-                                                    const btn = tds[6].querySelector("a, button, i, span") || tds[6];
-                                                    btn.click();
-                                                }
+                                            const tds = row.querySelectorAll("td");
+                                            if (tds.length >= 7) {
+                                                const btn = tds[6].querySelector("a, button, i, span") || tds[6];
+                                                btn.click();
                                             }
                                         }
                                     }""")
                             except Exception:
+                                # Fallback if timeout: click directly and wait briefly
                                 await page.evaluate("""() => {
                                     const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
                                     const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
@@ -585,10 +598,14 @@ async def process_workflow(data: dict):
                             print(f"    [✓] Rubrique [{rub_id}] locked in with checkmark (✓).")
                             
                         print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
+
+                        # Re-trigger calculations so all dependent fields update with the rubriques
+                        print(f"[*] Updating automatic calculation fields (Montant Arrêté, Base Indemnité, etc.)...")
                         await trigger_mcma_calculations(page)
 
                     except Exception as rub_err:
                         print(f"    [!] Rubriques note: {rub_err}")
+
 
 
             # --- POST-FILL AUDIT CHECKLIST ---
