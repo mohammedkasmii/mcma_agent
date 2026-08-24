@@ -286,53 +286,63 @@ async def process_workflow(data: dict):
             search_matricule_num = extract_search_matricule(raw_matricule)
             search_query = search_matricule_num or raw_matricule or dossier_ref
             
-            if not search_query:
-                raise Exception("No Immatriculation (matricule) or Dossier Reference provided to search!")
-
             print(f"[*] Searching for mission in MCMA by Matricule number: '{search_query}' (full plate: '{raw_matricule}')...")
             
-            # Reset / fill search inputs
-            if await page.locator("#Matricule").count() > 0 and search_query:
-                await safe_fill_input(page, "#Matricule", str(search_query).strip())
-                print(f"    [✓] Filled search input #Matricule = '{search_query}'")
-            elif await page.locator("#ReferenceCie").count() > 0 and dossier_ref:
-                await safe_fill_input(page, "#ReferenceCie", str(dossier_ref).strip())
-                print(f"    [✓] Filled search input #ReferenceCie = '{dossier_ref}'")
-
-            # Trigger the search action
-            search_btn = page.locator("a[onclick*='RechercheMission'], a:has-text('Rechercher'), button:has-text('Rechercher')").first
-            if await search_btn.count() > 0:
-                await search_btn.click()
-            else:
-                await page.keyboard.press("Enter")
+            async def perform_search(mat_val: str = "", ref_val: str = ""):
+                if await page.locator("#Matricule").count() > 0:
+                    await safe_fill_input(page, "#Matricule", str(mat_val).strip() if mat_val else "")
+                if await page.locator("#ReferenceCie").count() > 0:
+                    await safe_fill_input(page, "#ReferenceCie", str(ref_val).strip() if ref_val else "")
                 
-            # Wait for search AJAX to complete and table to refresh
-            await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(2000)
+                search_btn = page.locator("a[onclick*='rechercheMission'], a[onclick*='RechercheMission'], a:has-text('Rechercher'), button:has-text('Rechercher')").first
+                if await search_btn.count() > 0:
+                    await search_btn.click()
+                else:
+                    await page.keyboard.press("Enter")
+                await page.wait_for_load_state("networkidle")
+                await page.wait_for_timeout(1500)
+
+            # Try 1: Search by matricule number
+            if search_matricule_num:
+                await perform_search(mat_val=search_matricule_num)
 
             # --- STEP 3: SELECT THE MATCHING DOSSIER FROM #listeSinistre TABLE ---
             print(f"[*] Locating mission in results table (#listeSinistre)...")
             
-            rows = page.locator("#listeSinistre tbody tr")
-            row_count = await rows.count()
-            target_link = None
-
-            if row_count > 0:
-                for i in range(row_count):
+            async def find_mission_link():
+                rows = page.locator("#listeSinistre tbody tr")
+                count = await rows.count()
+                if count == 0:
+                    return None
+                for i in range(count):
                     row = rows.nth(i)
                     row_text = await row.inner_text()
-                    
                     if "aucun" in row_text.lower() or "no data" in row_text.lower() or "no matching" in row_text.lower():
-                        break
-                        
-                    link = row.locator("a[href*='gotoMission'], a[title*='Mission expertise'], div.text-blue a").first
+                        continue
+                    link = row.locator("a[href*='gotoMission'], a[title*='Mission expertise'], div.text-blue a, a.btn-primary").first
                     if await link.count() > 0 and await link.is_visible():
-                        if search_matricule_num in row_text or raw_matricule in row_text:
-                            target_link = link
-                            print(f"    [✓] Found matching row for plate '{raw_matricule}': {row_text.splitlines()[0] if row_text else ''}")
-                            break
-                        elif target_link is None:
-                            target_link = link
+                        if search_matricule_num and search_matricule_num in row_text:
+                            return link
+                        if raw_matricule and raw_matricule in row_text:
+                            return link
+                        if dossier_ref and dossier_ref in row_text:
+                            return link
+                        return link
+                return None
+
+            target_link = await find_mission_link()
+
+            # Try 2: Fallback to searching by ReferenceCie if matricule search returned nothing
+            if not target_link and dossier_ref:
+                print(f"    [i] Matricule not found. Retrying search by Dossier Reference: '{dossier_ref}'...")
+                await perform_search(ref_val=dossier_ref)
+                target_link = await find_mission_link()
+
+            # Try 3: Reset filter to view all missions in account
+            if not target_link:
+                print(f"    [i] Trying to show all assigned missions (clearing search filters)...")
+                await perform_search(mat_val="", ref_val="")
+                target_link = await find_mission_link()
 
             if target_link and await target_link.is_visible():
                 mission_text = await target_link.inner_text()
@@ -346,11 +356,17 @@ async def process_workflow(data: dict):
                 if await page.locator("#listeSinistre tbody").count() > 0:
                     table_text = await page.locator("#listeSinistre tbody").inner_text()
                 
-                raise Exception(
-                    f"Vehicle with Matricule '{raw_matricule}' (searched '{search_query}') NOT FOUND in MCMA.\n"
-                    f"Table result: {table_text.strip() or 'No matching records'}\n"
-                    f"Please verify that this matricule has an assigned mission in your account."
-                )
+                print(f"\n    ⚠️  No mission auto-matched for Matricule '{raw_matricule}' / Ref '{dossier_ref}'.")
+                print(f"    📋 Current Table Content: {table_text.strip() or 'Empty table'}")
+                print(f"    ⏸️  Browser is paused on the MCMA dashboard so you can select the mission manually.")
+                print(f"    👉  Click the desired mission in the browser, then click 'Resume' in Playwright inspector.\n")
+                
+                await page.pause()
+                
+                # Check if user clicked into a mission during pause
+                if await page.locator("#MontantReparation, #VehRepareI, #DevisDetTableVal").count() == 0:
+                    raise Exception(f"No mission opened. Please navigate to a mission to proceed.")
+
 
             # --- STEP 4: FILL MAIN FORM TEXT FIELDS ---
             print(f"[*] Filling main form text fields...")

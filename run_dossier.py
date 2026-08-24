@@ -28,10 +28,14 @@ INPUT_DOSSIER_DIR = "input_dossier"
 INPUT_DOCS_DIR = "input_documents"
 
 def find_default_json() -> str:
-    """Finds the first .json or .md dossier file in input_dossier/."""
+    """Finds the default dossier file in input_dossier/ (prioritizes dossier.json)."""
+    default_dossier = os.path.join(INPUT_DOSSIER_DIR, "dossier.json")
+    if os.path.exists(default_dossier):
+        return default_dossier
     candidates = glob.glob(os.path.join(INPUT_DOSSIER_DIR, "*.json")) + \
                  glob.glob(os.path.join(INPUT_DOSSIER_DIR, "*.md"))
     return candidates[0] if candidates else ""
+
 
 def find_documents_in_folder() -> list:
     """
