@@ -275,9 +275,10 @@ async def process_workflow(data: dict):
         try:
             # --- STEP 1: GO TO SEARCH PAGE ---
             print(f"[*] Navigating to MCMA search/missions page...")
-            await page.goto("https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/FrontExpert/")
+            await page.goto("https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/gestionExpert/index")
             await page.wait_for_load_state("domcontentloaded")
             await page.wait_for_timeout(1000)
+
 
             # Check if session is expired or broken (e.g. redirected to login or PHP expert_.phtml view error)
             page_content = await page.content()
