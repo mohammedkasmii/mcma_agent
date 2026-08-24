@@ -29,7 +29,7 @@ echo [*] Step 1/3: Upgrading pip...
 python -m pip install --upgrade pip --quiet
 
 :: 3. Install Python dependencies from requirements.txt
-echo [*] Step 2/3: Installing Python packages (FastAPI, Playwright, PyMuPDF, httpx, etc.)...
+echo [*] Step 2/3: Installing Python packages (FastAPI, Playwright, Requests)...
 python -m pip install -r requirements.txt
 if %errorlevel% neq 0 (
     color 0C
@@ -59,8 +59,10 @@ echo ================================================================
 echo.
 echo Next steps:
 echo   1. Run 'python auth_setup.py' once to log in and save your session.
-echo   2. Drop your dossier.json into 'input_dossier\'
-echo   3. Drop your 3 PDFs into 'input_documents\'
-echo   4. Run 'python run_dossier.py' to automate!
+echo   2. Put the dossier JSON into 'input_dossier\'
+echo   3. Run 'python run_dossier.py --json input_dossier\your-dossier.json --plan-only'
+echo   4. Follow README.md for preview and draft-rubrique modes.
+echo.
+echo GED and final MCMA validation operations are disabled in this build.
 echo.
 pause
