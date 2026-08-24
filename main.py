@@ -107,7 +107,9 @@ async def trigger_mcma_calculations(page):
             const calcSelectors = [
                 '#ValeurVenale', '#MontantEpave', '#MontantReparation', 
                 '#MontantTVA', '#MontantVetusteTotal', '#MontantFranchise', 
-                '#MontantRemise', '#MontantArrete', '#BaseIndemnite', '#MontantDommage'
+                '#MontantRemise', '#MontantArrete', '#BaseIndemnite', '#MontantDommage',
+                '#PartResponsabilite', '#TvaRecupI', '#MontantChargeMutuelle', '#MontantChargeSocietaire',
+                '#DevisMontantChargeMutuelle', '#DevisMontantChargeSocietaire'
             ];
             calcSelectors.forEach(sel => {
                 const el = document.querySelector(sel);
@@ -125,6 +127,7 @@ async def trigger_mcma_calculations(page):
                     }
                 }
             });
+
 
             return {
                 montantArrete: document.querySelector('#MontantArrete')?.value || null,
