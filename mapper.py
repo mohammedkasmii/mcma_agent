@@ -2,563 +2,725 @@
 mapper.py — WexiaToDossierMapper
 =================================
 Translates a full Wexia dossier JSON (format: wexia.dossier.full, schema_version 2.0)
-into the flat MCMA-ready payload consumed by process_workflow() in main.py.
+into the deterministic, validated MCMA payload contract.
 
-Usage (standalone test):
-    python mapper.py path/to/dossier.json
+Usage:
+    from mapper import WexiaToDossierMapper
+    mapper = WexiaToDossierMapper()
+    payload = mapper.map(wexia_data)
 """
 
 import os
-import uuid
+import re
 import json
-import httpx
-from typing import Optional
+import unicodedata
+from decimal import Decimal, ROUND_HALF_UP
+from typing import Optional, Dict, Any, List, Tuple
 
 
 # ---------------------------------------------------------------------------
-# Configurable mappings — edit these to match your MCMA rubrique catalog
+# Complete MCMA Rubrique Catalog
 # ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Real MCMA IdRubrique values (confirmed from live HTML — formGED form)
-# ---------------------------------------------------------------------------
-# Maps Wexia operation_type (from lignes_mo) -> MCMA IdRubrique
-LABOR_RUBRIQUE_MAP: dict = {
-    "tolerie":       "7",    # MAIN D'OEUVRE CARROSSERIE
-    "carrosserie":   "7",    # MAIN D'OEUVRE CARROSSERIE (alias)
-    "mecanique":     "8",    # MAIN D'OEUVRE MECANIQUE
-    "peinture":      "12",   # MAIN D'OEUVRE PEINTURE
-    "electricite":   "28",   # MAIN D'OEUVRE ELECTRIQUE
-    "ingredients":   "16",   # PEINTURES ET INGREDIENTS
-    "marbre":        "17",   # PASSAGE AU MARBRE
+RUBRIQUE_CATALOG: Dict[str, str] = {
+    "1":  "FOURNITURES CARROSSERIE (ORIGINES)",
+    "2":  "FOURNITURES CARROSSERIE (ADAPTABLES)",
+    "3":  "TOTAL PIECES OCCASIONS / RECUPERABLES",
+    "4":  "FOURNITURES MECANIQUE (ORIGINES)",
+    "5":  "FOURNITURES MECANIQUE (ADAPTABLES)",
+    "6":  "FOURNITURES MECANIQUE (RECUPERABLES)",
+    "7":  "MAIN D'OEUVRE CARROSSERIE",
+    "8":  "MAIN D'OEUVRE MECANIQUE",
+    "9":  "MONTANT TOTAL",
+    "10": "PEINTURE (ORIGINES)",
+    "11": "PEINTURE (ADAPTABLES)",
+    "12": "MAIN D'OEUVRE PEINTURE",
+    "13": "ELECTRIQUE (D'ORIGINE)",
+    "14": "ELECTRIQUE (ADAPTABLES)",
+    "15": "ELECTRIQUE (RECUPERABLES)",
+    "16": "PEINTURES ET INGREDIENTS",
+    "17": "PASSAGE AU MARBRE",
+    "18": "PARALLELISME ET EQUILIBRAGE",
+    "19": "REPARATION VITRE",
+    "20": "REMPLACEMENT VITRE",
+    "21": "REPARATION PARE-BRISE",
+    "22": "REMPLACEMENT PARE-BRISE",
+    "23": "REPARATION LUNETTE ARRIERE",
+    "24": "REMPLACEMENT LUNETTE ARRIERE",
+    "25": "COLLE",
+    "26": "KIT COLLE PARE-BRISE ET LUNETTE ARRIERE",
+    "27": "KIT COLLE VITRE",
+    "28": "MAIN D'OEUVRE ELECTRIQUE",
 }
 
-# Full MCMA IdRubrique catalog:
-#  1=FOURNITURES CARROSSERIE (ORIGINES)      2=CARROSSERIE (ADAPTABLES)   3=CARROSSERIE (RECUPERABLES)
-#  4=FOURNITURES MECANIQUE (ORIGINES)        5=MECANIQUE (ADAPTABLES)     6=MECANIQUE (RECUPERABLES)
-#  7=MO CARROSSERIE  8=MO MECANIQUE  9=MONTANT TOTAL  10=PEINTURE (ORIGINES)
-# 11=PEINTURE (ADAPTABLES)  12=MO PEINTURE  13=ELECTRIQUE (D'ORIGINE)  14=ELECTRIQUE (ADAPTABLES)
-# 15=ELECTRIQUE (RECUPERABLES)  16=PEINTURES ET INGREDIENTS  17=PASSAGE AU MARBRE
-# 18=PARALLELISME ET EQUILIBRAGE  19=REP VITRE  20=REMPL VITRE  21=REP PARE-BRISE
-# 22=REMPL PARE-BRISE  23=REP LUNETTE ARRIERE  24=REMPL LUNETTE ARRIERE
-# 25=COLLE  26=KIT COLLE PB ET LA  27=KIT COLLE VITRE  28=MO ELECTRIQUE
+# Part origin aliases
+PART_ORIGIN_ORIGINAL = {"original", "origine", "oem", "neuf", "neuve", "new"}
+PART_ORIGIN_ADAPTABLE = {"adaptable", "equivalent", "aftermarket"}
+PART_ORIGIN_RECOVERED = {"recuperation", "recuperable", "occasion", "used"}
 
-# Maps Wexia part_type (from lignes_pieces) -> MCMA rubrique ID for spare parts
-PIECE_TYPE_RUBRIQUE_MAP: dict = {
-    "origine":       "1",    # FOURNITURES CARROSSERIE (ORIGINES)
-    "adaptable":     "2",    # CARROSSERIE (ADAPTABLES)
-    "recuperation":  "3",    # CARROSSERIE (RECUPERABLES)
-}
-DEFAULT_PIECE_RUBRIQUE_ID = "1"   # fallback if part_type not recognized
-
-# ---------------------------------------------------------------------------
-# Real MCMA IdNatureDocument values (confirmed from live HTML — GED dropdown)
-# ---------------------------------------------------------------------------
-DOCUMENT_NATURE_MAP: dict = {
-    # Expertise reports
-    "rapport_preliminaire":        "40",   # RAPPORT D'EXPERTISE PRELIMINAIRE DE REFORME
-    "rapport_final":               "41",   # RAPPORT D'EXPERTISE DEFINITIF DE REFORME
-    "rapport_expertise":           "39",   # RAPPORT D'EXPERTISE DE REPARATION
-    "rapport_appreciation":        "60",   # RAPPORT D'APPRECIATION
-    "rapport_valeur_venale":       "61",   # RAPPORT D'ESTIMATION DE LA VALEUR VENALE
-    # Photos
-    "photo_damage":                "62",   # PHOTOS DE L'ACCIDENT
-    "photo_avant_reparation":      "63",   # PHOTOS AVANT LA REPARATION  ← most common
-    "photo_apres_reparation":      "64",   # PHOTOS APRES REPARATION
-    # Devis / factures
-    "devis":                       "56",   # DEVIS DE REPARATION GARAGE
-    "devis_valide":                "57",   # DEVIS DE REPARATION VALIDE PAR L'EXPERT
-    "devis_client":                "37",   # DEVIS DE REPARATION CLIENT
-    "facture":                     "23",   # FACTURE DE REPARATION GARAGE
-    "facture_client":              "24",   # FACTURE DE REPARATION CLIENT
-    # Vehicle docs
-    "carte_grise":                 "6",    # LA CARTE GRISE
-    "carte_verte":                 "11",   # LA CARTE VERTE
-    "constat":                     "22",   # CONSTAT AMIABLE
-    "attestation_assurance":       "7",    # ATTESTATION D'ASSURANCE
-    "permis":                      "10",   # PERMIS DE CONDUIRE
-    "visite_technique":            "12",   # VISITE TECHNIQUE
-    # Other
-    "autre":                       "74",   # AUTRE
+# System families to MCMA rubrique ID mapping: (system, origin_type) -> rubrique_id
+SYSTEM_RUBRIQUE_MATRIX: Dict[Tuple[str, str], str] = {
+    ("carrosserie", "original"):    "1",
+    ("carrosserie", "adaptable"):   "2",
+    ("carrosserie", "recovered"):   "3",
+    ("mecanique",   "original"):    "4",
+    ("mecanique",   "adaptable"):   "5",
+    ("mecanique",   "recovered"):   "6",
+    ("peinture",    "original"):    "10",
+    ("peinture",    "adaptable"):   "11",
+    ("peinture",    "recovered"):   "16",
+    ("electrique",  "original"):    "13",
+    ("electrique",  "adaptable"):   "14",
+    ("electrique",  "recovered"):   "15",
 }
 
-# TVA rate applied to line items that have no explicit tax field
-DEFAULT_TVA_RATE = 0.20
+DEFAULT_TVA_RATE = Decimal("0.20")
+CENT = Decimal("0.01")
 
 
 # ---------------------------------------------------------------------------
-# Mapper class
+# Utility Functions
 # ---------------------------------------------------------------------------
+def normalize_text(text: Optional[str]) -> str:
+    """Normalizes text by removing accents, punctuation, and extra whitespace."""
+    if not text:
+        return ""
+    # Normalize unicode characters (remove accents)
+    nfkd = unicodedata.normalize('NFKD', str(text))
+    ascii_text = "".join([c for c in nfkd if not unicodedata.combining(c)])
+    # Convert to lowercase and strip special chars
+    cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", ascii_text).lower()
+    return " ".join(cleaned.split())
 
+def normalize_registration(reg: Optional[str]) -> str:
+    """Normalizes vehicle registration for strict equality checks."""
+    if not reg:
+        return ""
+    nfkd = unicodedata.normalize('NFKD', str(reg))
+    ascii_text = "".join([c for c in nfkd if not unicodedata.combining(c)])
+    return re.sub(r"[^a-zA-Z0-9]", "", ascii_text).upper()
+
+def extract_search_matricule_num(reg: Optional[str]) -> str:
+    """Extracts first numeric group from registration (e.g. '36165-B-50' -> '36165')."""
+    if not reg:
+        return ""
+    m = re.search(r"\d+", str(reg))
+    return m.group(0) if m else ""
+
+def to_decimal(val: Any) -> Decimal:
+    """Safely converts input value to Decimal."""
+    if val is None or val == "":
+        return Decimal("0.00")
+    try:
+        return Decimal(str(val))
+    except Exception:
+        return Decimal("0.00")
+
+def quantize_money(val: Decimal) -> Decimal:
+    """Rounds to 2 decimal places using standard ROUND_HALF_UP."""
+    return val.quantize(CENT, rounding=ROUND_HALF_UP)
+
+def format_money(val: Any) -> str:
+    """Formats Decimal value to 2 decimal string (e.g. '10749.99')."""
+    dec = to_decimal(val)
+    return f"{quantize_money(dec):.2f}"
+
+def format_date_dmy(date_str: Optional[str]) -> Optional[str]:
+    """Formats ISO date string (YYYY-MM-DD) into MCMA format DD/MM/YYYY."""
+    if not date_str or not isinstance(date_str, str):
+        return None
+    cleaned = date_str.split("T")[0].strip()
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})", cleaned)
+    if m:
+        year, month, day = m.groups()
+        return f"{int(day):02d}/{int(month):02d}/{year}"
+    # If already in DD/MM/YYYY or DD-MM-YYYY
+    m2 = re.match(r"^(\d{1,2})[/-](\d{1,2})[/-](\d{4})", cleaned)
+    if m2:
+        day, month, year = m2.groups()
+        return f"{int(day):02d}/{int(month):02d}/{year}"
+    return None
+
+def extract_year(date_str: Optional[str]) -> Optional[int]:
+    """Extracts 4-digit year from date string."""
+    if not date_str:
+        return None
+    m = re.search(r"\b(20\d{2}|19\d{2})\b", str(date_str))
+    return int(m.group(1)) if m else None
+
+
+# ---------------------------------------------------------------------------
+# WexiaToDossierMapper Class
+# ---------------------------------------------------------------------------
 class WexiaToDossierMapper:
     """
-    Maps a Wexia full-dossier JSON dict to the flat MCMA process_workflow payload.
-
-    Example
-    -------
-    mapper  = WexiaToDossierMapper()
-    payload = mapper.map(wexia_json)
-    # payload is ready to pass straight into process_workflow()
+    Deterministic, zero-LLM mapper translating Wexia full dossier JSON to MCMA payload contract.
     """
 
     def __init__(self, download_dir: str = "temp"):
+        # GED is disabled; download_dir kept for signature compatibility
         self.download_dir = download_dir
-        os.makedirs(download_dir, exist_ok=True)
 
-    # ------------------------------------------------------------------
-    # Public entry point
-    # ------------------------------------------------------------------
+    def map(self, wexia: dict, explicit_chiffrage_id: Optional[str] = None) -> dict:
+        """
+        Maps Wexia dossier JSON to the standard MCMA contract.
+        """
+        warnings: List[str] = []
+        mapping_status: str = "ready"
 
-    def map(self, wexia: dict) -> dict:
-        """
-        Returns the MCMA-ready flat payload.
-        Documents in the result carry a 'url' key.
-        Call download_documents() to resolve them to local 'path' keys.
-        """
-        dossier   = wexia.get("dossier",  {}) or {}
+        dossier   = wexia.get("dossier", {}) or {}
         vehicule  = wexia.get("vehicule", {}) or {}
         assureur  = wexia.get("assureur", {}) or {}
         obs       = wexia.get("observations_expert", {}) or {}
         missions  = wexia.get("missions", []) or []
-        chiffrage = self._get_active_chiffrage(wexia)
+        devis_list = wexia.get("devis", []) or []
 
-        # Detect Garage Conventionné (Prise en Charge) Mode vs Mode Normal
-        is_garage_conventionne = False
-        mission_type_str = str(dossier.get("mission_type", "")).lower()
-        incident_desc = str(dossier.get("incident_description", "")).lower()
-        repair_mode_str = str(dossier.get("repair_mode", "")).lower()
+        # -------------------------------------------------------------------
+        # 1. Authoritative Registration Mapping
+        # -------------------------------------------------------------------
+        authoritative_plate = (
+            vehicule.get("license_plate")
+            or dossier.get("license_plate")
+            or (assureur.get("attestation_extractions", [{}])[0].get("immatriculation") if assureur.get("attestation_extractions") else None)
+            or (vehicule.get("carte_grise_extractions", [{}])[0].get("immatriculation") if vehicule.get("carte_grise_extractions") else None)
+            or wexia.get("matricule")
+            or wexia.get("immatriculation", "")
+        )
+        matricule = str(authoritative_plate).strip()
+        search_matricule = extract_search_matricule_num(matricule)
 
-        if "normal" in mission_type_str or "normal" in incident_desc:
-            is_garage_conventionne = False
-        elif mission_type_str in ["conventionne", "garage_conventionne", "pec"] or "pec" in incident_desc or "convention" in incident_desc or "convention" in repair_mode_str:
-            is_garage_conventionne = True
-        elif missions and any(m.get("mission_type") in ["pec", "conventionne", "garage_conventionne"] for m in missions):
-            is_garage_conventionne = True
+        # Check for conflicts against registrations extracted from devis
+        norm_auth = normalize_registration(matricule)
+        for devis in devis_list:
+            ext_data = devis.get("extracted_data") or {}
+            devis_plate = ext_data.get("immatriculation") or devis.get("immatriculation")
+            if devis_plate:
+                norm_devis = normalize_registration(devis_plate)
+                if norm_devis and norm_devis != norm_auth:
+                    warnings.append(
+                        f"Devis registration {devis_plate} conflicts with authoritative registration {matricule}."
+                    )
+                    mapping_status = "needs_review"
 
+        # Reference Dossier
+        dossier_reference = (
+            assureur.get("reference_dossier")
+            or dossier.get("reference_number")
+            or dossier.get("claim_number")
+            or wexia.get("dossier_reference", "")
+        )
 
-        # Extract financial values for Devis Validation payload (Garage Conventionné)
-        devis_validation = {}
-        if chiffrage:
-            notes_raw = chiffrage.get("notes", "")
-            franchise, vetuste, remise = 0.0, 0.0, 0.0
-            if isinstance(notes_raw, str) and notes_raw.startswith("{"):
-                try:
-                    notes = json.loads(notes_raw)
-                    franchise = float(notes.get("franchise", 0) or 0)
-                    vetuste = float(notes.get("vetuste", 0) or 0)
-                    remise = float(notes.get("remise", 0) or 0)
-                except Exception:
-                    pass
-            
-            charge_soc = franchise + vetuste
-            total_cost = float(chiffrage.get("total_cost") or chiffrage.get("final_cost") or 0)
-            charge_mut = max(0.0, total_cost - charge_soc - remise)
+        # -------------------------------------------------------------------
+        # 2. Mission Mode Detection
+        # -------------------------------------------------------------------
+        if dossier.get("is_reform") is True:
+            raise ValueError("Reform dossiers are disabled for automation (is_reform=True).")
 
-            devis_validation = {
-                "MontantTVA": str(chiffrage.get("tax_amount", 0)),
-                "MontantVetuste": str(vetuste),
-                "MontantFranchise": str(franchise),
-                "MontantRemise": str(remise),
-                "MontantChargeSocietaire": str(charge_soc),
-                "MontantChargeMutuelle": str(charge_mut),
-            }
+        mode_reparation = self._detect_mission_mode(dossier, missions)
+
+        # -------------------------------------------------------------------
+        # 3. Chiffrage Selection
+        # -------------------------------------------------------------------
+        selected_chiffrage = self._select_chiffrage(wexia, explicit_chiffrage_id)
+        selected_chiffrage_id = selected_chiffrage.get("id", "")
+
+        # -------------------------------------------------------------------
+        # 4. Rubriques Aggregation & Financial Precision
+        # -------------------------------------------------------------------
+        rubriques = self._build_rubriques(selected_chiffrage)
+
+        # Check for 1-cent devis discrepancy warning
+        if devis_list:
+            ext_ttc = (devis_list[0].get("extracted_data") or {}).get("total_ttc") or devis_list[0].get("total_ttc")
+            if ext_ttc is not None and selected_chiffrage:
+                chif_ttc = to_decimal(selected_chiffrage.get("final_cost") or selected_chiffrage.get("total_cost"))
+                dev_ttc = to_decimal(ext_ttc)
+                diff = abs(dev_ttc - chif_ttc)
+                if CENT <= diff <= Decimal("0.05"):
+                    warnings.append(
+                        f"Devis extracted TTC {format_money(dev_ttc)} differs from approved chiffrage TTC {format_money(chif_ttc)} by {diff}."
+                    )
+
+        # -------------------------------------------------------------------
+        # 5. Main-Form Text Fields & Date Validation
+        # -------------------------------------------------------------------
+        text_fields, date_warnings, date_review = self._build_text_fields(
+            dossier, vehicule, selected_chiffrage, obs, wexia
+        )
+        warnings.extend(date_warnings)
+        if date_review:
+            mapping_status = "needs_review"
+
+        # Check estimated days
+        days = selected_chiffrage.get("estimated_days") if selected_chiffrage else dossier.get("estimated_days")
+        if days is None or int(days or 0) == 0:
+            warnings.append("estimated_days is zero and needs confirmation.")
+
+        # -------------------------------------------------------------------
+        # 6. Select Fields and Checkboxes
+        # -------------------------------------------------------------------
+        select_fields = self._build_select_fields(dossier, assureur)
+        checkboxes, cb_warnings, cb_review = self._build_checkboxes(dossier)
+        warnings.extend(cb_warnings)
+        if cb_review:
+            mapping_status = "needs_review"
 
         return {
-            # --- Search keys (used to locate the dossier in MCMA) ---
-            "dossier_reference": (
-                assureur.get("reference_dossier")
-                or dossier.get("reference_number")
-                or wexia.get("dossier_reference", "")
-            ),
-            "matricule": (
-                vehicule.get("license_plate")
-                or dossier.get("license_plate")
-                or (vehicule.get("carte_grise_extractions", [{}])[0].get("immatriculation") if vehicule.get("carte_grise_extractions") else None)
-                or (assureur.get("attestation_extractions", [{}])[0].get("immatriculation") if assureur.get("attestation_extractions") else None)
-                or wexia.get("matricule")
-                or wexia.get("immatriculation", "")
-            ),
-
-            # --- Mode and Devis Validation ---
-            "mode_reparation": "conventionne" if is_garage_conventionne else "normal",
-            "devis_validation": devis_validation,
-
-            # --- Main form text fields ---
-            "text_fields": self._build_text_fields(dossier, vehicule, chiffrage, obs, wexia),
-
-            # --- Dropdown / select fields ---
-            "select_fields": self._build_select_fields(dossier),
-
-            # --- Checkbox states ---
-            "checkboxes": self._build_checkboxes(dossier),
-
-            # --- Line items (rubriques) ---
-            "rubriques": self._build_rubriques(chiffrage),
-
-            # --- Documents (urls — resolved to paths after download) ---
-            "documents": self._build_documents(wexia),
+            "dossier_reference": str(dossier_reference),
+            "matricule": matricule,
+            "search_matricule": search_matricule,
+            "mode_reparation": mode_reparation,
+            "selected_chiffrage_id": selected_chiffrage_id,
+            "text_fields": text_fields,
+            "select_fields": select_fields,
+            "checkboxes": checkboxes,
+            "rubriques": rubriques,
+            "documents": [],  # GED remains disabled
+            "warnings": warnings,
+            "mapping_status": mapping_status,
         }
 
+    # -----------------------------------------------------------------------
+    # Internal: Mode Detection
+    # -----------------------------------------------------------------------
+    def _detect_mission_mode(self, dossier: dict, missions: list) -> str:
+        m_type = str(dossier.get("mission_type") or "").strip().lower()
+        r_mode = str(dossier.get("repair_mode") or "").strip().lower()
+        inc_desc = str(dossier.get("incident_description") or "").strip().lower()
 
-    # ------------------------------------------------------------------
-    # Internal builders
-    # ------------------------------------------------------------------
+        is_explicit_normal = any("normal" in s for s in (m_type, r_mode, inc_desc))
+        is_explicit_conv = any(
+            any(k in s for k in ("conventionne", "garage_conventionne", "garage conventionne", "pec"))
+            for s in (m_type, r_mode, inc_desc)
+        )
 
-    def _get_active_chiffrage(self, wexia: dict) -> dict:
-        """
-        Returns the best chiffrage for MCMA filling.
-        Priority: approved chiffrage with the most line items (lignes_pieces + lignes_mo).
-        Falls back to is_final, then first approved, then first overall.
-        """
+        if is_explicit_normal and is_explicit_conv:
+            raise ValueError(f"Ambiguity error: dossier has conflicting explicit mode fields ({m_type}, {r_mode}, {inc_desc}).")
+
+        if is_explicit_normal:
+            return "normal"
+        if is_explicit_conv:
+            return "conventionne"
+
+        # Fallback to missions list
+        if missions:
+            for m in missions:
+                mt = str(m.get("mission_type") or "").lower()
+                if "normal" in mt:
+                    return "normal"
+                if any(k in mt for k in ("conventionne", "pec", "garage_conventionne")):
+                    return "conventionne"
+
+        return "normal"
+
+    # -----------------------------------------------------------------------
+    # Internal: Chiffrage Selection
+    # -----------------------------------------------------------------------
+    def _select_chiffrage(self, wexia: dict, explicit_id: Optional[str] = None) -> dict:
         chiffrages = wexia.get("chiffrages") or []
         if not chiffrages:
             return {}
 
-        def _score(c):
-            items = len(c.get("lignes_pieces", [])) + len(c.get("lignes_mo", []))
-            is_approved = 1 if c.get("status") == "approved" else 0
-            is_final = 1 if c.get("is_final") else 0
-            cost = float(c.get("total_cost", 0) or 0)
-            # Primary: most line items, then approved, then highest cost, then is_final
-            return (items, is_approved, cost, is_final)
+        # 1. Explicit ID
+        if explicit_id:
+            for c in chiffrages:
+                if str(c.get("id")) == str(explicit_id):
+                    return c
+            raise ValueError(f"Explicit chiffrage ID '{explicit_id}' not found in dossier chiffrages.")
 
-        return max(chiffrages, key=_score)
+        # Filter out fee notes and non-repair chiffrages
+        repair_chifs = []
+        for c in chiffrages:
+            scenario = str(c.get("scenario_type") or "").lower()
+            if "honoraire" in scenario or "fee" in scenario:
+                continue
+            has_lines = bool(c.get("lignes_pieces") or c.get("lignes_mo"))
+            if not has_lines:
+                continue
+            repair_chifs.append(c)
 
+        if not repair_chifs:
+            return {}
+
+        # Priority 2: Approved detailed repair chiffrage
+        approved = [c for c in repair_chifs if str(c.get("status")).lower() == "approved"]
+        if approved:
+            # If multiple approved, prefer is_final == True
+            final_approved = [c for c in approved if c.get("is_final")]
+            candidates = final_approved if final_approved else approved
+            
+            # Check for multiple equally valid with different totals
+            distinct_totals = {to_decimal(c.get("total_cost") or c.get("final_cost")) for c in candidates}
+            if len(distinct_totals) > 1:
+                raise ValueError("Multiple approved chiffrages with different totals found. Explicit selection required.")
+            return candidates[0]
+
+        # Priority 4: Other detailed repair chiffrages (only when no approved chiffrage exists)
+        return repair_chifs[0]
+
+    # -----------------------------------------------------------------------
+    # Internal: Text Fields & Date Validation
+    # -----------------------------------------------------------------------
     def _build_text_fields(
-        self,
-        dossier: dict,
-        vehicule: dict,
-        chiffrage: dict,
-        obs: dict,
-        wexia: dict,
-    ) -> dict:
-        fields: dict = {}
+        self, dossier: dict, vehicule: dict, chiffrage: dict, obs: dict, wexia: dict
+    ) -> Tuple[Dict[str, str], List[str], bool]:
+        fields: Dict[str, str] = {}
+        warnings: List[str] = []
+        needs_review = False
 
-        # Kilometrage
-        km = vehicule.get("mileage_km") or dossier.get("mileage_km")
-        if km is not None:
-            fields["Kilometrage"] = str(int(km))
-
-        # Valeur venale (market value)
-        vv = vehicule.get("market_value") or dossier.get("market_value")
-        if vv is not None:
-            fields["ValeurVenale"] = str(int(vv))
-            fields["ValeurVenaleEstime"] = str(int(vv))  # Fill both variants
-
-        # Financial amounts from the active chiffrage
-        if chiffrage:
-            ht   = chiffrage.get("total_cost")
-            tva  = chiffrage.get("tax_amount")
-            ttc  = chiffrage.get("final_cost") or chiffrage.get("indemnification_amount")
-            days = chiffrage.get("estimated_days")
-            sv   = chiffrage.get("salvage_value") or vehicule.get("salvage_value") or dossier.get("salvage_value")
-
-            if ht   is not None: fields["MontantReparation"]      = str(int(ht))
-            if tva  is not None: fields["MontantTVA"]             = str(int(tva))
-            if ttc  is not None: fields["MontantTTC"]             = str(int(ttc))
-            if days is not None: fields["NbreJourImmobilisation"]  = str(int(days))
-            if sv   is not None:
-                fields["MontantEpave"]  = str(int(sv))
-                fields["ValeurEpave"]   = str(int(sv))
-
-            # Parse chiffrage notes for vetuste, franchise, remise
-            notes_raw = chiffrage.get("notes", "")
-            if notes_raw:
-                try:
-                    notes = json.loads(notes_raw)
-                    vetuste   = notes.get("vetuste", 0)
-                    franchise = notes.get("franchise", 0)
-                    remise    = notes.get("remise", 0)
-                    if vetuste:   fields["MontantVetusteTotal"]  = str(int(vetuste))
-                    if franchise: fields["MontantFranchise"]     = str(int(franchise))
-                    if remise:    fields["MontantRemise"]        = str(int(remise))
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-        # Date devis (from first devis extracted_data)
-        devis_list = wexia.get("devis") or []
-        if devis_list:
-            date_devis = (devis_list[0].get("extracted_data") or {}).get("date_devis")
-            if date_devis:
-                fields["DateDevis"] = str(date_devis)
-
-        # Reference Dossier (e.g. MCM14-08-26.WEX002)
-        ref_num = dossier.get("reference_number") or dossier.get("claim_number") or dossier.get("num_dossier")
+        # ReferenceDossier
+        ref_num = dossier.get("reference_number") or dossier.get("claim_number")
         if ref_num:
             fields["ReferenceDossier"] = str(ref_num)
 
-        # Expert observations (free text)
-        obs_text = obs.get("texte") or dossier.get("expert_observations", "")
+        # DateMECVeh (DD/MM/YYYY)
+        first_reg = vehicule.get("first_registration_date") or dossier.get("first_registration_date")
+        if first_reg:
+            d_mec = format_date_dmy(first_reg)
+            if d_mec:
+                fields["DateMECVeh"] = d_mec
+
+        # Kilometrage (only when non-null)
+        km = vehicule.get("mileage_km") if vehicule.get("mileage_km") is not None else dossier.get("mileage_km")
+        if km is not None:
+            fields["Kilometrage"] = str(int(km))
+
+        # NbreJourImmobilisation (only when > 0)
+        days = chiffrage.get("estimated_days") if chiffrage else dossier.get("estimated_days")
+        if days is not None and int(days or 0) > 0:
+            fields["NbreJourImmobilisation"] = str(int(days))
+
+        # ValeurVenale & ValeurVenaleEstime
+        vv = vehicule.get("market_value") if vehicule.get("market_value") is not None else dossier.get("market_value")
+        if vv is not None:
+            fields["ValeurVenale"] = str(int(vv))
+            fields["ValeurVenaleEstime"] = str(int(vv))
+
+        # MontantEpave
+        sv = (
+            (chiffrage.get("salvage_value") if chiffrage else None)
+            or vehicule.get("salvage_value")
+            or dossier.get("salvage_value")
+        )
+        if sv is not None:
+            fields["MontantEpave"] = str(int(sv))
+
+        # MontantReparation (TTC) & MontantTVA
+        if chiffrage:
+            ttc = chiffrage.get("final_cost") or chiffrage.get("indemnification_amount") or chiffrage.get("total_cost")
+            tva = chiffrage.get("tax_amount")
+            if ttc is not None:
+                fields["MontantReparation"] = format_money(ttc)
+            if tva is not None:
+                fields["MontantTVA"] = format_money(tva)
+
+        # DateDevis & Chronological Date Conflict Check
+        devis_list = wexia.get("devis") or []
+        date_devis_raw = None
+        if devis_list:
+            date_devis_raw = (devis_list[0].get("extracted_data") or {}).get("date_devis") or devis_list[0].get("date_devis")
+
+        devis_year = extract_year(date_devis_raw)
+        incident_year = extract_year(dossier.get("incident_date"))
+        first_reg_year = extract_year(first_reg)
+        ins_start_year = extract_year(dossier.get("insurance_start_date"))
+
+        has_date_conflict = False
+        if devis_year and (first_reg_year or ins_start_year):
+            cmp_year = first_reg_year or ins_start_year
+            if devis_year < (cmp_year - 1) or (incident_year and incident_year < (cmp_year - 1)):
+                has_date_conflict = True
+                warnings.append(
+                    f"Quote/incident dates in {devis_year or incident_year} conflict with first-registration and insurance dates in {cmp_year}."
+                )
+                needs_review = True
+
+        if date_devis_raw and not has_date_conflict:
+            d_devis = format_date_dmy(date_devis_raw)
+            if d_devis:
+                fields["DateDevis"] = d_devis
+
+        # ObservationMission
+        obs_text = obs.get("texte") or dossier.get("expert_observations")
         if obs_text:
-            fields["ObservationMission"] = obs_text
+            fields["ObservationMission"] = str(obs_text)
 
-        # Expertise city
-        city = dossier.get("expertise_city", "")
-        if city:
-            fields["LieuExpertise"] = city
+        return fields, warnings, needs_review
 
-        return fields
-
-    def _build_select_fields(self, dossier: dict) -> dict:
-        fields: dict = {}
-
-        # Taux de responsabilite (e.g. "100", "50")
-        rate = dossier.get("responsibility_rate")
+    # -----------------------------------------------------------------------
+    # Internal: Select Fields and Checkboxes
+    # -----------------------------------------------------------------------
+    def _build_select_fields(self, dossier: dict, assureur: dict) -> Dict[str, str]:
+        fields: Dict[str, str] = {}
+        rate = dossier.get("responsibility_rate") if dossier.get("responsibility_rate") is not None else assureur.get("responsibility_rate")
         if rate is not None:
-            fields["PartResponsabilite"] = str(int(rate))
-
-        # Type reforme (e.g. "E" = Economique, "T" = Technique)
-        reform_type = dossier.get("reform_type")
-        if reform_type:
-            fields["TypeReforme"] = str(reform_type)
-
+            rate_str = str(int(rate))
+            if rate_str not in ("0", "50", "100"):
+                raise ValueError(f"Invalid PartResponsabilite: '{rate_str}'. Supported values are 0, 50, 100.")
+            fields["PartResponsabilite"] = rate_str
         return fields
 
-    def _build_checkboxes(self, dossier: dict) -> dict:
-        boxes: dict = {}
+    def _build_checkboxes(self, dossier: dict) -> Tuple[Dict[str, bool], List[str], bool]:
+        boxes: Dict[str, bool] = {
+            "VehRepareI": True,
+            "VehReformeI": False,
+        }
+        warnings: List[str] = []
+        needs_review = False
 
-        # In MCMA, "Véhicule Réparable" (#VehRepareI) reveals the "Rapport de la réparation" and rubriques table.
-        # For all normal repair claims (non-reform), this MUST be True.
-        is_reform = bool(dossier.get("is_reform"))
-        boxes["VehRepareI"] = not is_reform
-
-        # Reform flag (real MCMA id = VehReformeI)
-        if is_reform:
-            boxes["VehReformeI"] = True
-
-        # TVA récupérable (sociétés can recover TVA)
-        insured_type = dossier.get("insured_type", "")
+        insured_type = str(dossier.get("insured_type") or "").strip().lower()
         if insured_type in ("societe", "société", "company", "entreprise"):
             boxes["TvaRecupI"] = True
+        elif insured_type:
+            # Unclear recoverable TVA types like location_voiture must not be guessed
+            warnings.append(f"Recoverable TVA cannot be inferred safely from insured_type={insured_type}.")
+            needs_review = True
 
-        return boxes
+        return boxes, warnings, needs_review
 
-    def _build_rubriques(self, chiffrage: dict) -> list:
+    # -----------------------------------------------------------------------
+    # Internal: Rubrique Classification and Aggregation
+    # -----------------------------------------------------------------------
+    def _classify_glass_or_adhesive(self, item_name: str, repair_action: str) -> Optional[str]:
+        """Applies glass and adhesive rules before generic part classification."""
+        name_norm = normalize_text(item_name)
+        action_norm = normalize_text(repair_action)
+        is_repair = "repar" in action_norm
+
+        # 1. Pare-brise
+        if "pare brise" in name_norm or "parebrise" in name_norm:
+            # If adhesive/colle is part of name, handle in adhesive
+            if "colle" not in name_norm:
+                return "21" if is_repair else "22"
+
+        # 2. Lunette arrière
+        if "lunette" in name_norm:
+            if "colle" not in name_norm:
+                return "23" if is_repair else "24"
+
+        # 3. Vitre / glace
+        if "vitre" in name_norm or "glace" in name_norm:
+            if "colle" not in name_norm:
+                return "19" if is_repair else "20"
+
+        # 4. Adhesive / Colle
+        if "colle" in name_norm or "mastic" in name_norm:
+            if "kit" in name_norm:
+                if "vitre" in name_norm:
+                    return "27"  # KIT COLLE VITRE
+                return "26"      # KIT COLLE PARE-BRISE ET LUNETTE ARRIERE
+            return "25"          # COLLE
+
+        return None
+
+    def _determine_part_system(self, item_name: str, system_hint: str, pointer: str) -> str:
+        """Determines the part system family (carrosserie, mecanique, peinture, electrique)."""
+        hint_norm = normalize_text(system_hint)
+        if "carrosserie" in hint_norm or "tolerie" in hint_norm:
+            return "carrosserie"
+        if "mecanique" in hint_norm:
+            return "mecanique"
+        if "peinture" in hint_norm:
+            return "peinture"
+        if "electrique" in hint_norm or "electricite" in hint_norm:
+            return "electrique"
+
+        name_norm = normalize_text(item_name)
+
+        # Carrosserie terms
+        carrosserie_terms = [
+            "porte", "portes", "retroviseur", "retrovisseur", "aile", "capot", "bouclier",
+            "pare choc", "parechoc", "malle", "hayon", "poignee", "serrure", "calandre",
+            "traverse", "longeront", "plancher", "pavillon", "bas de caisse", "montant"
+        ]
+        if any(term in name_norm for term in carrosserie_terms):
+            return "carrosserie"
+
+        # Mécanique terms
+        mecanique_terms = [
+            "moteur", "radiateur", "filtre", "pompe", "frein", "disque", "plaquette",
+            "amortisseur", "direction", "cremaillere", "triangle", "cardan", "echappement",
+            "reservoir", "embrayage", "boite", "vitesse", "courroie", "turbo", "injecteur"
+        ]
+        if any(term in name_norm for term in mecanique_terms):
+            return "mecanique"
+
+        # Peinture terms
+        peinture_terms = ["peinture", "vernis", "appret", "durcisseur", "diluant", "ingredient"]
+        if any(term in name_norm for term in peinture_terms):
+            return "peinture"
+
+        # Électrique terms
+        electrique_terms = [
+            "phare", "feu", "projecteur", "clignotant", "batterie", "alternateur",
+            "demarreur", "cablage", "fusible", "relais", "calculateur", "capteur"
+        ]
+        if any(term in name_norm for term in electrique_terms):
+            return "electrique"
+
+        raise ValueError(
+            f"Cannot determine part system family for '{item_name}' at pointer '{pointer}'. Mapping failed closed."
+        )
+
+    def _determine_labour_rubrique(self, item_name: str, notes: str, pointer: str) -> str:
+        """Determines labour rubrique ID (7, 8, 12, 17, 18, 28)."""
+        combined = normalize_text(f"{item_name} {notes}")
+
+        if any(k in combined for k in ("marbre", "passage au marbre")):
+            return "17"
+        if any(k in combined for k in ("parallelisme", "equilibrage", "geometrie")):
+            return "18"
+        if any(k in combined for k in ("peinture", "vernis")):
+            return "12"
+        if any(k in combined for k in ("mecanique", "moteur", "vidange")):
+            return "8"
+        if any(k in combined for k in ("electrique", "electricite")):
+            return "28"
+        if any(k in combined for k in ("carrosserie", "tolerie", "montage", "demontage", "debosselage", "redressage")):
+            return "7"
+
+        raise ValueError(
+            f"Unknown labour type for line '{item_name}' (notes: '{notes}') at pointer '{pointer}'. Mapping failed closed."
+        )
+
+    def _build_rubriques(self, chiffrage: dict) -> List[dict]:
         """
-        Builds aggregated MCMA rubrique line items grouped by category:
-          1. Total Pièces Occasions / Récupérables (IdRubrique=3) or Origines (IdRubrique=1)
-          2. M.O Tôlerie / Carrosserie (IdRubrique=7)
-          3. M.O Peinture (IdRubrique=12)
-          4. Peintures et Ingrédients (IdRubrique=16)
-          5. M.O Mécanique (IdRubrique=8) / Electrique (IdRubrique=28)
+        Builds and aggregates line items into exact MCMA rubriques with Decimal precision
+        and exact remainder allocation.
         """
         if not chiffrage:
             return []
 
-        # Dictionary to aggregate amounts by IdRubrique: { rubrique_id: { "amount_ht": float, "label": str } }
-        aggregated = {}
+        # Data structure: { rubrique_id: { "ht": Decimal, "vetuste": Decimal, "sources": [...] } }
+        groups: Dict[str, Dict[str, Any]] = {}
 
-        # Rubrique human labels
-        RUBRIQUE_LABELS = {
-            "1": "FOURNITURES CARROSSERIE (ORIGINES)",
-            "2": "FOURNITURES CARROSSERIE (ADAPTABLES)",
-            "3": "TOTAL PIECES OCCASIONS / RECUPERABLES",
-            "4": "FOURNITURES MECANIQUE (ORIGINES)",
-            "5": "FOURNITURES MECANIQUE (ADAPTABLES)",
-            "6": "FOURNITURES MECANIQUE (RECUPERABLES)",
-            "7": "M.O TOLERIE / CARROSSERIE",
-            "8": "M.O MECANIQUE",
-            "12": "M.O PEINTURE",
-            "16": "PEINTURES ET INGREDIENTS",
-            "17": "PASSAGE AU MARBRE",
-            "28": "M.O ELECTRIQUE",
-        }
-
-        def _add_to_rubrique(rub_id: str, amount: float, default_label: str = ""):
-            if amount <= 0:
-                return
-            if rub_id not in aggregated:
-                aggregated[rub_id] = {
-                    "IdRubrique": rub_id,
-                    "amount_ht": 0.0,
-                    "_label": RUBRIQUE_LABELS.get(rub_id, default_label or f"Rubrique #{rub_id}")
-                }
-            aggregated[rub_id]["amount_ht"] += amount
-
-        # Process lignes_pieces (contains parts and/or labor lines)
-        for line in chiffrage.get("lignes_pieces") or []:
-            amount_ht = float(line.get("subtotal") or line.get("unit_price") or 0)
-            if amount_ht <= 0:
+        # 1. Process lignes_pieces (parts and integrated labor lines)
+        for idx, line in enumerate(chiffrage.get("lignes_pieces") or []):
+            pointer = f"/chiffrages/0/lignes_pieces/{idx}"
+            unit_price = to_decimal(line.get("subtotal") or line.get("unit_price") or 0)
+            if unit_price <= 0:
                 continue
 
-            item_type = (line.get("item_type") or "part").lower()
-            item_name_lower = (line.get("item_name") or "").lower()
+            item_type = str(line.get("item_type") or "part").strip().lower()
+            item_name = str(line.get("item_name") or "").strip()
+            repair_action = str(line.get("repair_action") or "").strip()
+            notes = str(line.get("notes") or "").strip()
+            vetuste_amt = to_decimal(line.get("depreciation_amount") or 0)
 
-            if item_type == "labor":
-                op_type = (line.get("notes") or "").lower().strip()
-                if "peinture" in item_name_lower and ("ingr" in item_name_lower or "ingrédient" in item_name_lower):
-                    rub_id = "16"
-                elif op_type in LABOR_RUBRIQUE_MAP:
-                    rub_id = LABOR_RUBRIQUE_MAP[op_type]
-                elif "peinture" in item_name_lower:
-                    rub_id = "12"
-                elif "tolerie" in item_name_lower or "tôlerie" in item_name_lower or "carrosserie" in item_name_lower:
-                    rub_id = "7"
-                elif "mecanique" in item_name_lower or "mécanique" in item_name_lower:
-                    rub_id = "8"
-                else:
-                    rub_id = LABOR_RUBRIQUE_MAP.get(op_type, "7")
-
-                _add_to_rubrique(rub_id, amount_ht, line.get("item_name", ""))
+            # Check for explicit rubric ID override
+            explicit_rub = str(line.get("mcma_rubric_id") or "").strip()
+            if explicit_rub and explicit_rub in RUBRIQUE_CATALOG:
+                rub_id = explicit_rub
+            elif item_type == "labor":
+                rub_id = self._determine_labour_rubrique(item_name, notes, pointer)
             else:
-                # Spare part
-                part_type = (line.get("part_type") or "").lower().strip()
-                rub_id = PIECE_TYPE_RUBRIQUE_MAP.get(part_type, DEFAULT_PIECE_RUBRIQUE_ID)
-                _add_to_rubrique(rub_id, amount_ht, "TOTAL PIECES OCCASIONS / RECUPERABLES")
+                # Part line
+                glass_adh_rub = self._classify_glass_or_adhesive(item_name, repair_action)
+                if glass_adh_rub:
+                    rub_id = glass_adh_rub
+                else:
+                    # Generic system family classification
+                    part_type_raw = str(line.get("part_type") or "").strip().lower()
+                    if part_type_raw in PART_ORIGIN_ORIGINAL:
+                        origin = "original"
+                    elif part_type_raw in PART_ORIGIN_ADAPTABLE:
+                        origin = "adaptable"
+                    elif part_type_raw in PART_ORIGIN_RECOVERED:
+                        origin = "recovered"
+                    else:
+                        raise ValueError(
+                            f"Unknown or missing part_type '{part_type_raw}' for piece '{item_name}' at pointer '{pointer}'. Failed closed."
+                        )
 
-        # Process legacy lignes_mo if present
-        for mo in chiffrage.get("lignes_mo") or []:
-            amount_ht = float(mo.get("subtotal") or 0)
-            if amount_ht <= 0:
+                    system_family = self._determine_part_system(item_name, line.get("system") or line.get("category") or "", pointer)
+                    rub_id = SYSTEM_RUBRIQUE_MATRIX.get((system_family, origin))
+                    if not rub_id:
+                        raise ValueError(
+                            f"Could not map system='{system_family}' and origin='{origin}' to a valid rubrique at pointer '{pointer}'."
+                        )
+
+            if rub_id not in groups:
+                groups[rub_id] = {
+                    "IdRubrique": rub_id,
+                    "LibRubrique": RUBRIQUE_CATALOG.get(rub_id, f"Rubrique #{rub_id}"),
+                    "ht": Decimal("0.00"),
+                    "vetuste": Decimal("0.00"),
+                    "source_pointers": [],
+                }
+            groups[rub_id]["ht"] += unit_price
+            groups[rub_id]["vetuste"] += vetuste_amt
+            groups[rub_id]["source_pointers"].append(pointer)
+
+        # 2. Process legacy lignes_mo if present
+        for idx, mo in enumerate(chiffrage.get("lignes_mo") or []):
+            pointer = f"/chiffrages/0/lignes_mo/{idx}"
+            subtotal = to_decimal(mo.get("subtotal") or 0)
+            if subtotal <= 0:
                 continue
-            op_type = (mo.get("operation_type") or "").lower().strip()
-            rub_id = LABOR_RUBRIQUE_MAP.get(op_type, "7")
-            _add_to_rubrique(rub_id, amount_ht, mo.get("operation_type", ""))
+            op_type = str(mo.get("operation_type") or "").strip()
+            rub_id = self._determine_labour_rubrique(op_type, mo.get("notes", ""), pointer)
 
-        # Format into final MCMA list with rounded HT and Taxe
-        rubriques = []
-        for rub_id, item in aggregated.items():
-            tot_ht = item["amount_ht"]
-            tva = round(tot_ht * DEFAULT_TVA_RATE)
-            rubriques.append({
-                "IdRubrique": rub_id,
-                "MontantHT": str(int(round(tot_ht))),
-                "Taxe": str(tva),
-                "_label": item["_label"]
+            if rub_id not in groups:
+                groups[rub_id] = {
+                    "IdRubrique": rub_id,
+                    "LibRubrique": RUBRIQUE_CATALOG.get(rub_id, f"Rubrique #{rub_id}"),
+                    "ht": Decimal("0.00"),
+                    "vetuste": Decimal("0.00"),
+                    "source_pointers": [],
+                }
+            groups[rub_id]["ht"] += subtotal
+            groups[rub_id]["source_pointers"].append(pointer)
+
+        if not groups:
+            return []
+
+        # Target Totals from Chiffrage
+        target_ht = quantize_money(to_decimal(chiffrage.get("total_cost")))
+        target_tva = quantize_money(to_decimal(chiffrage.get("tax_amount")))
+        target_ttc = quantize_money(to_decimal(chiffrage.get("final_cost")))
+
+        rubriques_list = []
+        running_ht = Decimal("0.00")
+        running_tva = Decimal("0.00")
+
+        group_items = list(groups.values())
+        for idx, item in enumerate(group_items):
+            is_last = (idx == len(group_items) - 1)
+            ht_val = quantize_money(item["ht"])
+            running_ht += ht_val
+
+            # TVA Calculation
+            if is_last and target_tva > 0:
+                # Allocate tax remainder to the final rubrique to ensure exact sum(rubrique TVA) == chiffrage.tax_amount
+                tva_val = target_tva - running_tva
+            else:
+                tva_val = quantize_money(ht_val * DEFAULT_TVA_RATE)
+                running_tva += tva_val
+
+            ttc_val = ht_val + tva_val
+            vet_val = quantize_money(item["vetuste"])
+            taux_vet = quantize_money((vet_val / ht_val * 100)) if ht_val > 0 else Decimal("0.00")
+
+            rubriques_list.append({
+                "IdRubrique": item["IdRubrique"],
+                "LibRubrique": item["LibRubrique"],
+                "MontantHT": format_money(ht_val),
+                "Taxe": format_money(tva_val),
+                "MontantTTC": format_money(ttc_val),
+                "TauxVetuste": format_money(taux_vet),
+                "MontantVetuste": format_money(vet_val),
+                "source_pointers": item["source_pointers"],
             })
 
-        return rubriques
+        # Validate totals against chiffrage targets
+        total_calc_ht = sum(to_decimal(r["MontantHT"]) for r in rubriques_list)
+        total_calc_tva = sum(to_decimal(r["Taxe"]) for r in rubriques_list)
+        total_calc_ttc = sum(to_decimal(r["MontantTTC"]) for r in rubriques_list)
 
-    def _build_documents(self, wexia: dict) -> list:
-        """
-        Collects all uploadable document URLs from the Wexia JSON.
-        Returns dicts with keys: url, id_nature, label.
-        Call download_documents() to download them to local temp files.
-        """
-        docs = []
+        if abs(total_calc_ht - target_ht) > CENT:
+            raise ValueError(f"Calculated HT sum {total_calc_ht} differs from chiffrage total_cost {target_ht} by > 0.01.")
+        if target_tva > 0 and abs(total_calc_tva - target_tva) > CENT:
+            raise ValueError(f"Calculated TVA sum {total_calc_tva} differs from chiffrage tax_amount {target_tva} by > 0.01.")
+        if target_ttc > 0 and abs(total_calc_ttc - target_ttc) > CENT:
+            raise ValueError(f"Calculated TTC sum {total_calc_ttc} differs from chiffrage final_cost {target_ttc} by > 0.01.")
 
-        def _add(url: Optional[str], nature_key: str, label: str):
-            if not url or url.strip().endswith("..."):
-                return   # skip missing or truncated placeholder URLs
-            docs.append({
-                "url":       url,
-                "id_nature": DOCUMENT_NATURE_MAP.get(nature_key, "63"),
-                "label":     label,
-            })
-
-        # Validated devis (quote PDFs)
-        for devis in wexia.get("devis") or []:
-            if devis.get("status") in ("validated", "approved", None):
-                url = (devis.get("file") or {}).get("url")
-                _add(url, "devis", f"Devis — {devis.get('repairer_name', '')}")
-
-        # Generated expert reports
-        for rpt in wexia.get("rapports_generes") or []:
-            rpt_type   = rpt.get("report_type", "")
-            nature_key = "rapport_final" if "final" in rpt_type else "rapport_preliminaire"
-            url        = (rpt.get("file") or {}).get("url")
-            _add(url, nature_key, rpt_type)
-
-        # Carte grise and other scanned docs
-        for doc in (wexia.get("documents") or {}).get("cartes_grises_et_autres") or []:
-            doc_type = doc.get("document_type", "")
-            if doc_type in DOCUMENT_NATURE_MAP:
-                url = (doc.get("file") or {}).get("url")
-                _add(url, doc_type, doc_type)
-
-        # Invoices (factures)
-        for fac in wexia.get("factures") or []:
-            url = (fac.get("file") or {}).get("url")
-            _add(url, "facture", f"Facture — {fac.get('repairer_name', '')}")
-
-        return docs
-
-    # ------------------------------------------------------------------
-    # Document downloader
-    # ------------------------------------------------------------------
-
-    async def download_documents(self, documents: list) -> list:
-        """
-        Downloads each document from its signed URL to a local temp file.
-        Returns a new list with 'path' key set — ready for process_workflow().
-        Documents whose URL fails are skipped with a warning.
-        """
-        downloaded = []
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            for doc in documents:
-                url = doc.get("url", "")
-                if not url:
-                    continue
-                try:
-                    print(f"[Doc] Downloading: {doc.get('label', url)}")
-                    resp = await client.get(url)
-                    resp.raise_for_status()
-
-                    local_path = os.path.join(self.download_dir, f"{uuid.uuid4()}.pdf")
-                    with open(local_path, "wb") as fh:
-                        fh.write(resp.content)
-
-                    size_kb = os.path.getsize(local_path) / 1024
-                    print(f"[Doc]   Saved -> {local_path} ({size_kb:.1f} KB)")
-
-                    downloaded.append({
-                        "path":      local_path,
-                        "id_nature": doc["id_nature"],
-                        "label":     doc.get("label", ""),
-                    })
-                except Exception as exc:
-                    print(f"[Doc] WARNING — failed to download '{doc.get('label')}': {exc}")
-
-        return downloaded
-
-
-# ---------------------------------------------------------------------------
-# CLI test runner: python mapper.py path/to/dossier.json
-# ---------------------------------------------------------------------------
-
-def _pretty_print_payload(payload: dict):
-    print("\n" + "=" * 62)
-    print("  MCMA PAYLOAD SUMMARY")
-    print("=" * 62)
-    print(f"  Dossier reference : {payload['dossier_reference']}")
-    print(f"  Matricule         : {payload['matricule']}")
-    print(f"\n  Text fields ({len(payload['text_fields'])})")
-    for k, v in payload["text_fields"].items():
-        display_v = v[:80] + "..." if len(str(v)) > 80 else v
-        print(f"      {k:<30} = {display_v}")
-    print(f"\n  Select fields ({len(payload['select_fields'])})")
-    for k, v in payload["select_fields"].items():
-        print(f"      {k:<30} = {v}")
-    print(f"\n  Checkboxes ({len(payload['checkboxes'])})")
-    for k, v in payload["checkboxes"].items():
-        print(f"      {k:<30} = {v}")
-    print(f"\n  Rubriques ({len(payload['rubriques'])})")
-    for r in payload["rubriques"]:
-        print(f"      [Id={r['IdRubrique']}] HT={r['MontantHT']}  TVA={r['Taxe']}  ({r.get('_label','')})")
-    print(f"\n  Documents ({len(payload['documents'])})")
-    for d in payload["documents"]:
-        print(f"      [nature={d['id_nature']}] {d['label']}")
-    print("=" * 62 + "\n")
-
-
-if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) < 2:
-        print("Usage: python mapper.py <path_to_wexia_dossier.json>")
-        sys.exit(1)
-
-    with open(sys.argv[1], "r", encoding="utf-8") as fh:
-        raw_text = fh.read().strip()
-        if raw_text.startswith("```"):
-            lines = raw_text.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            raw_text = "\n".join(lines)
-        wexia_data = json.loads(raw_text)
-
-    mapper  = WexiaToDossierMapper()
-    payload = mapper.map(wexia_data)
-    _pretty_print_payload(payload)
+        return rubriques_list
