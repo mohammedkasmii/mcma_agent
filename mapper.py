@@ -122,15 +122,19 @@ class WexiaToDossierMapper:
         missions  = wexia.get("missions", []) or []
         chiffrage = self._get_active_chiffrage(wexia)
 
-        # Detect Garage Conventionné (Prise en Charge) Mode
-        devis_list = wexia.get("devis") or []
+        # Detect Garage Conventionné (Prise en Charge) Mode vs Mode Normal
         is_garage_conventionne = False
-        if devis_list and (devis_list[0].get("repairer_id") or devis_list[0].get("repairer")):
+        mission_type_str = str(dossier.get("mission_type", "")).lower()
+        incident_desc = str(dossier.get("incident_description", "")).lower()
+        repair_mode_str = str(dossier.get("repair_mode", "")).lower()
+
+        if "normal" in mission_type_str or "normal" in incident_desc:
+            is_garage_conventionne = False
+        elif mission_type_str in ["conventionne", "garage_conventionne", "pec"] or "pec" in incident_desc or "convention" in incident_desc or "convention" in repair_mode_str:
             is_garage_conventionne = True
         elif missions and any(m.get("mission_type") in ["pec", "conventionne", "garage_conventionne"] for m in missions):
             is_garage_conventionne = True
-        elif dossier.get("mission_type") in ["conventionne", "garage_conventionne", "pec"] or "convention" in str(dossier.get("repair_mode", "")).lower():
-            is_garage_conventionne = True
+
 
         # Extract financial values for Devis Validation payload (Garage Conventionné)
         devis_validation = {}

@@ -129,13 +129,20 @@ async def trigger_mcma_calculations(page):
             return {
                 montantArrete: document.querySelector('#MontantArrete')?.value || null,
                 baseIndemnite: document.querySelector('#BaseIndemnite')?.value || null,
-                montantDommage: document.querySelector('#MontantDommage')?.value || null
+                montantDommage: document.querySelector('#MontantDommage')?.value || null,
+                chargeMutuelle: document.querySelector('#DevisMontantChargeMutuelle')?.value || document.querySelector('#MontantChargeMutuelle')?.value || null
             };
         }""")
         if res:
-            print(f"    [🧮 Auto-Calculations] MontantArrêté={res.get('montantArrete')}, BaseIndemnité={res.get('baseIndemnite')}, MontantDommage={res.get('montantDommage')}")
+            items = []
+            if res.get('montantArrete'): items.append(f"Montant Arrêté={res.get('montantArrete')}")
+            if res.get('baseIndemnite'): items.append(f"Base d'Indemnité={res.get('baseIndemnite')}")
+            if res.get('montantDommage'): items.append(f"Montant Dommage={res.get('montantDommage')}")
+            if res.get('chargeMutuelle'): items.append(f"Montant à charge mutuelle={res.get('chargeMutuelle')}")
+            print(f"    [🧮 Auto-Calculations] {', '.join(items)}")
     except Exception:
         pass
+
 
 async def safe_select_option(page, selector: str, value: str, timeout_ms: int = 2000) -> bool:
     """
@@ -484,6 +491,7 @@ async def process_workflow(data: dict):
                         montantArrete: document.querySelector('#MontantArrete')?.value || '',
                         baseIndemnite: document.querySelector('#BaseIndemnite')?.value || '',
                         montantDommage: document.querySelector('#MontantDommage')?.value || '',
+                        chargeMutuelle: document.querySelector('#DevisMontantChargeMutuelle')?.value || document.querySelector('#MontantChargeMutuelle')?.value || '',
                         valeurVenale: document.querySelector('#ValeurVenale')?.value || document.querySelector('#ValeurVenaleEstime')?.value || '',
                         montantEpave: document.querySelector('#MontantEpave')?.value || '',
                         dateDevis: document.querySelector('#DateDevis')?.value || '',
@@ -493,21 +501,23 @@ async def process_workflow(data: dict):
                     };
                 }""")
 
-                print("\n" + "="*68)
+                print("\n" + "="*70)
                 print("  📊 POST-FILL VERIFICATION AUDIT (LIVE DOM vs. EXPECTED)")
-                print("="*68)
+                print("="*70)
                 checks = [
                     ("Reference Dossier", dom_state.get("refDossier"), data.get("text_fields", {}).get("ReferenceDossier")),
                     ("Montant Réparation (HT)", dom_state.get("montantReparation"), data.get("text_fields", {}).get("MontantReparation")),
                     ("Montant TVA", dom_state.get("montantTVA"), data.get("text_fields", {}).get("MontantTVA")),
                     ("Montant Arrêté", dom_state.get("montantArrete"), data.get("text_fields", {}).get("MontantReparation")),
                     ("Base d'Indemnité", dom_state.get("baseIndemnite"), data.get("text_fields", {}).get("MontantReparation")),
+                    ("Montant à charge mutuelle", dom_state.get("chargeMutuelle"), data.get("devis_validation", {}).get("MontantChargeMutuelle")),
                     ("Valeur Vénale", dom_state.get("valeurVenale"), data.get("text_fields", {}).get("ValeurVenale") or data.get("text_fields", {}).get("ValeurVenaleEstime")),
                     ("Montant Epave", dom_state.get("montantEpave"), data.get("text_fields", {}).get("MontantEpave")),
                     ("Date Devis", dom_state.get("dateDevis"), data.get("text_fields", {}).get("DateDevis")),
                     ("Véhicule Réparable [✓]", str(dom_state.get("vehRepare")), str(data.get("checkboxes", {}).get("VehRepareI", True))),
                     ("TVA Récupérable [✓]", str(dom_state.get("tvaRecup")), str(data.get("checkboxes", {}).get("TvaRecupI", True))),
                 ]
+
 
                 for label, actual, expected in checks:
                     act_clean = str(actual or "").strip()
