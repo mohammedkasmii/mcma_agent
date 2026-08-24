@@ -99,7 +99,7 @@ def se00009_data():
 
 
 def test_1_se00009_exact_rubriques_and_totals(mapper, se00009_data):
-    """Test 1: dossier-se00009 produces exactly five rubriques with expected IDs and amounts."""
+    """Test 1: dossier-se00009 produces exact rubriques (Fournitures Carrosserie Origines, Colle, M.O Carrosserie)."""
     res = mapper.map(se00009_data)
     assert res["matricule"] == "36165-B-50"
     assert res["search_matricule"] == "36165"
@@ -107,35 +107,28 @@ def test_1_se00009_exact_rubriques_and_totals(mapper, se00009_data):
     assert res["selected_chiffrage_id"] == "b82bcfb7-eb1a-47b8-83fc-7b4b144d9203"
 
     rubriques = res["rubriques"]
-    assert len(rubriques) == 5
+    assert len(rubriques) == 3
 
     # Check each rubrique specifically
     rub_map = {r["IdRubrique"]: r for r in rubriques}
 
+    # 1. Fournitures Carrosserie Origines (2 Portes + Retroviseur + Pare-brise + Vitre porte)
     assert "1" in rub_map
-    assert rub_map["1"]["MontantHT"] == "5250.00"
-    assert rub_map["1"]["Taxe"] == "1050.00"
-    assert rub_map["1"]["MontantTTC"] == "6300.00"
+    assert rub_map["1"]["MontantHT"] == "7666.66"
+    assert rub_map["1"]["Taxe"] == "1533.33"
+    assert rub_map["1"]["MontantTTC"] == "9199.99"
 
-    assert "22" in rub_map
-    assert rub_map["22"]["MontantHT"] == "1583.33"
-    assert rub_map["22"]["Taxe"] == "316.67"
-    assert rub_map["22"]["MontantTTC"] == "1900.00"
-
+    # 2. Colle
     assert "25" in rub_map
     assert rub_map["25"]["MontantHT"] == "375.00"
     assert rub_map["25"]["Taxe"] == "75.00"
     assert rub_map["25"]["MontantTTC"] == "450.00"
 
-    assert "20" in rub_map
-    assert rub_map["20"]["MontantHT"] == "833.33"
-    assert rub_map["20"]["Taxe"] == "166.67"
-    assert rub_map["20"]["MontantTTC"] == "1000.00"
-
+    # 3. Main d'oeuvre Carrosserie (MONTAGE + Carrosserie de face)
     assert "7" in rub_map
     assert rub_map["7"]["MontantHT"] == "2708.33"
-    assert rub_map["7"]["Taxe"] == "541.66"
-    assert rub_map["7"]["MontantTTC"] == "3249.99"
+    assert rub_map["7"]["Taxe"] == "541.67"
+    assert rub_map["7"]["MontantTTC"] == "3250.00"
 
     # Overall totals
     total_ht = sum(Decimal(r["MontantHT"]) for r in rubriques)
@@ -242,40 +235,39 @@ def test_4_part_origin_aliases(mapper):
     assert rub_map["3"]["MontantHT"] == "100.00"
 
 
-def test_5_glass_and_adhesive_mappings(mapper):
-    """Test 5: Pare-brise, vitre, colle, kit colle and lunette mappings."""
+def test_5_colle_and_labour_mappings(mapper):
+    """Test 5: Colle, kit colle and distinct labour families (carrosserie, peinture, mecanique, electrique)."""
     doc = {
         "dossier": {"license_plate": "12345-A-1", "mission_type": "normal"},
         "chiffrages": [
             {
                 "id": "c1",
                 "status": "approved",
-                "total_cost": 800,
-                "tax_amount": 160,
-                "final_cost": 960,
+                "total_cost": 700,
+                "tax_amount": 140,
+                "final_cost": 840,
                 "lignes_pieces": [
-                    {"item_name": "Pare-brise", "repair_action": "remplacement", "unit_price": 100},
-                    {"item_name": "Pare brise", "repair_action": "reparation", "unit_price": 100},
-                    {"item_name": "Vitre porte", "repair_action": "remplacement", "unit_price": 100},
-                    {"item_name": "Vitre", "repair_action": "reparation", "unit_price": 100},
-                    {"item_name": "Lunette arriere", "repair_action": "remplacement", "unit_price": 100},
-                    {"item_name": "Colle Pare-brise", "repair_action": "remplacement", "unit_price": 100},
-                    {"item_name": "Kit colle pare-brise", "repair_action": "remplacement", "unit_price": 100},
-                    {"item_name": "Kit colle vitre", "repair_action": "remplacement", "unit_price": 100},
+                    {"item_name": "Colle Pare-brise", "part_type": "original", "unit_price": 100},
+                    {"item_name": "Kit colle pare-brise", "part_type": "original", "unit_price": 100},
+                    {"item_name": "Kit colle vitre", "part_type": "original", "unit_price": 100},
+                    {"item_name": "Tôlerie porte", "item_type": "labor", "notes": "carrosserie", "unit_price": 100},
+                    {"item_name": "Peinture complète", "item_type": "labor", "notes": "peinture", "unit_price": 100},
+                    {"item_name": "Réparation moteur", "item_type": "labor", "notes": "mecanique", "unit_price": 100},
+                    {"item_name": "Câblage phare", "item_type": "labor", "notes": "electrique", "unit_price": 100},
                 ]
             }
         ]
     }
     res = mapper.map(doc)
     rub_ids = {r["IdRubrique"] for r in res["rubriques"]}
-    assert "22" in rub_ids  # REMPLACEMENT PARE-BRISE
-    assert "21" in rub_ids  # REPARATION PARE-BRISE
-    assert "20" in rub_ids  # REMPLACEMENT VITRE
-    assert "19" in rub_ids  # REPARATION VITRE
-    assert "24" in rub_ids  # REMPLACEMENT LUNETTE ARRIERE
     assert "25" in rub_ids  # COLLE
     assert "26" in rub_ids  # KIT COLLE PARE-BRISE ET LUNETTE ARRIERE
     assert "27" in rub_ids  # KIT COLLE VITRE
+    assert "7" in rub_ids   # MAIN D'OEUVRE CARROSSERIE
+    assert "12" in rub_ids  # MAIN D'OEUVRE PEINTURE
+    assert "8" in rub_ids   # MAIN D'OEUVRE MECANIQUE
+    assert "28" in rub_ids  # MAIN D'OEUVRE ELECTRIQUE
+
 
 
 def test_6_decimal_precision_and_tax_remainder_allocation(mapper):
@@ -301,8 +293,8 @@ def test_6_decimal_precision_and_tax_remainder_allocation(mapper):
     assert total_tax == Decimal("66.67")
 
 
-def test_7_unknown_part_family_fails_closed(mapper):
-    """Test 7: Unknown part family fails closed with ValueError."""
+def test_7_unknown_part_type_fails_closed(mapper):
+    """Test 7: Unknown part_type fails closed with ValueError."""
     doc = {
         "dossier": {"license_plate": "12345-A-1", "mission_type": "normal"},
         "chiffrages": [
@@ -313,13 +305,14 @@ def test_7_unknown_part_family_fails_closed(mapper):
                 "tax_amount": 20,
                 "final_cost": 120,
                 "lignes_pieces": [
-                    {"item_name": "XYZ Unknown Widget 999", "part_type": "original", "unit_price": 100}
+                    {"item_name": "Porte avant", "part_type": "unknown_invalid_type", "unit_price": 100}
                 ]
             }
         ]
     }
-    with pytest.raises(ValueError, match="Cannot determine part system family"):
+    with pytest.raises(ValueError, match="Unknown or missing part_type"):
         mapper.map(doc)
+
 
 
 def test_8_unknown_labour_fails_closed(mapper):

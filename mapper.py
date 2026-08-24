@@ -480,86 +480,16 @@ class WexiaToDossierMapper:
     # -----------------------------------------------------------------------
     # Internal: Rubrique Classification and Aggregation
     # -----------------------------------------------------------------------
-    def _classify_glass_or_adhesive(self, item_name: str, repair_action: str) -> Optional[str]:
-        """Applies glass and adhesive rules before generic part classification."""
+    def _classify_colle_or_adhesive(self, item_name: str) -> Optional[str]:
+        """Checks if item is colle / mastic / kit colle."""
         name_norm = normalize_text(item_name)
-        action_norm = normalize_text(repair_action)
-        is_repair = "repar" in action_norm
-
-        # 1. Pare-brise
-        if "pare brise" in name_norm or "parebrise" in name_norm:
-            # If adhesive/colle is part of name, handle in adhesive
-            if "colle" not in name_norm:
-                return "21" if is_repair else "22"
-
-        # 2. Lunette arrière
-        if "lunette" in name_norm:
-            if "colle" not in name_norm:
-                return "23" if is_repair else "24"
-
-        # 3. Vitre / glace
-        if "vitre" in name_norm or "glace" in name_norm:
-            if "colle" not in name_norm:
-                return "19" if is_repair else "20"
-
-        # 4. Adhesive / Colle
         if "colle" in name_norm or "mastic" in name_norm:
             if "kit" in name_norm:
                 if "vitre" in name_norm:
                     return "27"  # KIT COLLE VITRE
                 return "26"      # KIT COLLE PARE-BRISE ET LUNETTE ARRIERE
             return "25"          # COLLE
-
         return None
-
-    def _determine_part_system(self, item_name: str, system_hint: str, pointer: str) -> str:
-        """Determines the part system family (carrosserie, mecanique, peinture, electrique)."""
-        hint_norm = normalize_text(system_hint)
-        if "carrosserie" in hint_norm or "tolerie" in hint_norm:
-            return "carrosserie"
-        if "mecanique" in hint_norm:
-            return "mecanique"
-        if "peinture" in hint_norm:
-            return "peinture"
-        if "electrique" in hint_norm or "electricite" in hint_norm:
-            return "electrique"
-
-        name_norm = normalize_text(item_name)
-
-        # Carrosserie terms
-        carrosserie_terms = [
-            "porte", "portes", "retroviseur", "retrovisseur", "aile", "capot", "bouclier",
-            "pare choc", "parechoc", "malle", "hayon", "poignee", "serrure", "calandre",
-            "traverse", "longeront", "plancher", "pavillon", "bas de caisse", "montant"
-        ]
-        if any(term in name_norm for term in carrosserie_terms):
-            return "carrosserie"
-
-        # Mécanique terms
-        mecanique_terms = [
-            "moteur", "radiateur", "filtre", "pompe", "frein", "disque", "plaquette",
-            "amortisseur", "direction", "cremaillere", "triangle", "cardan", "echappement",
-            "reservoir", "embrayage", "boite", "vitesse", "courroie", "turbo", "injecteur"
-        ]
-        if any(term in name_norm for term in mecanique_terms):
-            return "mecanique"
-
-        # Peinture terms
-        peinture_terms = ["peinture", "vernis", "appret", "durcisseur", "diluant", "ingredient"]
-        if any(term in name_norm for term in peinture_terms):
-            return "peinture"
-
-        # Électrique terms
-        electrique_terms = [
-            "phare", "feu", "projecteur", "clignotant", "batterie", "alternateur",
-            "demarreur", "cablage", "fusible", "relais", "calculateur", "capteur"
-        ]
-        if any(term in name_norm for term in electrique_terms):
-            return "electrique"
-
-        raise ValueError(
-            f"Cannot determine part system family for '{item_name}' at pointer '{pointer}'. Mapping failed closed."
-        )
 
     def _determine_labour_rubrique(self, item_name: str, notes: str, pointer: str) -> str:
         """Determines labour rubrique ID (7, 8, 12, 17, 18, 28)."""
@@ -575,12 +505,50 @@ class WexiaToDossierMapper:
             return "8"
         if any(k in combined for k in ("electrique", "electricite")):
             return "28"
-        if any(k in combined for k in ("carrosserie", "tolerie", "montage", "demontage", "debosselage", "redressage")):
+        if any(k in combined for k in ("carrosserie", "tolerie", "montage", "demontage", "debosselage", "redressage", "main d oeuvre", "main d'oeuvre", "mo", "reparation", "pose")):
             return "7"
+
 
         raise ValueError(
             f"Unknown labour type for line '{item_name}' (notes: '{notes}') at pointer '{pointer}'. Mapping failed closed."
         )
+
+
+    def _determine_part_rubrique(self, item_name: str, part_type_raw: str, is_original: bool, system_hint: str, pointer: str) -> str:
+        """
+        Maps parts into Fournitures Carrosserie (1: Origines, 2: Adaptables, 3: Récupérables)
+        or specialized mechanical/electrical families if explicitly indicated.
+        """
+        colle_rub = self._classify_colle_or_adhesive(item_name)
+        if colle_rub:
+            return colle_rub
+
+        pt_clean = str(part_type_raw or "").strip().lower()
+        if pt_clean in PART_ORIGIN_ORIGINAL or is_original is True:
+            origin = "original"
+        elif pt_clean in PART_ORIGIN_ADAPTABLE:
+            origin = "adaptable"
+        elif pt_clean in PART_ORIGIN_RECOVERED:
+            origin = "recovered"
+        else:
+            raise ValueError(
+                f"Unknown or missing part_type '{part_type_raw}' for piece '{item_name}' at pointer '{pointer}'. Failed closed."
+            )
+
+        hint_norm = normalize_text(system_hint)
+        name_norm = normalize_text(item_name)
+
+        if "mecanique" in hint_norm or any(t in name_norm for t in ("moteur", "filtre", "radiateur", "amortisseur", "frein")):
+            family = "mecanique"
+        elif "electrique" in hint_norm or any(t in name_norm for t in ("batterie", "alternateur", "demarreur", "cablage")):
+            family = "electrique"
+        elif "peinture" in hint_norm or any(t in name_norm for t in ("peinture", "vernis", "ingredient")):
+            family = "peinture"
+        else:
+            family = "carrosserie"
+
+        rub_id = SYSTEM_RUBRIQUE_MATRIX.get((family, origin), "1" if origin == "original" else ("2" if origin == "adaptable" else "3"))
+        return rub_id
 
     def _build_rubriques(self, chiffrage: dict) -> List[dict]:
         """
@@ -602,7 +570,6 @@ class WexiaToDossierMapper:
 
             item_type = str(line.get("item_type") or "part").strip().lower()
             item_name = str(line.get("item_name") or "").strip()
-            repair_action = str(line.get("repair_action") or "").strip()
             notes = str(line.get("notes") or "").strip()
             vetuste_amt = to_decimal(line.get("depreciation_amount") or 0)
 
@@ -614,29 +581,13 @@ class WexiaToDossierMapper:
                 rub_id = self._determine_labour_rubrique(item_name, notes, pointer)
             else:
                 # Part line
-                glass_adh_rub = self._classify_glass_or_adhesive(item_name, repair_action)
-                if glass_adh_rub:
-                    rub_id = glass_adh_rub
-                else:
-                    # Generic system family classification
-                    part_type_raw = str(line.get("part_type") or "").strip().lower()
-                    if part_type_raw in PART_ORIGIN_ORIGINAL:
-                        origin = "original"
-                    elif part_type_raw in PART_ORIGIN_ADAPTABLE:
-                        origin = "adaptable"
-                    elif part_type_raw in PART_ORIGIN_RECOVERED:
-                        origin = "recovered"
-                    else:
-                        raise ValueError(
-                            f"Unknown or missing part_type '{part_type_raw}' for piece '{item_name}' at pointer '{pointer}'. Failed closed."
-                        )
-
-                    system_family = self._determine_part_system(item_name, line.get("system") or line.get("category") or "", pointer)
-                    rub_id = SYSTEM_RUBRIQUE_MATRIX.get((system_family, origin))
-                    if not rub_id:
-                        raise ValueError(
-                            f"Could not map system='{system_family}' and origin='{origin}' to a valid rubrique at pointer '{pointer}'."
-                        )
+                rub_id = self._determine_part_rubrique(
+                    item_name=item_name,
+                    part_type_raw=line.get("part_type"),
+                    is_original=line.get("is_original"),
+                    system_hint=line.get("system") or line.get("category") or "",
+                    pointer=pointer
+                )
 
             if rub_id not in groups:
                 groups[rub_id] = {
@@ -669,6 +620,7 @@ class WexiaToDossierMapper:
                 }
             groups[rub_id]["ht"] += subtotal
             groups[rub_id]["source_pointers"].append(pointer)
+
 
         if not groups:
             return []
