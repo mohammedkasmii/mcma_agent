@@ -420,107 +420,49 @@ async def process_workflow(data: dict):
                         else:
                             await page.evaluate("if (typeof edataTable_RapportDet !== 'undefined') edataTable_RapportDet.addRow();")
 
-                        # Wait for the editable row to appear in the table
-                        try:
-                            await page.wait_for_selector("table tbody tr select, #IdRubrique, table tbody tr input[name*='MontantHT']", timeout=5000)
-                        except Exception:
-                            await page.wait_for_timeout(1000)
+                        # Wait for the editable row inputs to appear
+                        await page.wait_for_timeout(1000)
                         
-                        # Step 2: Fill the active row fields via jQuery & native DOM with verification
-                        filled_info = await page.evaluate("""(data) => {
-                            // Find the active row in edit mode
-                            const row = document.querySelector("table tbody tr:has(select), table tbody tr:has(input), table tbody tr.editing, table tbody tr:first-child");
-                            if (!row) return { success: false, reason: "No active row found" };
-
-                            // 1. Set IdRubrique select
-                            const selectEl = row.querySelector("select");
-                            if (selectEl) {
-                                selectEl.value = data.rub_id;
-                                if (window.jQuery) {
-                                    window.jQuery(selectEl).val(data.rub_id).trigger('change');
-                                }
-                                selectEl.dispatchEvent(new Event('change', { bubbles: true }));
-                            }
-
-                            // 2. Set Montant HT input
-                            const htInput = row.querySelector("input[name*='MontantHT'], input[id*='MontantHT']") || row.querySelectorAll("input")[0];
-                            if (htInput) {
-                                htInput.value = data.montant_ht;
-                                if (window.jQuery) {
-                                    window.jQuery(htInput).val(data.montant_ht).trigger('input').trigger('change').trigger('keyup');
-                                }
-                                htInput.dispatchEvent(new Event('input', { bubbles: true }));
-                                htInput.dispatchEvent(new Event('change', { bubbles: true }));
-                            }
-
-                            // 3. Set Taxe input
-                            if (data.taxe) {
-                                const taxeInput = row.querySelector("input[name*='Taxe'], input[id*='Taxe']") || row.querySelectorAll("input")[1];
-                                if (taxeInput) {
-                                    taxeInput.value = data.taxe;
-                                    if (window.jQuery) {
-                                        window.jQuery(taxeInput).val(data.taxe).trigger('input').trigger('change').trigger('keyup');
-                                    }
-                                    taxeInput.dispatchEvent(new Event('input', { bubbles: true }));
-                                    taxeInput.dispatchEvent(new Event('change', { bubbles: true }));
-                                }
-                            }
-
-                            return {
-                                success: true,
-                                rub_val: selectEl ? selectEl.value : null,
-                                ht_val: htInput ? htInput.value : null
-                            };
-                        }""", {
-                            "rub_id": rub_id,
-                            "montant_ht": montant_ht,
-                            "taxe": taxe
-                        })
+                        # Step 2: Fill IdRubrique, MontantHT, and Taxe using safe helpers
+                        await safe_select_option(page, "#IdRubrique, table select[name*='IdRubrique'], select[name*='IdRubrique']", rub_id)
+                        await safe_fill_input(page, "#MontantHT, table input[name*='MontantHT'], input[name*='MontantHT']", montant_ht)
+                        if taxe and taxe != "0":
+                            await safe_fill_input(page, "#Taxe, table input[name*='Taxe'], input[name*='Taxe']", taxe)
                         
-                        print(f"        -> Verified in DOM: Rubrique={filled_info.get('rub_val')}, HT={filled_info.get('ht_val')}")
                         await page.wait_for_timeout(600)
 
-                        # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓) ON THE ACTIVE EDITING ROW
-                        print(f"        -> Clicking 7th column (green checkmark ✓)...")
+                        # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓)
+                        print(f"        -> Clicking green checkmark (✓)...")
                         
-                        # Click the 7th column of the active row (index 6)
+                        # Method A: Playwright locator on the 7th column of the row containing #MontantHT
+                        col7_loc = page.locator("table tr:has(#MontantHT) td:nth-child(7) a, table tr:has(#MontantHT) td:nth-child(7), table tbody tr:first-child td:nth-child(7) a, table tbody tr:first-child td:nth-child(7)").first
+                        if await col7_loc.count() > 0:
+                            try:
+                                await col7_loc.click(timeout=2000, force=True)
+                            except Exception:
+                                pass
+                        
+                        # Method B: Direct JS click on column 7
                         await page.evaluate("""() => {
-                            const row = document.querySelector("table tbody tr:has(select), table tbody tr:has(input), table tbody tr.editing, table tbody tr:first-child");
+                            const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
+                            const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
                             if (row) {
                                 const tds = row.querySelectorAll("td");
                                 if (tds.length >= 7) {
-                                    const col7 = tds[6]; // 7th column (green checkmark)
-                                    const target = col7.querySelector("a, button, i, span") || col7;
-                                    target.click();
+                                    const btn = tds[6].querySelector("a, button, i, span") || tds[6];
+                                    btn.click();
                                     return true;
                                 }
                             }
                             return false;
                         }""")
 
-                        # Fallback locator click on 7th column of the editing row
-                        col7_locator = page.locator("table tbody tr:has(input) td:nth-child(7) a, table tbody tr:first-child td:nth-child(7) a, table tbody tr.editing td:nth-child(7) a, table tbody tr:first-child td:nth-child(7)").first
-                        if await col7_locator.count() > 0:
-                            try:
-                                await col7_locator.click(timeout=1500, force=True)
-                            except Exception:
-                                pass
-
-                        # Step 4: WAIT FOR THE ROW TO LOCK IN AND AJAX TABLE RELOAD TO COMPLETE
-                        try:
-                            # Wait until the input elements disappear (row converted to static text)
-                            await page.wait_for_function(
-                                "() => !document.querySelector('table tbody tr select, table tbody tr input[name*=\"MontantHT\"]')",
-                                timeout=6000
-                            )
-                        except Exception:
-                            # If timeout, wait fixed 2.5s
-                            await page.wait_for_timeout(2500)
-
-                        await page.wait_for_timeout(800)
-                        print(f"    [✓] Rubrique [{rub_id}] successfully committed to table.")
+                        # Step 4: Wait for the row to lock in and the table AJAX reload to finish
+                        await page.wait_for_timeout(2000)
+                        print(f"    [✓] Rubrique [{rub_id}] locked in with checkmark (✓).")
                         
                     print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
+
 
                     # Re-trigger calculations so all dependent fields update with the rubriques
                     print(f"[*] Updating automatic calculation fields (Montant Arrêté, Base Indemnité, etc.)...")
