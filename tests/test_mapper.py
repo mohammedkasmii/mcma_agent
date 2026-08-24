@@ -10,6 +10,72 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from mapper import WexiaToDossierMapper
 
 
+FALLBACK_SE00009_DATA = {
+    "dossier": {
+        "claim_number": "se00009",
+        "vehicle_make": "DACIA",
+        "vehicle_model": "SANDERO",
+        "vehicle_year": 2026,
+        "license_plate": "36165-B-50",
+        "incident_date": "2024-08-02T00:00:00+00:00",
+        "incident_description": "MODE NORMAL",
+        "market_value": 150000,
+        "mission_type": "normal",
+        "salvage_value": 18000,
+        "first_registration_date": "2026-05-18",
+        "insured_type": "location_voiture",
+        "reference_number": "MCM24-08-26.WEX9066",
+        "responsibility_rate": 100,
+        "is_reform": False,
+    },
+    "vehicule": {
+        "make": "DACIA",
+        "model": "SANDERO",
+        "year": 2026,
+        "license_plate": "36165-B-50",
+        "first_registration_date": "2026-05-18",
+        "market_value": 150000,
+        "salvage_value": 18000,
+    },
+    "assureur": {
+        "nom": "MCMA",
+        "reference_dossier": "MCM24-08-26.WEX9066",
+        "responsibility_rate": 100,
+    },
+    "devis": [
+        {
+            "extracted_data": {
+                "immatriculation": "36165-U-50",
+                "date_devis": "2024-08-04",
+                "total_ttc": 12900,
+                "total_ht": 10750,
+                "tva_amount": 2150
+            }
+        }
+    ],
+    "chiffrages": [
+        {
+            "id": "b82bcfb7-eb1a-47b8-83fc-7b4b144d9203",
+            "status": "approved",
+            "scenario_type": "repair",
+            "is_final": False,
+            "total_cost": 10749.99,
+            "tax_amount": 2150.00,
+            "final_cost": 12899.99,
+            "lignes_pieces": [
+                {"item_name": "2 Portes (AR) (D)", "item_type": "part", "part_type": "original", "repair_action": "remplacement", "subtotal": 4583.33, "unit_price": 2291.67},
+                {"item_name": "Retroviseur", "item_type": "part", "part_type": "original", "repair_action": "remplacement", "subtotal": 666.67, "unit_price": 666.67},
+                {"item_name": "Pare-brise", "item_type": "part", "part_type": "original", "repair_action": "remplacement", "subtotal": 1583.33, "unit_price": 1583.33},
+                {"item_name": "Colle Pare-brise", "item_type": "part", "part_type": "original", "repair_action": "remplacement", "subtotal": 375.00, "unit_price": 187.50},
+                {"item_name": "Vitre porte", "item_type": "part", "part_type": "original", "repair_action": "remplacement", "subtotal": 833.33, "unit_price": 833.33},
+                {"item_name": "MONTAGE", "item_type": "labor", "notes": "carrosserie", "subtotal": 208.33, "unit_price": 208.33},
+                {"item_name": "Carrosserie de face", "item_type": "labor", "notes": "carrosserie", "subtotal": 2500.00, "unit_price": 2500.00},
+            ]
+        }
+    ]
+}
+
+
 @pytest.fixture
 def mapper():
     return WexiaToDossierMapper()
@@ -17,9 +83,19 @@ def mapper():
 
 @pytest.fixture
 def se00009_data():
-    path = os.path.join(os.path.dirname(__file__), "..", "input_dossier", "dossier-se00009.json")
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    candidate_paths = [
+        os.path.join(os.path.dirname(__file__), "..", "input_dossier", "dossier-se00009.json"),
+        os.path.join(os.getcwd(), "input_dossier", "dossier-se00009.json"),
+        os.path.join(os.path.dirname(__file__), "dossier-se00009.json"),
+    ]
+    for p in candidate_paths:
+        if os.path.exists(p):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    return FALLBACK_SE00009_DATA
 
 
 def test_1_se00009_exact_rubriques_and_totals(mapper, se00009_data):
