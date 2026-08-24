@@ -507,8 +507,60 @@ async def process_workflow(data: dict):
                     print(f"[*] Updating automatic calculation fields (Montant Arrêté, Base Indemnité, etc.)...")
                     await trigger_mcma_calculations(page)
 
+                    # --- FORCE CHARGE MUTUELLE ---
+                    # MCMA server pre-fills MontantChargeSocietaire based on stored PartResponsabilite.
+                    # We need the total to appear in MontantChargeMutuelle (right side), not sociétaire (left).
+                    # Read MontantReparation from the DOM and put it into ChargeMutuelle, set ChargeSocietaire = 0.
+                    print(f"[*] Setting Montant à charge mutuelle...")
+                    try:
+                        await page.evaluate("""() => {
+                            const repVal = document.querySelector('#MontantReparation')?.value || '0';
+                            
+                            // Normal mode fields
+                            const mutuelle = document.querySelector('#MontantChargeMutuelle');
+                            const societaire = document.querySelector('#MontantChargeSocietaire');
+                            if (mutuelle) {
+                                mutuelle.value = repVal;
+                                mutuelle.dispatchEvent(new Event('input', { bubbles: true }));
+                                mutuelle.dispatchEvent(new Event('change', { bubbles: true }));
+                                if (window.jQuery) { window.jQuery(mutuelle).trigger('keyup').trigger('change'); }
+                            }
+                            if (societaire) {
+                                societaire.value = '0';
+                                societaire.dispatchEvent(new Event('input', { bubbles: true }));
+                                societaire.dispatchEvent(new Event('change', { bubbles: true }));
+                                if (window.jQuery) { window.jQuery(societaire).trigger('keyup').trigger('change'); }
+                            }
+                            
+                            // Devis (Garage Conventionne) mode fields
+                            const devisMut = document.querySelector('#DevisMontantChargeMutuelle');
+                            const devisSoc = document.querySelector('#DevisMontantChargeSocietaire');
+                            if (devisMut) {
+                                const devisRepVal = document.querySelector('#DevisMontantTTC')?.value || repVal;
+                                devisMut.value = devisRepVal;
+                                devisMut.dispatchEvent(new Event('input', { bubbles: true }));
+                                devisMut.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                            if (devisSoc) {
+                                devisSoc.value = '0';
+                                devisSoc.dispatchEvent(new Event('input', { bubbles: true }));
+                                devisSoc.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                        }""")
+                        charge_check = await page.evaluate("""() => {
+                            return {
+                                mutuelle: document.querySelector('#MontantChargeMutuelle')?.value || document.querySelector('#DevisMontantChargeMutuelle')?.value || '0',
+                                societaire: document.querySelector('#MontantChargeSocietaire')?.value || document.querySelector('#DevisMontantChargeSocietaire')?.value || '0'
+                            };
+                        }""")
+                        print(f"    [✓] Montant à charge mutuelle = {charge_check.get('mutuelle', '?')}")
+                        print(f"    [✓] Montant à charge sociétaire = {charge_check.get('societaire', '?')}")
+                    except Exception as charge_err:
+                        print(f"    [!] Could not set charge mutuelle: {charge_err}")
+
                 except Exception as rub_err:
                     print(f"    [!] Rubriques note: {rub_err}")
+
 
 
 
