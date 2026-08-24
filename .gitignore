@@ -22,9 +22,12 @@ temp/
 .DS_Store
 Thumbs.db
 
-# Investigation dumps, traces & screenshots
+# Archives & Dumps
+*.zip
+*.tar.gz
 v12_camoufox_output/
 script spy/
 script\ spy/
+
 
 
