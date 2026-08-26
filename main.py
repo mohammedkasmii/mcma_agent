@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
 from mapper import WexiaToDossierMapper
+from garage_conventionne import fill_garage_conventionne
 import pymupdf as fitz
 import os
 import sys
@@ -429,137 +430,155 @@ async def process_workflow(data: dict):
             await page.wait_for_timeout(500)
 
             # --- STEP 7: INSERT LINE ITEMS (RUBRIQUES) ---
+            mode_reparation = data.get("mode_reparation", "normal")
             rubriques = data.get("rubriques", [])
-            if rubriques:
-                print(f"[*] Adding {len(rubriques)} line item(s) (rubriques)...")
-                try:
-                    # Ensure Véhicule Réparable (#VehRepareI) is checked to display the rubriques table
-                    repare_box = page.locator("#VehRepareI").first
-                    if await repare_box.count() > 0:
-                        if not await repare_box.is_checked():
-                            await safe_toggle_checkbox(page, "#VehRepareI", True)
+
+            if mode_reparation == "conventionne":
+                # ============================================================
+                # GARAGE CONVENTIONNÉ (PEC) MODE — delegated to separate module
+                # ============================================================
+                if rubriques:
+                    gc_result = await fill_garage_conventionne(page, data, test_mode=TEST_MODE)
+                    print(f"    [GC] Result: {gc_result.get('status')} — {gc_result.get('message', '')}")
+                    if gc_result.get("log_file"):
+                        print(f"    [GC] Full log: {gc_result['log_file']}")
+                else:
+                    print(f"    [!] Garage Conventionné mode but no rubriques to process.")
+
+            else:
+                # ============================================================
+                # MODE NORMAL — existing code (untouched)
+                # ============================================================
+                if rubriques:
+                    print(f"[*] Adding {len(rubriques)} line item(s) (rubriques)...")
+                    try:
+                        # Ensure Véhicule Réparable (#VehRepareI) is checked to display the rubriques table
+                        repare_box = page.locator("#VehRepareI").first
+                        if await repare_box.count() > 0:
+                            if not await repare_box.is_checked():
+                                await safe_toggle_checkbox(page, "#VehRepareI", True)
+                                await page.wait_for_timeout(600)
+
+                        for idx, item in enumerate(rubriques, 1):
+                            rub_id = str(item.get("IdRubrique"))
+                            montant_ht = str(item.get("MontantHT", "0"))
+                            taxe = str(item.get("Taxe", "0"))
+                            label = item.get("_label", "")
+
+                            print(f"    [{idx}/{len(rubriques)}] [Ajouter +] -> [Id={rub_id}] {label} (HT: {montant_ht} DH, TVA: {taxe} DH)...")
+                            
+                            # Step 1: Click the green 'Ajouter +' button
+                            ajouter_btn = page.locator("a.btn-success:has-text('Ajouter'), a:has-text('Ajouter +'), a[onclick*='addRow']").first
+                            if await ajouter_btn.count() > 0:
+                                try:
+                                    await ajouter_btn.scroll_into_view_if_needed(timeout=1500)
+                                    await ajouter_btn.click(timeout=2500, force=True)
+                                except Exception:
+                                    await page.evaluate("const b = document.querySelector('a.btn-success'); if(b) b.click();")
+                            else:
+                                await page.evaluate("if (typeof edataTable_RapportDet !== 'undefined') edataTable_RapportDet.addRow();")
+
+                            # Wait for the editable row inputs to appear
+                            await page.wait_for_timeout(1000)
+                            
+                            # Step 2: Fill IdRubrique, MontantHT, and Taxe using safe helpers
+                            await safe_select_option(page, "#IdRubrique, table select[name*='IdRubrique'], select[name*='IdRubrique']", rub_id)
+                            await safe_fill_input(page, "#MontantHT, table input[name*='MontantHT'], input[name*='MontantHT']", montant_ht)
+                            if taxe and taxe != "0":
+                                await safe_fill_input(page, "#Taxe, table input[name*='Taxe'], input[name*='Taxe']", taxe)
+                            
                             await page.wait_for_timeout(600)
 
-                    for idx, item in enumerate(rubriques, 1):
-                        rub_id = str(item.get("IdRubrique"))
-                        montant_ht = str(item.get("MontantHT", "0"))
-                        taxe = str(item.get("Taxe", "0"))
-                        label = item.get("_label", "")
-
-                        print(f"    [{idx}/{len(rubriques)}] [Ajouter +] -> [Id={rub_id}] {label} (HT: {montant_ht} DH, TVA: {taxe} DH)...")
-                        
-                        # Step 1: Click the green 'Ajouter +' button
-                        ajouter_btn = page.locator("a.btn-success:has-text('Ajouter'), a:has-text('Ajouter +'), a[onclick*='addRow']").first
-                        if await ajouter_btn.count() > 0:
-                            try:
-                                await ajouter_btn.scroll_into_view_if_needed(timeout=1500)
-                                await ajouter_btn.click(timeout=2500, force=True)
-                            except Exception:
-                                await page.evaluate("const b = document.querySelector('a.btn-success'); if(b) b.click();")
-                        else:
-                            await page.evaluate("if (typeof edataTable_RapportDet !== 'undefined') edataTable_RapportDet.addRow();")
-
-                        # Wait for the editable row inputs to appear
-                        await page.wait_for_timeout(1000)
-                        
-                        # Step 2: Fill IdRubrique, MontantHT, and Taxe using safe helpers
-                        await safe_select_option(page, "#IdRubrique, table select[name*='IdRubrique'], select[name*='IdRubrique']", rub_id)
-                        await safe_fill_input(page, "#MontantHT, table input[name*='MontantHT'], input[name*='MontantHT']", montant_ht)
-                        if taxe and taxe != "0":
-                            await safe_fill_input(page, "#Taxe, table input[name*='Taxe'], input[name*='Taxe']", taxe)
-                        
-                        await page.wait_for_timeout(600)
-
-                        # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓)
-                        print(f"        -> Clicking green checkmark (✓)...")
-                        
-                        # Method A: Playwright locator on the 7th column of the row containing #MontantHT
-                        col7_loc = page.locator("table tr:has(#MontantHT) td:nth-child(7) a, table tr:has(#MontantHT) td:nth-child(7), table tbody tr:first-child td:nth-child(7) a, table tbody tr:first-child td:nth-child(7)").first
-                        if await col7_loc.count() > 0:
-                            try:
-                                await col7_loc.click(timeout=2000, force=True)
-                            except Exception:
-                                pass
-                        
-                        # Method B: Direct JS click on column 7
-                        await page.evaluate("""() => {
-                            const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
-                            const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
-                            if (row) {
-                                const tds = row.querySelectorAll("td");
-                                if (tds.length >= 7) {
-                                    const btn = tds[6].querySelector("a, button, i, span") || tds[6];
-                                    btn.click();
-                                    return true;
+                            # Step 3: CLICK THE 7th COLUMN (GREEN CHECKMARK ✓)
+                            print(f"        -> Clicking green checkmark (✓)...")
+                            
+                            # Method A: Playwright locator on the 7th column of the row containing #MontantHT
+                            col7_loc = page.locator("table tr:has(#MontantHT) td:nth-child(7) a, table tr:has(#MontantHT) td:nth-child(7), table tbody tr:first-child td:nth-child(7) a, table tbody tr:first-child td:nth-child(7)").first
+                            if await col7_loc.count() > 0:
+                                try:
+                                    await col7_loc.click(timeout=2000, force=True)
+                                except Exception:
+                                    pass
+                            
+                            # Method B: Direct JS click on column 7
+                            await page.evaluate("""() => {
+                                const ht = document.querySelector("#MontantHT") || document.querySelector("#IdRubrique");
+                                const row = ht ? ht.closest("tr") : document.querySelector("table tbody tr");
+                                if (row) {
+                                    const tds = row.querySelectorAll("td");
+                                    if (tds.length >= 7) {
+                                        const btn = tds[6].querySelector("a, button, i, span") || tds[6];
+                                        btn.click();
+                                        return true;
+                                    }
                                 }
-                            }
-                            return false;
-                        }""")
+                                return false;
+                            }""")
 
-                        # Step 4: Wait for the row to lock in and the table AJAX reload to finish
-                        await page.wait_for_timeout(2000)
-                        print(f"    [✓] Rubrique [{rub_id}] locked in with checkmark (✓).")
-                        
-                    print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
-
-
-                    # Re-trigger calculations so all dependent fields update with the rubriques
-                    print(f"[*] Updating automatic calculation fields (Montant Arrêté, Base Indemnité, etc.)...")
-                    await trigger_mcma_calculations(page)
-
-                    # --- FORCE CHARGE MUTUELLE ---
-                    # MCMA server pre-fills MontantChargeSocietaire based on stored PartResponsabilite.
-                    # We need the total to appear in MontantChargeMutuelle (right side), not sociétaire (left).
-                    # Read MontantReparation from the DOM and put it into ChargeMutuelle, set ChargeSocietaire = 0.
-                    print(f"[*] Setting Montant à charge mutuelle...")
-                    try:
-                        await page.evaluate("""() => {
-                            const repVal = document.querySelector('#MontantReparation')?.value || '0';
+                            # Step 4: Wait for the row to lock in and the table AJAX reload to finish
+                            await page.wait_for_timeout(2000)
+                            print(f"    [✓] Rubrique [{rub_id}] locked in with checkmark (✓).")
                             
-                            // Normal mode fields
-                            const mutuelle = document.querySelector('#MontantChargeMutuelle');
-                            const societaire = document.querySelector('#MontantChargeSocietaire');
-                            if (mutuelle) {
-                                mutuelle.value = repVal;
-                                mutuelle.dispatchEvent(new Event('input', { bubbles: true }));
-                                mutuelle.dispatchEvent(new Event('change', { bubbles: true }));
-                                if (window.jQuery) { window.jQuery(mutuelle).trigger('keyup').trigger('change'); }
-                            }
-                            if (societaire) {
-                                societaire.value = '0';
-                                societaire.dispatchEvent(new Event('input', { bubbles: true }));
-                                societaire.dispatchEvent(new Event('change', { bubbles: true }));
-                                if (window.jQuery) { window.jQuery(societaire).trigger('keyup').trigger('change'); }
-                            }
-                            
-                            // Devis (Garage Conventionne) mode fields
-                            const devisMut = document.querySelector('#DevisMontantChargeMutuelle');
-                            const devisSoc = document.querySelector('#DevisMontantChargeSocietaire');
-                            if (devisMut) {
-                                const devisRepVal = document.querySelector('#DevisMontantTTC')?.value || repVal;
-                                devisMut.value = devisRepVal;
-                                devisMut.dispatchEvent(new Event('input', { bubbles: true }));
-                                devisMut.dispatchEvent(new Event('change', { bubbles: true }));
-                            }
-                            if (devisSoc) {
-                                devisSoc.value = '0';
-                                devisSoc.dispatchEvent(new Event('input', { bubbles: true }));
-                                devisSoc.dispatchEvent(new Event('change', { bubbles: true }));
-                            }
-                        }""")
-                        charge_check = await page.evaluate("""() => {
-                            return {
-                                mutuelle: document.querySelector('#MontantChargeMutuelle')?.value || document.querySelector('#DevisMontantChargeMutuelle')?.value || '0',
-                                societaire: document.querySelector('#MontantChargeSocietaire')?.value || document.querySelector('#DevisMontantChargeSocietaire')?.value || '0'
-                            };
-                        }""")
-                        print(f"    [✓] Montant à charge mutuelle = {charge_check.get('mutuelle', '?')}")
-                        print(f"    [✓] Montant à charge sociétaire = {charge_check.get('societaire', '?')}")
-                    except Exception as charge_err:
-                        print(f"    [!] Could not set charge mutuelle: {charge_err}")
+                        print(f"    [✓] Finished adding all {len(rubriques)} rubriques successfully.")
 
-                except Exception as rub_err:
-                    print(f"    [!] Rubriques note: {rub_err}")
+
+                        # Re-trigger calculations so all dependent fields update with the rubriques
+                        print(f"[*] Updating automatic calculation fields (Montant Arrêté, Base Indemnité, etc.)...")
+                        await trigger_mcma_calculations(page)
+
+                        # --- FORCE CHARGE MUTUELLE ---
+                        # MCMA server pre-fills MontantChargeSocietaire based on stored PartResponsabilite.
+                        # We need the total to appear in MontantChargeMutuelle (right side), not sociétaire (left).
+                        # Read MontantReparation from the DOM and put it into ChargeMutuelle, set ChargeSocietaire = 0.
+                        print(f"[*] Setting Montant à charge mutuelle...")
+                        try:
+                            await page.evaluate("""() => {
+                                const repVal = document.querySelector('#MontantReparation')?.value || '0';
+                                
+                                // Normal mode fields
+                                const mutuelle = document.querySelector('#MontantChargeMutuelle');
+                                const societaire = document.querySelector('#MontantChargeSocietaire');
+                                if (mutuelle) {
+                                    mutuelle.value = repVal;
+                                    mutuelle.dispatchEvent(new Event('input', { bubbles: true }));
+                                    mutuelle.dispatchEvent(new Event('change', { bubbles: true }));
+                                    if (window.jQuery) { window.jQuery(mutuelle).trigger('keyup').trigger('change'); }
+                                }
+                                if (societaire) {
+                                    societaire.value = '0';
+                                    societaire.dispatchEvent(new Event('input', { bubbles: true }));
+                                    societaire.dispatchEvent(new Event('change', { bubbles: true }));
+                                    if (window.jQuery) { window.jQuery(societaire).trigger('keyup').trigger('change'); }
+                                }
+                                
+                                // Devis (Garage Conventionne) mode fields
+                                const devisMut = document.querySelector('#DevisMontantChargeMutuelle');
+                                const devisSoc = document.querySelector('#DevisMontantChargeSocietaire');
+                                if (devisMut) {
+                                    const devisRepVal = document.querySelector('#DevisMontantTTC')?.value || repVal;
+                                    devisMut.value = devisRepVal;
+                                    devisMut.dispatchEvent(new Event('input', { bubbles: true }));
+                                    devisMut.dispatchEvent(new Event('change', { bubbles: true }));
+                                }
+                                if (devisSoc) {
+                                    devisSoc.value = '0';
+                                    devisSoc.dispatchEvent(new Event('input', { bubbles: true }));
+                                    devisSoc.dispatchEvent(new Event('change', { bubbles: true }));
+                                }
+                            }""")
+                            charge_check = await page.evaluate("""() => {
+                                return {
+                                    mutuelle: document.querySelector('#MontantChargeMutuelle')?.value || document.querySelector('#DevisMontantChargeMutuelle')?.value || '0',
+                                    societaire: document.querySelector('#MontantChargeSocietaire')?.value || document.querySelector('#DevisMontantChargeSocietaire')?.value || '0'
+                                };
+                            }""")
+                            print(f"    [✓] Montant à charge mutuelle = {charge_check.get('mutuelle', '?')}")
+                            print(f"    [✓] Montant à charge sociétaire = {charge_check.get('societaire', '?')}")
+                        except Exception as charge_err:
+                            print(f"    [!] Could not set charge mutuelle: {charge_err}")
+
+                    except Exception as rub_err:
+                        print(f"    [!] Rubriques note: {rub_err}")
 
 
 

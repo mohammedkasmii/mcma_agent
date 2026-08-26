@@ -155,6 +155,9 @@ async def main():
     print("="*60)
     print(f"  Target Plate (Matricule) : {raw_plate} (MCMA Search: '{search_num or raw_plate}')")
     print(f"  Target Dossier Ref       : {payload.get('dossier_reference')}")
+    mode = payload.get('mode_reparation', 'normal')
+    mode_label = "🏗️  GARAGE CONVENTIONNÉ (PEC)" if mode == "conventionne" else "🔧 MODE NORMAL"
+    print(f"  Mode Réparation          : {mode_label}")
     print(f"  Montant Réparation (HT)  : {payload.get('text_fields', {}).get('MontantReparation')} DH")
     print(f"  Montant TVA (20%)        : {payload.get('text_fields', {}).get('MontantTVA')} DH")
     print(f"  Montant Total (TTC)      : {payload.get('text_fields', {}).get('MontantTTC')} DH")
