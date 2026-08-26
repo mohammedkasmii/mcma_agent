@@ -1,12 +1,11 @@
 """
-mapper.py — Backward-Compatibility Bridge
-==========================================
-Re-exports WexiaToDossierMapper, constants, and utilities from core/ and mapper/.
+mapper package — Data mapping and translation layer for MCMA dossier schemas.
 """
 
 from mapper.wexia_mapper import WexiaToDossierMapper
 from core.constants import (
     RUBRIQUE_CATALOG,
+    RUBRIQUE_MATCH_ALIASES,
     PART_ORIGIN_ORIGINAL,
     PART_ORIGIN_ADAPTABLE,
     PART_ORIGIN_RECOVERED,
@@ -27,11 +26,18 @@ from core.utils import (
 __all__ = [
     "WexiaToDossierMapper",
     "RUBRIQUE_CATALOG",
-    "normalize_text",
-    "normalize_registration",
-    "quantize_money",
-    "format_money",
-    "to_decimal",
+    "RUBRIQUE_MATCH_ALIASES",
+    "PART_ORIGIN_ORIGINAL",
+    "PART_ORIGIN_ADAPTABLE",
+    "PART_ORIGIN_RECOVERED",
+    "SYSTEM_RUBRIQUE_MATRIX",
     "DEFAULT_TVA_RATE",
     "CENT",
+    "to_decimal",
+    "quantize_money",
+    "format_money",
+    "normalize_text",
+    "normalize_registration",
+    "extract_search_matricule",
+    "format_date_dd_mm_yyyy",
 ]
