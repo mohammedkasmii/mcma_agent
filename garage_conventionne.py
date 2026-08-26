@@ -9,7 +9,7 @@ Key differences from Normal Mode:
   - Instead, edits PRE-EXISTING rows in Table 2 (#DevisDetTableVal) in-place.
   - Each row is: pencil icon → fill fields → green checkmark → AJAX save.
   - After all rows, triggers DevisCalculerMontantCharge() for financial split.
-  - Optionally clicks #DEVISDET_Btn ("Valider Devis") in production mode.
+  - STRICT SAFETY: Never clicks #DEVISDET_Btn ("Valider Devis") or #Enregistrer, leaving everything for human inspection.
 
 Logging:
   Every action is logged to logs/gc_<timestamp>.json for easy debugging.
@@ -670,25 +670,12 @@ async def fill_garage_conventionne(page, data: dict, test_mode: bool = True) -> 
     # --- Screenshot: final state ---
     await _save_screenshot(page, logger, "06_final_state")
 
-    # --- Step 6: Valider Devis (only in production mode) ---
-    if not test_mode:
-        print(f"[*] Step 6: Clicking 'Valider Devis' (#DEVISDET_Btn)...")
-        try:
-            btn = page.locator("#DEVISDET_Btn").first
-            if await btn.count() > 0 and await btn.is_visible():
-                await btn.click()
-                await page.wait_for_timeout(3000)
-                logger.log("VALIDER_DEVIS", "OK", "Clicked #DEVISDET_Btn (Valider Devis)")
-                await _save_screenshot(page, logger, "07_after_valider")
-            else:
-                logger.log("VALIDER_DEVIS", "WARN",
-                            "#DEVISDET_Btn not found or not visible. May have been already validated.")
-        except Exception as e:
-            logger.log("VALIDER_DEVIS", "ERROR", f"Exception clicking Valider Devis: {e}")
-    else:
-        logger.log("VALIDER_DEVIS", "INFO",
-                    "TEST MODE — Skipped clicking Valider Devis (#DEVISDET_Btn)")
-        print(f"    ⏸️  [TEST MODE] Skipped Valider Devis button (safety mode)")
+    # --- Step 6: Valider Devis (STRICTLY NEVER CLICKED — Safety / Review Mode) ---
+    # The Valider Devis button (#DEVISDET_Btn) below Table 2 must NEVER be clicked by the agent
+    # so that the mission is not committed and tests can be rerun / manually inspected.
+    logger.log("VALIDER_DEVIS", "INFO",
+                "SAFETY / REVIEW MODE — #DEVISDET_Btn ('Valider Devis') is left UNTOUCHED for human verification.")
+    print(f"    ⏸️  [REVIEW MODE] Valider Devis button (#DEVISDET_Btn) is intentionally untouched for human verification.")
 
     # --- Summary ---
     summary = logger.summary()
