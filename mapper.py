@@ -650,7 +650,7 @@ class WexiaToDossierMapper:
 
             ttc_val = ht_val + tva_val
             vet_val = quantize_money(item["vetuste"])
-            taux_vet = quantize_money((vet_val / ht_val * 100)) if ht_val > 0 else Decimal("0.00")
+            taux_vet = quantize_money((vet_val / ttc_val * 100)) if ttc_val > 0 else Decimal("0.00")
 
             rubriques_list.append({
                 "IdRubrique": item["IdRubrique"],

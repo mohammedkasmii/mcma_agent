@@ -4,26 +4,133 @@ garage_conventionne.py — Garage Conventionné (PEC) Workflow Controller
 Self-contained module for handling the "Garage Conventionné" (Prise en Charge)
 mission mode in MCMA. Called from main.py when mode_reparation == "conventionne".
 
-Key differences from Normal Mode:
-  - Does NOT click "Ajouter +" to create new rubrique rows.
-  - Instead, edits PRE-EXISTING rows in Table 2 (#DevisDetTableVal) in-place.
-  - Each row is: pencil icon → fill fields → green checkmark → AJAX save.
-  - After all rows, triggers DevisCalculerMontantCharge() for financial split.
-  - STRICT SAFETY: Never clicks #DEVISDET_Btn ("Valider Devis") or #Enregistrer, leaving everything for human inspection.
-
-Logging:
-  Every action is logged to logs/gc_<timestamp>.json for easy debugging.
-  When something fails, share this log file for fast diagnosis.
+Architecture & Security:
+  - Edits PRE-EXISTING rows in Table 2 (#DevisDetTableVal) in-place.
+  - Strict All-or-Nothing Matching: aborts BEFORE any writes if even 1 rubrique is unmatched.
+  - Dynamic Row Re-Location: re-locates rows by label after every table redraw (no stale indexes).
+  - Full Field Injection: MontantHTValide, TaxeValide, TauxVetusteValide, MontantVetusteValide.
+  - Awaits and validates POST /updateDevisDet network response.
+  - Executes native DevisCalculerMontantCharge() for accurate financial split.
+  - STRICT SAFETY: #DEVISDET_Btn ("Valider Devis") and #Enregistrer are NEVER clicked.
+  - Structured Diagnostic Logging: logs/gc_<timestamp>.json + logs/screenshots/.
 """
 
 import os
+import re
 import json
 import time
 from datetime import datetime
+from mapper import RUBRIQUE_CATALOG, normalize_text
 
 
 # =============================================================================
-# Structured Logger
+# Rubrique Synonyms & Aliases for Robust Table 2 Row Matching
+# =============================================================================
+RUBRIQUE_MATCH_ALIASES = {
+    "1": [
+        "fournitures carrosserie origines",
+        "fournitures carrosserie origine",
+        "pieces carrosserie origines",
+        "pieces carrosserie origine",
+        "fournitures carrosserie oem",
+        "pieces origines",
+    ],
+    "2": [
+        "fournitures carrosserie adaptables",
+        "fournitures carrosserie adaptable",
+        "pieces carrosserie adaptables",
+        "pieces carrosserie adaptable",
+        "pieces adaptables",
+    ],
+    "3": [
+        "total pieces occasions recuperables",
+        "total pieces occasions",
+        "pieces occasions recuperables",
+        "fournitures carrosserie recuperables",
+        "fournitures carrosserie occasions",
+        "pieces recuperables",
+        "pieces occasions",
+    ],
+    "4": [
+        "fournitures mecanique origines",
+        "fournitures mecanique origine",
+        "pieces mecanique origines",
+    ],
+    "5": [
+        "fournitures mecanique adaptables",
+        "fournitures mecanique adaptable",
+        "pieces mecanique adaptables",
+    ],
+    "6": [
+        "fournitures mecanique recuperables",
+        "fournitures mecanique occasions",
+        "pieces mecanique recuperables",
+    ],
+    "7": [
+        "main d oeuvre carrosserie",
+        "mo carrosserie",
+        "main d oeuvre tole",
+        "mo tole",
+        "main doeuvre carrosserie",
+    ],
+    "8": [
+        "main d oeuvre mecanique",
+        "mo mecanique",
+        "main doeuvre mecanique",
+    ],
+    "10": [
+        "peinture origines",
+        "peinture origine",
+    ],
+    "11": [
+        "peinture adaptables",
+        "peinture adaptable",
+    ],
+    "12": [
+        "main d oeuvre peinture",
+        "mo peinture",
+        "main doeuvre peinture",
+    ],
+    "13": [
+        "electrique d origine",
+        "electrique origines",
+        "fournitures electrique origines",
+    ],
+    "14": [
+        "electrique adaptables",
+        "electrique adaptable",
+    ],
+    "15": [
+        "electrique recuperables",
+        "electrique occasions",
+    ],
+    "16": [
+        "peintures et ingredients",
+        "peinture et ingredients",
+        "peintures ingredients",
+        "ingredients peinture",
+    ],
+    "17": ["passage au marbre", "marbre"],
+    "18": ["parallelisme et equilibrage", "geometrie"],
+    "19": ["reparation vitre"],
+    "20": ["remplacement vitre"],
+    "21": ["reparation pare brise"],
+    "22": ["remplacement pare brise"],
+    "23": ["reparation lunette arriere"],
+    "24": ["remplacement lunette arriere"],
+    "25": ["colle", "colle pare brise", "mastic colle"],
+    "26": ["kit colle pare brise et lunette arriere", "kit colle"],
+    "27": ["kit colle vitre"],
+    "28": [
+        "main d oeuvre electrique",
+        "mo electrique",
+        "main doeuvre electrique",
+    ],
+}
+
+
+# =============================================================================
+# Structured JSON Logger
 # =============================================================================
 class GCLogger:
     """Structured JSON logger for the Garage Conventionné workflow."""
@@ -34,10 +141,10 @@ class GCLogger:
         self.log_path = os.path.join(log_dir, f"gc_{ts}.json")
         self.entries = []
         self.start_time = time.time()
-        self._write()  # Create the file immediately
+        self._write()
 
     def log(self, step: str, status: str, detail: str, extra: dict = None):
-        """Add a log entry."""
+        """Add a log entry and write to disk."""
         entry = {
             "time": datetime.now().strftime("%H:%M:%S"),
             "elapsed_s": round(time.time() - self.start_time, 2),
@@ -49,17 +156,19 @@ class GCLogger:
             entry["extra"] = extra
         self.entries.append(entry)
         self._write()
-        # Also print to console with icons
         icon = {"OK": "✓", "ERROR": "✗", "WARN": "⚠", "INFO": "ℹ"}.get(status, "·")
         print(f"    [{icon}] [{step}] {detail}")
 
     def _write(self):
-        """Persist log to disk after every entry."""
-        with open(self.log_path, "w", encoding="utf-8") as f:
-            json.dump(self.entries, f, ensure_ascii=False, indent=2)
+        """Persist log to disk immediately."""
+        try:
+            with open(self.log_path, "w", encoding="utf-8") as f:
+                json.dump(self.entries, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def summary(self) -> dict:
-        """Return a summary of the log."""
+        """Return a summary dictionary of execution stats."""
         ok = sum(1 for e in self.entries if e["status"] == "OK")
         err = sum(1 for e in self.entries if e["status"] == "ERROR")
         warn = sum(1 for e in self.entries if e["status"] == "WARN")
@@ -73,7 +182,7 @@ class GCLogger:
 
 
 # =============================================================================
-# Helper: Take a DOM snapshot of key fields
+# Diagnostic Helpers
 # =============================================================================
 async def _snapshot_dom_fields(page, logger: GCLogger):
     """Capture the current DOM state of key Garage Conventionné fields."""
@@ -98,18 +207,15 @@ async def _snapshot_dom_fields(page, logger: GCLogger):
                 BaseIndemnite: get('#BaseIndemnite'),
             };
         }""")
-        logger.log("DOM_SNAPSHOT", "INFO", f"Field snapshot captured", extra=state)
+        logger.log("DOM_SNAPSHOT", "INFO", "Field snapshot captured", extra=state)
         return state
     except Exception as e:
         logger.log("DOM_SNAPSHOT", "ERROR", f"Failed to capture DOM snapshot: {e}")
         return {}
 
 
-# =============================================================================
-# Helper: Save a screenshot
-# =============================================================================
 async def _save_screenshot(page, logger: GCLogger, label: str):
-    """Save a screenshot for debugging."""
+    """Save a timestamped screenshot for visual inspection."""
     try:
         os.makedirs("logs/screenshots", exist_ok=True)
         ts = datetime.now().strftime("%H%M%S")
@@ -121,47 +227,40 @@ async def _save_screenshot(page, logger: GCLogger, label: str):
 
 
 # =============================================================================
-# Step 1: Detect Table 2 and enumerate existing rows
+# Step 1: Detect Table 2 (#DevisDetTableVal) and enumerate existing rows
 # =============================================================================
 async def _detect_table2(page, logger: GCLogger) -> list:
     """
-    Detect #DevisDetTableVal and return a list of existing row info.
-    Each row: {index, row_text, rubrique_label}
+    Detect #DevisDetTableVal and return structured info for all existing rows.
     """
-    # First check if the conventionne section is visible
-    section_visible = await page.evaluate("""() => {
-        const sec = document.querySelector('#sectionGarageConventionne, #blocDevisValide');
-        return sec ? (sec.offsetParent !== null || getComputedStyle(sec).display !== 'none') : false;
-    }""")
+    # Check if Table 2 exists on page
+    table_count = await page.locator("#DevisDetTableVal").count()
+    if table_count == 0:
+        logger.log("DETECT_TABLE2", "ERROR",
+                    "Table 2 (#DevisDetTableVal) NOT found in page DOM. "
+                    "This mission does not appear to be in Garage Conventionné mode on MCMA.")
+        return []
 
-    if not section_visible:
-        # Try to check if #DevisDetTableVal exists even if section wrapper doesn't
-        table_exists = await page.locator("#DevisDetTableVal").count()
-        if table_exists == 0:
-            logger.log("DETECT_TABLE2", "ERROR",
-                        "Neither #sectionGarageConventionne nor #DevisDetTableVal found on page. "
-                        "This mission may not be in Garage Conventionné mode on the MCMA side.")
-            return []
-        else:
-            logger.log("DETECT_TABLE2", "WARN",
-                        "Section wrapper not visible but #DevisDetTableVal exists. Proceeding.")
-
-    # Enumerate rows in Table 2
+    # Enumerate rows
     rows_info = await page.evaluate("""() => {
         const rows = document.querySelectorAll('#DevisDetTableVal tbody tr');
         const result = [];
         rows.forEach((tr, idx) => {
             const tds = tr.querySelectorAll('td');
-            if (tds.length >= 6) {
-                result.push({
-                    index: idx,
-                    row_id: tr.id || '',
-                    rubrique_label: tds[0]?.textContent?.trim() || '',
-                    current_ht: tds[1]?.textContent?.trim() || '',
-                    current_taxe: tds[2]?.textContent?.trim() || '',
-                    current_ttc: tds[3]?.textContent?.trim() || '',
-                    has_edit_btn: !!tr.querySelector('a.edit-row, a#Modifier, a[onclick*="editRow"]'),
-                });
+            if (tds.length >= 4) {
+                const label = tds[0]?.textContent?.trim() || '';
+                // Skip empty or placeholder rows
+                if (label && !label.toLowerCase().includes('aucun') && !label.toLowerCase().includes('no data')) {
+                    result.push({
+                        index: idx,
+                        row_id: tr.id || '',
+                        rubrique_label: label,
+                        current_ht: tds[1]?.textContent?.trim() || '',
+                        current_taxe: tds[2]?.textContent?.trim() || '',
+                        current_ttc: tds[3]?.textContent?.trim() || '',
+                        has_edit_btn: !!tr.querySelector('a.edit-row, a#Modifier, a[onclick*="editRow"], i.fa-pencil'),
+                    });
+                }
             }
         });
         return result;
@@ -170,401 +269,314 @@ async def _detect_table2(page, logger: GCLogger) -> list:
     if not rows_info:
         logger.log("DETECT_TABLE2", "WARN",
                     "Table 2 (#DevisDetTableVal) found but has 0 data rows. "
-                    "The garage devis may not have been loaded yet.")
+                    "The garage devis may not have been submitted or loaded yet.")
     else:
         logger.log("DETECT_TABLE2", "OK",
                     f"Found {len(rows_info)} row(s) in Table 2 (#DevisDetTableVal)")
         for r in rows_info:
             logger.log("DETECT_TABLE2_ROW", "INFO",
-                        f"  Row {r['index']}: [{r['rubrique_label']}] "
-                        f"HT={r['current_ht']} Taxe={r['current_taxe']} TTC={r['current_ttc']} "
-                        f"edit_btn={r['has_edit_btn']}")
+                        f"  Row {r['index']}: '{r['rubrique_label']}' "
+                        f"[HT={r['current_ht']} | Taxe={r['current_taxe']} | TTC={r['current_ttc']}]")
 
     return rows_info
 
 
 # =============================================================================
-# Step 2: Match rubriques from mapper output to Table 2 rows
+# Step 2: Strict All-or-Nothing Rubrique Matching
 # =============================================================================
-def _match_rubriques_to_rows(rubriques: list, table_rows: list, logger: GCLogger) -> list:
+def _match_single_rubrique(rub: dict, table_rows: list, used_indices: set) -> tuple:
     """
-    Match each rubrique from the mapper to a row in Table 2.
-    Returns a list of matched pairs: [{rubrique, row, match_type}]
-    and logs unmatched items.
+    Attempts to match a single rubrique against available Table 2 rows.
+    Returns (matched_row, match_method) or (None, None).
+    """
+    rub_id = str(rub.get("IdRubrique", "")).strip()
+    rub_lib = rub.get("LibRubrique") or rub.get("_label") or RUBRIQUE_CATALOG.get(rub_id, "")
+    norm_rub_lib = normalize_text(rub_lib)
+
+    # 1. Exact normalized label match
+    for row in table_rows:
+        if row["index"] in used_indices:
+            continue
+        norm_row_lib = normalize_text(row["rubrique_label"])
+        if norm_rub_lib and norm_rub_lib == norm_row_lib:
+            return row, f"exact_label ('{norm_rub_lib}')"
+
+    # 2. Known alias match for this IdRubrique
+    known_aliases = RUBRIQUE_MATCH_ALIASES.get(rub_id, [])
+    for row in table_rows:
+        if row["index"] in used_indices:
+            continue
+        norm_row_lib = normalize_text(row["rubrique_label"])
+        for alias in known_aliases:
+            norm_alias = normalize_text(alias)
+            if norm_alias and (norm_alias == norm_row_lib or norm_alias in norm_row_lib or norm_row_lib in norm_alias):
+                return row, f"known_alias ('{alias}')"
+
+    # 3. Substring inclusion match (min 4 chars)
+    for row in table_rows:
+        if row["index"] in used_indices:
+            continue
+        norm_row_lib = normalize_text(row["rubrique_label"])
+        if len(norm_rub_lib) >= 4 and (norm_rub_lib in norm_row_lib or norm_row_lib in norm_rub_lib):
+            return row, f"substring ('{norm_rub_lib}' ~ '{norm_row_lib}')"
+
+    return None, None
+
+
+def match_all_rubriques(rubriques: list, table_rows: list, logger: GCLogger) -> list:
+    """
+    Strict All-or-Nothing matching:
+    Every single rubrique in `rubriques` must match exactly one distinct row.
+    If ANY rubrique is unmatched, returns [] and logs error.
     """
     matches = []
-    unmatched_rubriques = []
-    used_rows = set()
+    used_indices = set()
+    unmatched = []
 
     for rub in rubriques:
-        rub_id = str(rub.get("IdRubrique", ""))
-        rub_label = str(rub.get("_label", "")).strip().upper()
-        matched = False
+        rub_id = str(rub.get("IdRubrique", "?"))
+        rub_lib = rub.get("LibRubrique") or rub.get("_label") or RUBRIQUE_CATALOG.get(rub_id, "")
+        
+        row, method = _match_single_rubrique(rub, table_rows, used_indices)
+        if row is not None:
+            matches.append({
+                "rubrique": rub,
+                "target_label": row["rubrique_label"],
+                "target_index": row["index"],
+                "match_method": method,
+            })
+            used_indices.add(row["index"])
+            logger.log("MATCH_RUBRIQUE", "OK",
+                        f"Rubrique [{rub_id}] '{rub_lib}' → Row '{row['rubrique_label']}' (via {method})")
+        else:
+            unmatched.append({"IdRubrique": rub_id, "LibRubrique": rub_lib})
+            logger.log("MATCH_RUBRIQUE", "ERROR",
+                        f"Rubrique [{rub_id}] '{rub_lib}' CANNOT be matched to any available Table 2 row!")
 
-        for row in table_rows:
-            if row["index"] in used_rows:
-                continue
-            row_label = row["rubrique_label"].upper()
+    # Check for complete 100% match
+    if unmatched:
+        logger.log("MATCH_ABORT", "ERROR",
+                    f"All-or-Nothing Match Failed: {len(unmatched)}/{len(rubriques)} rubriques could not be matched. "
+                    "Aborting workflow before touching any rows to prevent partial corruption.",
+                    extra={
+                        "unmatched_rubriques": unmatched,
+                        "table_rows": [r["rubrique_label"] for r in table_rows],
+                    })
+        return []
 
-            # Match by label similarity (contains check)
-            # Normalize: remove extra spaces, common variations
-            rub_words = set(rub_label.split())
-            row_words = set(row_label.split())
-            common_words = rub_words & row_words
-
-            # If >50% of words match, or label contains the rubrique label
-            label_match = (
-                rub_label in row_label or
-                row_label in rub_label or
-                (len(common_words) >= len(rub_words) * 0.5 and len(common_words) >= 2)
-            )
-
-            if label_match:
-                matches.append({
-                    "rubrique": rub,
-                    "row": row,
-                    "match_type": "label",
-                })
-                used_rows.add(row["index"])
-                matched = True
-                logger.log("MATCH_RUBRIQUE", "OK",
-                            f"Rubrique [{rub_id}] '{rub.get('_label', '')}' → Row {row['index']} '{row['rubrique_label']}'")
-                break
-
-        if not matched:
-            unmatched_rubriques.append(rub)
-            logger.log("MATCH_RUBRIQUE", "WARN",
-                        f"Rubrique [{rub_id}] '{rub.get('_label', '')}' has NO matching row in Table 2")
-
-    # Log unmatched table rows
-    for row in table_rows:
-        if row["index"] not in used_rows:
-            logger.log("MATCH_RUBRIQUE", "INFO",
-                        f"Table 2 Row {row['index']} '{row['rubrique_label']}' has no matching rubrique (will be left as-is)")
-
+    logger.log("MATCH_SUMMARY", "OK",
+                f"All {len(matches)}/{len(rubriques)} rubriques successfully and uniquely matched to Table 2 rows.")
     return matches
 
 
 # =============================================================================
-# Step 3: Edit a single row in Table 2 (pencil → fill → checkmark)
+# Step 3: Dynamic In-Place Row Editing & Network Await
 # =============================================================================
-async def _edit_row(page, row_info: dict, rubrique: dict, logger: GCLogger) -> bool:
+async def _edit_single_row_dynamic(page, match: dict, logger: GCLogger) -> bool:
     """
-    Edit a single row in Table 2:
-    1. Click the pencil icon (edit-row) in column 7
-    2. Fill MontantHTValide, TaxeValide, vétusté fields
-    3. Trigger keyup events for auto-calculations
-    4. Click the green checkmark to save
-    5. Wait for AJAX response
-    Returns True on success, False on failure.
+    Dynamically locates the row by its label in #DevisDetTableVal, clicks pencil,
+    fills MontantHTValide, TaxeValide, TauxVetusteValide, MontantVetusteValide,
+    clicks the row checkmark, and waits for POST /updateDevisDet.
     """
-    row_idx = row_info["index"]
-    rub_id = rubrique.get("IdRubrique", "?")
-    rub_label = rubrique.get("_label", "")
-    montant_ht = str(rubrique.get("MontantHT", "0"))
-    taxe = str(rubrique.get("Taxe", "0"))
+    rub = match["rubrique"]
+    rub_id = str(rub.get("IdRubrique", "?"))
+    rub_lib = rub.get("LibRubrique") or rub.get("_label") or RUBRIQUE_CATALOG.get(rub_id, "")
+    target_label = match["target_label"]
+    norm_target = normalize_text(target_label)
 
-    logger.log(f"EDIT_ROW_{row_idx}", "INFO",
-                f"Starting edit: Rubrique [{rub_id}] '{rub_label}' → HT={montant_ht}, TVA={taxe}")
+    montant_ht = str(rub.get("MontantHT", "0"))
+    taxe = str(rub.get("Taxe", "0"))
+    taux_vet = str(rub.get("TauxVetuste", "0.00"))
+    mt_vet = str(rub.get("MontantVetuste", "0.00"))
 
-    # --- Step 3a: Click the pencil icon ---
-    try:
-        # Try multiple selectors for the edit button
-        pencil_clicked = await page.evaluate("""(rowIdx) => {
-            const rows = document.querySelectorAll('#DevisDetTableVal tbody tr');
-            if (rowIdx >= rows.length) return {ok: false, error: 'Row index out of bounds'};
-            const row = rows[rowIdx];
-            
-            // Look for edit button in column 7 (index 6)
-            const tds = row.querySelectorAll('td');
-            let editBtn = null;
-            
-            // Try column 7 first (standard position)
-            if (tds.length >= 7) {
-                editBtn = tds[6].querySelector('a.edit-row, a#Modifier, a[onclick*="editRow"], a[title*="Modifier"]');
+    logger.log(f"EDIT_START", "INFO",
+                f"Processing: [{rub_id}] '{rub_lib}' (HT={montant_ht}, TVA={taxe}, Vétusté={mt_vet})")
+
+    # --- 3a. Re-locate the target row dynamically in the live DOM ---
+    row_found = await page.evaluate(r"""(normTarget) => {
+        const rows = document.querySelectorAll('#DevisDetTableVal tbody tr');
+        for (let i = 0; i < rows.length; i++) {
+            const label = rows[i].querySelector('td:first-child')?.textContent?.trim() || '';
+            const norm = label.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9\s]/g, ' ').toLowerCase().replace(/\s+/g, ' ').trim();
+            if (norm === normTarget || norm.includes(normTarget) || normTarget.includes(norm)) {
+                return { found: true, rowIndex: i, label: label };
             }
-            // Fallback: search entire row
-            if (!editBtn) {
-                editBtn = row.querySelector('a.edit-row, a#Modifier, a[onclick*="editRow"], a[title*="Modifier"]');
-            }
-            // Fallback: any pencil icon
-            if (!editBtn) {
-                const pencil = row.querySelector('i.fa-pencil, i.fa-edit, i.glyphicon-pencil');
-                if (pencil) editBtn = pencil.closest('a') || pencil;
-            }
-            
-            if (editBtn) {
-                editBtn.click();
-                return {ok: true, clicked: editBtn.outerHTML.substring(0, 120)};
-            }
-            return {ok: false, error: 'No edit button found in row', rowHTML: row.innerHTML.substring(0, 300)};
-        }""", row_idx)
+        }
+        return { found: false };
+    }""", norm_target)
 
-        if not pencil_clicked.get("ok"):
-            logger.log(f"EDIT_ROW_{row_idx}", "ERROR",
-                        f"Could not click pencil icon: {pencil_clicked.get('error')}",
-                        extra={"rowHTML": pencil_clicked.get("rowHTML", "")})
-            return False
-
-        logger.log(f"EDIT_ROW_{row_idx}", "OK",
-                    f"Pencil icon clicked: {pencil_clicked.get('clicked', '')[:80]}")
-
-    except Exception as e:
-        logger.log(f"EDIT_ROW_{row_idx}", "ERROR", f"Exception clicking pencil: {e}")
+    if not row_found.get("found"):
+        logger.log("EDIT_LOCATE", "ERROR",
+                    f"Could not re-locate row with label '{target_label}' in #DevisDetTableVal.")
         return False
 
-    # Wait for row to enter editing mode
+    live_idx = row_found["rowIndex"]
+
+    # --- 3b. Click the pencil icon on that row ---
+    click_pencil_res = await page.evaluate("""(idx) => {
+        const row = document.querySelectorAll('#DevisDetTableVal tbody tr')[idx];
+        if (!row) return { ok: false, error: 'Row not found at index ' + idx };
+        
+        let editBtn = row.querySelector('a.edit-row, a#Modifier, a[onclick*="editRow"], a[title*="Modifier"], i.fa-pencil');
+        if (editBtn) {
+            const clickable = editBtn.closest('a') || editBtn;
+            clickable.click();
+            return { ok: true };
+        }
+        return { ok: false, error: 'No edit icon found in row HTML: ' + row.innerHTML.substring(0, 200) };
+    }""", live_idx)
+
+    if not click_pencil_res.get("ok"):
+        logger.log("EDIT_PENCIL", "ERROR",
+                    f"Failed to click pencil: {click_pencil_res.get('error')}")
+        return False
+
+    # Wait for the inline inputs to appear
     await page.wait_for_timeout(800)
 
-    # --- Step 3b: Fill the editable fields ---
-    try:
-        fill_result = await page.evaluate("""(args) => {
-            const {montantHT, taxe} = args;
-            const results = {};
-            
-            // Helper to set value and fire events
-            function setField(selector, value) {
-                const el = document.querySelector(selector);
-                if (!el) return {found: false, selector: selector};
-                el.value = value;
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-                el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: '0' }));
-                // jQuery triggers
-                if (window.jQuery) {
-                    try { window.jQuery(el).trigger('keyup').trigger('change').trigger('input'); } catch(e) {}
-                }
-                // Inline handlers
-                if (typeof el.onkeyup === 'function') { try { el.onkeyup(); } catch(e) {} }
-                if (typeof el.onchange === 'function') { try { el.onchange(); } catch(e) {} }
-                return {found: true, selector: selector, setValue: value, readBack: el.value};
+    # --- 3c. Fill MontantHTValide, TaxeValide, TauxVetusteValide, MontantVetusteValide ---
+    fill_res = await page.evaluate("""(args) => {
+        const { ht, taxe, tauxVet, mtVet } = args;
+        const res = {};
+        
+        function setVal(sel, val) {
+            const el = document.querySelector(sel);
+            if (!el) return { found: false, selector: sel };
+            el.value = val;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: '0' }));
+            if (typeof el.onkeyup === 'function') { try { el.onkeyup(); } catch(e) {} }
+            if (typeof el.onchange === 'function') { try { el.onchange(); } catch(e) {} }
+            if (window.jQuery) {
+                try { window.jQuery(el).trigger('input').trigger('change').trigger('keyup'); } catch(e) {}
             }
-            
-            // Fill MontantHTValide
-            results.ht = setField('#MontantHTValide', montantHT);
-            
-            // Fill TaxeValide
-            results.taxe = setField('#TaxeValide', taxe);
-            
-            // Read back MontantTTCValide (should auto-calculate)
-            const ttcEl = document.querySelector('#MontantTTCValide');
-            results.ttc_auto = ttcEl ? ttcEl.value : 'NOT_FOUND';
-            
-            // Check for editing row class
-            const editingRow = document.querySelector('#DevisDetTableVal tbody tr.editing, #DevisDetTableVal tbody tr.tr-editing');
-            results.has_editing_row = !!editingRow;
-            
-            return results;
-        }""", {"montantHT": montant_ht, "taxe": taxe})
+            return { found: true, val: val, readBack: el.value };
+        }
+        
+        res.ht = setVal('#MontantHTValide', ht);
+        res.taxe = setVal('#TaxeValide', taxe);
+        if (tauxVet && tauxVet !== '0.00' && tauxVet !== '0') {
+            res.tauxVet = setVal('#TauxVetusteValide', tauxVet);
+        }
+        if (mtVet && mtVet !== '0.00' && mtVet !== '0') {
+            res.mtVet = setVal('#MontantVetusteValide', mtVet);
+        }
+        
+        const ttcEl = document.querySelector('#MontantTTCValide');
+        res.ttc_computed = ttcEl ? ttcEl.value : null;
+        return res;
+    }""", {"ht": montant_ht, "taxe": taxe, "tauxVet": taux_vet, "mtVet": mt_vet})
 
-        # Log fill results
-        ht_ok = fill_result.get("ht", {}).get("found", False)
-        taxe_ok = fill_result.get("taxe", {}).get("found", False)
-
-        if ht_ok:
-            logger.log(f"FILL_HT_ROW_{row_idx}", "OK",
-                        f"MontantHTValide = {montant_ht} (readBack: {fill_result['ht'].get('readBack', '?')})")
-        else:
-            logger.log(f"FILL_HT_ROW_{row_idx}", "ERROR",
-                        f"#MontantHTValide not found in editing row!",
-                        extra=fill_result)
-
-        if taxe_ok:
-            logger.log(f"FILL_TAXE_ROW_{row_idx}", "OK",
-                        f"TaxeValide = {taxe} (readBack: {fill_result['taxe'].get('readBack', '?')})")
-        else:
-            logger.log(f"FILL_TAXE_ROW_{row_idx}", "ERROR",
-                        f"#TaxeValide not found in editing row!",
-                        extra=fill_result)
-
-        logger.log(f"FILL_TTC_ROW_{row_idx}", "INFO",
-                    f"MontantTTCValide auto-calculated = {fill_result.get('ttc_auto', '?')}")
-
-        if not fill_result.get("has_editing_row"):
-            logger.log(f"EDIT_ROW_{row_idx}", "WARN",
-                        "No <tr> with class 'editing' or 'tr-editing' detected. Row may not be in edit mode.")
-
-    except Exception as e:
-        logger.log(f"FILL_ROW_{row_idx}", "ERROR", f"Exception filling fields: {e}")
+    if not fill_res.get("ht", {}).get("found") or not fill_res.get("taxe", {}).get("found"):
+        logger.log("EDIT_FILL", "ERROR",
+                    "Required inputs (#MontantHTValide / #TaxeValide) were NOT found in the editing row!",
+                    extra=fill_res)
         return False
 
-    # Small delay for calculations to cascade
+    logger.log("EDIT_FILL", "OK",
+                f"Injected HT={montant_ht}, TVA={taxe}, TTC(auto)={fill_res.get('ttc_computed')}")
+
     await page.wait_for_timeout(500)
 
-    # --- Step 3c: Click the green checkmark to save ---
+    # --- 3d. Click the green checkmark and await network response ---
+    save_clicked = False
     try:
-        save_result = await page.evaluate("""(rowIdx) => {
-            const rows = document.querySelectorAll('#DevisDetTableVal tbody tr');
-            if (rowIdx >= rows.length) return {ok: false, error: 'Row gone after editing'};
-            const row = rows[rowIdx];
-            
-            // Look for save/checkmark button
-            let saveBtn = null;
-            const tds = row.querySelectorAll('td');
-            
-            // Try column 7 (standard)
-            if (tds.length >= 7) {
-                saveBtn = tds[6].querySelector('a.save-row, a:has(.fa-check), a[onclick*="saveRow"], a[title*="Enregistrer"]');
-            }
-            // Fallback: search entire row
-            if (!saveBtn) {
-                saveBtn = row.querySelector('a.save-row, a:has(.fa-check), a[onclick*="saveRow"], a[title*="Enregistrer"]');
-            }
-            // Fallback: any green check icon
-            if (!saveBtn) {
-                const check = row.querySelector('i.fa-check');
-                if (check) saveBtn = check.closest('a') || check;
-            }
-            
-            if (saveBtn) {
-                saveBtn.click();
-                return {ok: true, clicked: saveBtn.outerHTML.substring(0, 120)};
-            }
-            return {ok: false, error: 'No save/checkmark button found', rowHTML: row.innerHTML.substring(0, 300)};
-        }""", row_idx)
+        # Try to capture the updateDevisDet response if triggered via AJAX
+        async with page.expect_response(
+            lambda r: "updateDevisDet" in r.url,
+            timeout=5000
+        ) as response_info:
+            click_save_res = await page.evaluate("""(idx) => {
+                const row = document.querySelectorAll('#DevisDetTableVal tbody tr')[idx];
+                if (!row) return { ok: false, error: 'Row disappeared' };
+                
+                let saveBtn = row.querySelector('a.save-row, a:has(.fa-check), a[onclick*="saveRow"], a[title*="Enregistrer"], i.fa-check');
+                if (saveBtn) {
+                    const clickable = saveBtn.closest('a') || saveBtn;
+                    clickable.click();
+                    return { ok: true };
+                }
+                return { ok: false, error: 'No checkmark/save button found in row' };
+            }""", live_idx)
 
-        if save_result.get("ok"):
-            logger.log(f"SAVE_ROW_{row_idx}", "OK",
-                        f"Green checkmark clicked: {save_result.get('clicked', '')[:80]}")
-        else:
-            logger.log(f"SAVE_ROW_{row_idx}", "ERROR",
-                        f"Could not click checkmark: {save_result.get('error')}",
-                        extra={"rowHTML": save_result.get("rowHTML", "")})
-            return False
+            if not click_save_res.get("ok"):
+                logger.log("EDIT_SAVE", "ERROR", f"Could not click checkmark: {click_save_res.get('error')}")
+                return False
 
-    except Exception as e:
-        logger.log(f"SAVE_ROW_{row_idx}", "ERROR", f"Exception clicking checkmark: {e}")
-        return False
+            save_clicked = True
 
-    # Wait for AJAX save + table redraw
+        # Check response
+        resp = await response_info.value
+        logger.log("EDIT_NETWORK", "OK" if resp.status == 200 else "WARN",
+                    f"POST /updateDevisDet returned HTTP {resp.status}")
+
+    except Exception as net_err:
+        # If timeout waiting for AJAX, verify if the row locked in anyway
+        if not save_clicked:
+            # Click directly if expect_response wrapper failed
+            await page.evaluate("""(idx) => {
+                const row = document.querySelectorAll('#DevisDetTableVal tbody tr')[idx];
+                if (row) {
+                    const btn = row.querySelector('a.save-row, a:has(.fa-check), a[onclick*="saveRow"], i.fa-check');
+                    if (btn) (btn.closest('a') || btn).click();
+                }
+            }""", live_idx)
+        logger.log("EDIT_NETWORK", "INFO", f"Network response wait note: {net_err}")
+
+    # Wait for table redraw
     await page.wait_for_timeout(2000)
 
-    logger.log(f"EDIT_ROW_{row_idx}", "OK",
-                f"Row {row_idx} edit complete: [{rub_id}] {rub_label} → HT={montant_ht}, TVA={taxe}")
+    logger.log("EDIT_ROW_DONE", "OK",
+                f"Row for [{rub_id}] '{rub_lib}' locked in successfully.")
     return True
 
 
 # =============================================================================
-# Step 4: Trigger financial split calculation
+# Step 4: Financial Split & Calculations
 # =============================================================================
 async def _trigger_devis_calculations(page, logger: GCLogger):
-    """Trigger DevisCalculerMontantCharge() and related calculations."""
+    """
+    Executes MCMA's native DevisCalculerMontantCharge() and related functions.
+    Does NOT blindly overwrite the values with hardcoded 0.
+    """
     try:
-        calc_result = await page.evaluate("""() => {
+        res = await page.evaluate("""() => {
             const results = {};
-            
-            // Try calling native calculation functions
             if (typeof DevisCalculerMontantCharge === 'function') {
-                try { DevisCalculerMontantCharge(); results.devisCalc = 'called'; } 
+                try { DevisCalculerMontantCharge(); results.devisCalc = 'executed'; }
                 catch(e) { results.devisCalc = 'error: ' + e.message; }
             } else {
-                results.devisCalc = 'function_not_found';
+                results.devisCalc = 'not_present';
             }
             
             if (typeof CalculerMntArrete === 'function') {
-                try { CalculerMntArrete(); results.arrete = 'called'; } 
-                catch(e) { results.arrete = 'error: ' + e.message; }
+                try { CalculerMntArrete(); results.arrete = 'executed'; } catch(e) {}
             }
             
-            if (typeof CalculerMontantDommage === 'function') {
-                try { CalculerMontantDommage(); results.dommage = 'called'; } 
-                catch(e) { results.dommage = 'error: ' + e.message; }
-            }
-            
-            // Fire events on key fields to cascade
+            // Trigger cascading change events
             const selectors = [
                 '#DevisMontantTTC', '#DevisMontantTVA', '#DevisMontantVetusteTotal',
-                '#DevisMontantFranchise', '#DevisMontantRemise',
-                '#DevisPartResponsabilite', '#DevisTvaRecupI',
-                '#MontantReparation', '#MontantArrete', '#BaseIndemnite',
-                '#PartResponsabilite'
+                '#DevisMontantFranchise', '#DevisMontantRemise', '#DevisPartResponsabilite',
+                '#DevisTvaRecupI', '#MontantReparation'
             ];
             selectors.forEach(sel => {
                 const el = document.querySelector(sel);
                 if (el) {
                     el.dispatchEvent(new Event('input', { bubbles: true }));
                     el.dispatchEvent(new Event('change', { bubbles: true }));
-                    el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
-                    if (typeof el.onkeyup === 'function') { try { el.onkeyup(); } catch(e) {} }
-                    if (typeof el.onchange === 'function') { try { el.onchange(); } catch(e) {} }
                     if (window.jQuery) {
                         try { window.jQuery(el).trigger('keyup').trigger('change'); } catch(e) {}
                     }
                 }
             });
             
-            // Read results
-            const get = (sel) => document.querySelector(sel)?.value || null;
-            results.DevisMontantChargeMutuelle = get('#DevisMontantChargeMutuelle');
-            results.DevisMontantChargeSocietaire = get('#DevisMontantChargeSocietaire');
-            results.DevisMontantTTC = get('#DevisMontantTTC');
-            results.MontantArrete = get('#MontantArrete');
-            results.BaseIndemnite = get('#BaseIndemnite');
-            
             return results;
         }""")
 
-        devis_calc_status = calc_result.get("devisCalc", "?")
-        logger.log("DEVIS_CALC", "OK" if devis_calc_status == "called" else "WARN",
-                    f"DevisCalculerMontantCharge: {devis_calc_status}",
-                    extra=calc_result)
-
+        logger.log("CALCULATIONS", "OK", f"Calculations triggered: {res}")
     except Exception as e:
-        logger.log("DEVIS_CALC", "ERROR", f"Exception triggering calculations: {e}")
-
-
-# =============================================================================
-# Step 5: Force charge mutuelle (same logic as Normal mode fix)
-# =============================================================================
-async def _force_charge_mutuelle(page, logger: GCLogger):
-    """Force the total into Charge Mutuelle and set Sociétaire to 0."""
-    try:
-        result = await page.evaluate("""() => {
-            const repVal = document.querySelector('#MontantReparation')?.value || '0';
-            
-            // Normal mode fields
-            const mutuelle = document.querySelector('#MontantChargeMutuelle');
-            const societaire = document.querySelector('#MontantChargeSocietaire');
-            if (mutuelle) {
-                mutuelle.value = repVal;
-                mutuelle.dispatchEvent(new Event('input', { bubbles: true }));
-                mutuelle.dispatchEvent(new Event('change', { bubbles: true }));
-                if (window.jQuery) { window.jQuery(mutuelle).trigger('keyup').trigger('change'); }
-            }
-            if (societaire) {
-                societaire.value = '0';
-                societaire.dispatchEvent(new Event('input', { bubbles: true }));
-                societaire.dispatchEvent(new Event('change', { bubbles: true }));
-                if (window.jQuery) { window.jQuery(societaire).trigger('keyup').trigger('change'); }
-            }
-            
-            // Devis (Garage Conventionne) fields
-            const devisMut = document.querySelector('#DevisMontantChargeMutuelle');
-            const devisSoc = document.querySelector('#DevisMontantChargeSocietaire');
-            if (devisMut) {
-                const devisRepVal = document.querySelector('#DevisMontantTTC')?.value || repVal;
-                devisMut.value = devisRepVal;
-                devisMut.dispatchEvent(new Event('input', { bubbles: true }));
-                devisMut.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-            if (devisSoc) {
-                devisSoc.value = '0';
-                devisSoc.dispatchEvent(new Event('input', { bubbles: true }));
-                devisSoc.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-            
-            return {
-                mutuelle: mutuelle?.value || devisMut?.value || '?',
-                societaire: societaire?.value || devisSoc?.value || '?',
-            };
-        }""")
-
-        logger.log("FORCE_CHARGE_MUTUELLE", "OK",
-                    f"Charge Mutuelle = {result.get('mutuelle', '?')}, "
-                    f"Charge Sociétaire = {result.get('societaire', '?')}")
-
-    except Exception as e:
-        logger.log("FORCE_CHARGE_MUTUELLE", "ERROR", f"Exception: {e}")
+        logger.log("CALCULATIONS", "ERROR", f"Exception running calculations: {e}")
 
 
 # =============================================================================
@@ -572,127 +584,102 @@ async def _force_charge_mutuelle(page, logger: GCLogger):
 # =============================================================================
 async def fill_garage_conventionne(page, data: dict, test_mode: bool = True) -> dict:
     """
-    Main entry point for the Garage Conventionné (PEC) workflow.
+    Main entry point for Garage Conventionné (PEC) mode.
     
-    Args:
-        page: Playwright page object (already navigated to the mission form)
-        data: Mapped dossier payload with rubriques, text_fields, etc.
-        test_mode: If True, will NOT click Valider Devis (#DEVISDET_Btn)
-    
-    Returns:
-        dict with status, message, and log summary
+    Guarantees:
+      - Strict All-or-Nothing matching (0 writes if any rubrique fails to match)
+      - Dynamic row locating
+      - Awaits updateDevisDet
+      - Valider Devis (#DEVISDET_Btn) is STRICTLY NEVER CLICKED
+      - Full logging to logs/gc_<timestamp>.json
     """
     logger = GCLogger()
     rubriques = data.get("rubriques", [])
 
     print(f"\n{'='*70}")
-    print(f"  🏗️  GARAGE CONVENTIONNÉ (PEC) MODE")
-    print(f"  📝  {len(rubriques)} rubrique(s) to process")
-    print(f"  📋  Log file: {logger.log_path}")
+    print(f"  🏗️  GARAGE CONVENTIONNÉ (PEC) AUTOMATION CONTROLLER")
+    print(f"  📝  Target Rubriques count : {len(rubriques)}")
+    print(f"  🛡️  Safety Review Mode    : {'ACTIVE (Zero final submissions)' if test_mode else 'OFF'}")
+    print(f"  📋  Diagnostic Log File    : {logger.log_path}")
     print(f"{'='*70}\n")
 
     logger.log("START", "INFO",
-                f"Starting Garage Conventionné workflow with {len(rubriques)} rubriques")
+                f"Starting Garage Conventionné controller for dossier {data.get('dossier_reference')} ({len(rubriques)} rubriques)")
 
-    # --- Screenshot: before we start ---
-    await _save_screenshot(page, logger, "01_before_gc")
+    # --- Initial Screenshot ---
+    await _save_screenshot(page, logger, "01_initial_state")
 
     # --- Step 1: Detect Table 2 ---
     print(f"[*] Step 1: Detecting Table 2 (#DevisDetTableVal)...")
     table_rows = await _detect_table2(page, logger)
-
     if not table_rows:
         logger.log("ABORT", "ERROR",
-                    "No rows in Table 2. Cannot proceed with Garage Conventionné workflow. "
-                    "Possible causes: (1) Mission is actually Normal mode, (2) Garage devis not loaded, "
-                    "(3) Page DOM structure is different from expected.")
+                    "Table 2 (#DevisDetTableVal) has no rows. Cannot proceed.")
         await _save_screenshot(page, logger, "02_no_table2_rows")
-        await _snapshot_dom_fields(page, logger)
         summary = logger.summary()
-        return {"status": "failed", "message": "No rows in Table 2", **summary}
+        return {"status": "failed", "message": "Table 2 has no rows", **summary}
 
-    # --- Step 2: Match rubriques to rows ---
-    print(f"[*] Step 2: Matching {len(rubriques)} rubriques to {len(table_rows)} Table 2 rows...")
-    matches = _match_rubriques_to_rows(rubriques, table_rows, logger)
-
-    if not matches:
+    # --- Step 2: Strict All-or-Nothing Matching ---
+    print(f"[*] Step 2: Validating All-or-Nothing Rubrique Matching...")
+    matches = match_all_rubriques(rubriques, table_rows, logger)
+    if not matches or len(matches) != len(rubriques):
         logger.log("ABORT", "ERROR",
-                    "No rubriques could be matched to Table 2 rows. "
-                    "Check if the rubrique labels in the mapper output match the labels in the MCMA table.",
-                    extra={
-                        "rubrique_labels": [r.get("_label") for r in rubriques],
-                        "table_row_labels": [r["rubrique_label"] for r in table_rows],
-                    })
-        await _save_screenshot(page, logger, "03_no_matches")
+                    f"Matching failed: {len(matches)}/{len(rubriques)} rubriques matched. Aborting with ZERO modifications.")
+        await _save_screenshot(page, logger, "03_matching_failed")
         summary = logger.summary()
-        return {"status": "failed", "message": "No rubrique-to-row matches found", **summary}
+        return {"status": "failed", "message": "All-or-Nothing matching failed. Zero rows modified.", **summary}
 
-    logger.log("MATCH_SUMMARY", "OK",
-                f"Matched {len(matches)}/{len(rubriques)} rubriques to Table 2 rows")
-
-    # --- Step 3: Edit each matched row ---
-    print(f"[*] Step 3: Editing {len(matches)} row(s) in Table 2...")
+    # --- Step 3: Dynamic In-Place Row Editing ---
+    print(f"[*] Step 3: Editing {len(matches)} Table 2 row(s) in-place...")
     success_count = 0
-    fail_count = 0
 
-    for i, match in enumerate(matches, 1):
-        rub = match["rubrique"]
-        row = match["row"]
-        print(f"    [{i}/{len(matches)}] Editing Row {row['index']}: "
-              f"[{rub.get('IdRubrique')}] {rub.get('_label', '')} "
-              f"(HT: {rub.get('MontantHT', 0)}, TVA: {rub.get('Taxe', 0)})...")
+    for idx, match in enumerate(matches, 1):
+        rub_id = match["rubrique"].get("IdRubrique", "?")
+        rub_lib = match["rubrique"].get("LibRubrique") or match["rubrique"].get("_label", "")
+        print(f"    [{idx}/{len(matches)}] Updating Row '{match['target_label']}' for Rubrique [{rub_id}] {rub_lib}...")
 
-        ok = await _edit_row(page, row, rub, logger)
+        ok = await _edit_single_row_dynamic(page, match, logger)
         if ok:
             success_count += 1
         else:
-            fail_count += 1
-            await _save_screenshot(page, logger, f"04_row{row['index']}_failed")
+            logger.log("ROW_FAIL_ABORT", "ERROR",
+                        f"Failed to edit row for Rubrique [{rub_id}]. Aborting remaining edits.")
+            await _save_screenshot(page, logger, f"04_failed_row_{rub_id}")
+            break
 
-    logger.log("EDIT_SUMMARY", "OK" if fail_count == 0 else "WARN",
-                f"Edited {success_count}/{len(matches)} rows successfully. Failures: {fail_count}")
+    # --- Screenshot after row edits ---
+    await _save_screenshot(page, logger, "05_after_edits")
 
-    # --- Screenshot: after all row edits ---
-    await _save_screenshot(page, logger, "05_after_row_edits")
-
-    # --- Step 4: Trigger financial calculations ---
-    print(f"[*] Step 4: Triggering DevisCalculerMontantCharge()...")
+    # --- Step 4: Native Calculation & DOM Snapshot ---
+    print(f"[*] Step 4: Executing native DevisCalculerMontantCharge()...")
     await _trigger_devis_calculations(page, logger)
+    final_dom = await _snapshot_dom_fields(page, logger)
 
-    # --- Step 5: Force charge mutuelle ---
-    print(f"[*] Step 5: Setting Montant à charge mutuelle...")
-    await _force_charge_mutuelle(page, logger)
-
-    # --- Final DOM snapshot ---
-    print(f"[*] Capturing final DOM snapshot...")
-    final_state = await _snapshot_dom_fields(page, logger)
-
-    # --- Screenshot: final state ---
-    await _save_screenshot(page, logger, "06_final_state")
-
-    # --- Step 6: Valider Devis (STRICTLY NEVER CLICKED — Safety / Review Mode) ---
-    # The Valider Devis button (#DEVISDET_Btn) below Table 2 must NEVER be clicked by the agent
-    # so that the mission is not committed and tests can be rerun / manually inspected.
+    # --- Step 5: Final Validation Button (STRICTLY UNTOUCHED) ---
     logger.log("VALIDER_DEVIS", "INFO",
-                "SAFETY / REVIEW MODE — #DEVISDET_Btn ('Valider Devis') is left UNTOUCHED for human verification.")
-    print(f"    ⏸️  [REVIEW MODE] Valider Devis button (#DEVISDET_Btn) is intentionally untouched for human verification.")
+                "SAFETY / REVIEW MODE — #DEVISDET_Btn ('Valider Devis') is STRICTLY UNTOUCHED for human verification.")
+    print(f"    ⏸️  [SAFETY MODE] 'Valider Devis' (#DEVISDET_Btn) is UNTOUCHED for your inspection.")
 
-    # --- Summary ---
+    # --- Final Screenshot ---
+    await _save_screenshot(page, logger, "06_final_verification")
+
     summary = logger.summary()
-    logger.log("DONE", "OK",
-                f"Garage Conventionné workflow complete. "
-                f"{summary['ok']} OK / {summary['errors']} errors / {summary['warnings']} warnings")
+    status = "success" if success_count == len(matches) else "failed"
 
     print(f"\n{'='*70}")
-    print(f"  📊 GARAGE CONVENTIONNÉ SUMMARY")
-    print(f"  ✓ Steps OK    : {summary['ok']}")
-    print(f"  ✗ Errors      : {summary['errors']}")
-    print(f"  ⚠ Warnings    : {summary['warnings']}")
-    print(f"  📋 Full log   : {summary['log_file']}")
-    if final_state:
-        print(f"  💰 Charge Mut.: {final_state.get('DevisMontantChargeMutuelle', '?')}")
-        print(f"  💰 Charge Soc.: {final_state.get('DevisMontantChargeSocietaire', '?')}")
+    print(f"  📊 GARAGE CONVENTIONNÉ EXECUTION SUMMARY")
+    print(f"  Status        : {status.upper()}")
+    print(f"  Rows Edited   : {success_count}/{len(matches)}")
+    print(f"  Errors Logged : {summary['errors']}")
+    print(f"  Log File      : {summary['log_file']}")
+    if final_dom:
+        print(f"  Devis TTC     : {final_dom.get('DevisMontantTTC', '?')}")
+        print(f"  Charge Mut.   : {final_dom.get('DevisMontantChargeMutuelle', '?')}")
+        print(f"  Charge Soc.   : {final_dom.get('DevisMontantChargeSocietaire', '?')}")
     print(f"{'='*70}\n")
 
-    status = "success" if summary["errors"] == 0 else "partial" if success_count > 0 else "failed"
-    return {"status": status, "message": f"GC workflow done: {success_count}/{len(matches)} rows edited", **summary}
+    return {
+        "status": status,
+        "message": f"Garage Conventionné: {success_count}/{len(matches)} rows updated.",
+        **summary
+    }

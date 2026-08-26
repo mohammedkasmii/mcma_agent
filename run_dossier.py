@@ -163,7 +163,8 @@ async def main():
     print(f"  Montant Total (TTC)      : {payload.get('text_fields', {}).get('MontantTTC')} DH")
     print(f"  Rubriques count          : {len(payload.get('rubriques', []))}")
     for idx, r in enumerate(payload.get('rubriques', []), 1):
-        print(f"    [{idx}] Rubrique #{r.get('IdRubrique')}: {r.get('_label')} -> {r.get('MontantHT')} DH (TVA: {r.get('Taxe')} DH)")
+        rub_title = r.get('LibRubrique') or r.get('_label') or f"Rubrique #{r.get('IdRubrique')}"
+        print(f"    [{idx}] Rubrique #{r.get('IdRubrique')}: {rub_title} -> {r.get('MontantHT')} DH (TVA: {r.get('Taxe')} DH)")
     print("="*60 + "\n")
 
     # Run browser automation

@@ -277,6 +277,24 @@ async def process_workflow(data: dict):
         page = await context.new_page()
 
         try:
+            # --- NETWORK-LEVEL SAFETY POLICY (TEST_MODE) ---
+            if TEST_MODE:
+                async def block_final_submissions(route):
+                    url = route.request.url
+                    print(f"\n    🛡️  [SAFETY POLICY] Blocked mutating POST request: {url}")
+                    await route.fulfill(
+                        status=200,
+                        content_type="application/json",
+                        body='{"state":"success","message":"[SIMULATED] Blocked by safety mode"}'
+                    )
+
+                # Intercept any potential submission or final validation requests
+                await page.route("**/garageModifierValDevis", block_final_submissions)
+                await page.route("**/expertCloturerMission", block_final_submissions)
+                await page.route("**/expertEnregistrerMission", block_final_submissions)
+                await page.route("**/cloturerMission", block_final_submissions)
+                await page.route("**/enregistrerMission", block_final_submissions)
+
             # --- STEP 1: GO TO SEARCH PAGE ---
             print(f"[*] Navigating to MCMA search/missions page...")
             await page.goto("https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/FrontExpert/")
@@ -331,6 +349,8 @@ async def process_workflow(data: dict):
                 count = await rows.count()
                 if count == 0:
                     return None
+                
+                valid_candidates = []
                 for i in range(count):
                     row = rows.nth(i)
                     row_text = await row.inner_text()
@@ -338,13 +358,19 @@ async def process_workflow(data: dict):
                         continue
                     link = row.locator("a[href*='gotoMission'], a[title*='Mission expertise'], div.text-blue a, a.btn-primary").first
                     if await link.count() > 0 and await link.is_visible():
+                        # Check strict matches
                         if search_matricule_num and search_matricule_num in row_text:
                             return link
                         if raw_matricule and raw_matricule in row_text:
                             return link
                         if dossier_ref and dossier_ref in row_text:
                             return link
-                        return link
+                        valid_candidates.append(link)
+
+                # Only if there's exactly 1 valid search result row and we had a specific search query
+                if len(valid_candidates) == 1 and (search_matricule_num or dossier_ref):
+                    return valid_candidates[0]
+
                 return None
 
             target_link = await find_mission_link()
@@ -432,6 +458,16 @@ async def process_workflow(data: dict):
             # --- STEP 7: INSERT LINE ITEMS (RUBRIQUES) ---
             mode_reparation = data.get("mode_reparation", "normal")
             rubriques = data.get("rubriques", [])
+
+            # Check actual MCMA DOM for conventionné elements
+            has_table2 = await page.locator("#DevisDetTableVal, #blocDevisValide").count() > 0
+            if mode_reparation == "conventionne" and not has_table2:
+                print(f"\n    ⚠️  MODE WARNING: JSON specified 'conventionne' (Garage Conventionné), but #DevisDetTableVal is NOT found in the page DOM.")
+                print(f"    👉  Checking if Normal Mode (#tableRapportDet / #VehRepareI) is available instead...")
+                has_normal_table = await page.locator("#VehRepareI, #MontantReparation, #tableRapportDet").count() > 0
+                if has_normal_table:
+                    print(f"    ℹ️  Falling back to Mode Normal workflow based on live DOM state.")
+                    mode_reparation = "normal"
 
             if mode_reparation == "conventionne":
                 # ============================================================
