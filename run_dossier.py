@@ -33,7 +33,8 @@ def find_default_json() -> str:
     if os.path.exists(default_dossier):
         return default_dossier
     candidates = glob.glob(os.path.join(INPUT_DOSSIER_DIR, "*.json")) + \
-                 glob.glob(os.path.join(INPUT_DOSSIER_DIR, "*.md"))
+                 glob.glob(os.path.join(INPUT_DOSSIER_DIR, "*.md")) + \
+                 [f for f in glob.glob(os.path.join(INPUT_DOSSIER_DIR, "*")) if os.path.isfile(f) and not f.endswith(".py")]
     return candidates[0] if candidates else ""
 
 

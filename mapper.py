@@ -542,8 +542,8 @@ class WexiaToDossierMapper:
             family = "mecanique"
         elif "electrique" in hint_norm or any(t in name_norm for t in ("batterie", "alternateur", "demarreur", "cablage")):
             family = "electrique"
-        elif "peinture" in hint_norm or any(t in name_norm for t in ("peinture", "vernis", "ingredient")):
-            family = "peinture"
+        elif "peinture" in hint_norm or any(t in name_norm for t in ("peinture", "vernis", "ingredient", "ingredients", "produit de peinture")):
+            return "16"  # PEINTURES ET INGREDIENTS
         else:
             family = "carrosserie"
 

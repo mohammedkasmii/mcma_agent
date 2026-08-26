@@ -16,11 +16,18 @@ Architecture & Security:
 """
 
 import os
+import sys
 import re
 import json
 import time
 from datetime import datetime
 from mapper import RUBRIQUE_CATALOG, normalize_text
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 # =============================================================================
@@ -81,10 +88,14 @@ RUBRIQUE_MATCH_ALIASES = {
     "10": [
         "peinture origines",
         "peinture origine",
+        "peintures et ingredients",
+        "peintures et ingredients",
     ],
     "11": [
         "peinture adaptables",
         "peinture adaptable",
+        "peintures et ingredients",
+        "peintures et ingredients",
     ],
     "12": [
         "main d oeuvre peinture",
@@ -106,9 +117,16 @@ RUBRIQUE_MATCH_ALIASES = {
     ],
     "16": [
         "peintures et ingredients",
+        "peintures et ingredients",
         "peinture et ingredients",
         "peintures ingredients",
         "ingredients peinture",
+        "produits de peinture",
+        "produit de peinture",
+        "fournitures et produit de peinture",
+        "diverses fournitures et produit de peinture",
+        "peinture adaptables",
+        "peinture origines",
     ],
     "17": ["passage au marbre", "marbre"],
     "18": ["parallelisme et equilibrage", "geometrie"],
@@ -156,8 +174,11 @@ class GCLogger:
             entry["extra"] = extra
         self.entries.append(entry)
         self._write()
-        icon = {"OK": "✓", "ERROR": "✗", "WARN": "⚠", "INFO": "ℹ"}.get(status, "·")
-        print(f"    [{icon}] [{step}] {detail}")
+        icon = {"OK": "+", "ERROR": "x", "WARN": "!", "INFO": "i"}.get(status, ".")
+        try:
+            print(f"    [{icon}] [{step}] {detail}")
+        except Exception:
+            pass
 
     def _write(self):
         """Persist log to disk immediately."""
@@ -347,7 +368,7 @@ def match_all_rubriques(rubriques: list, table_rows: list, logger: GCLogger) -> 
             })
             used_indices.add(row["index"])
             logger.log("MATCH_RUBRIQUE", "OK",
-                        f"Rubrique [{rub_id}] '{rub_lib}' → Row '{row['rubrique_label']}' (via {method})")
+                        f"Rubrique [{rub_id}] '{rub_lib}' -> Row '{row['rubrique_label']}' (via {method})")
         else:
             unmatched.append({"IdRubrique": rub_id, "LibRubrique": rub_lib})
             logger.log("MATCH_RUBRIQUE", "ERROR",
