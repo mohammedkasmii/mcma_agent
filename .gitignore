@@ -33,9 +33,13 @@ script\ spy/
 logs/
 *.log
 
-# Sensitive Input Dossiers & Test Runs
-input_dossier/dossierww
-input_dossier/dossierww.*
+# Sensitive Input Dossiers & Documents (All dossiers)
+input_dossier/
+input_dossier/*
+input_documents/
+input_documents/*
+*.pdf
+*.docx
 
 # Testing & Coverage
 .pytest_cache/
