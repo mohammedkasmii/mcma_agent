@@ -29,5 +29,15 @@ v12_camoufox_output/
 script spy/
 script\ spy/
 
+# Logs & Screenshots
+logs/
+*.log
 
+# Sensitive Input Dossiers & Test Runs
+input_dossier/dossierww
+input_dossier/dossierww.*
 
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/

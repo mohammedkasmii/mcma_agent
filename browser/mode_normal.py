@@ -99,6 +99,18 @@ async def fill_mode_normal(page, data: dict, logger: StructuredLogger = None) ->
         }""")
 
         await page.wait_for_timeout(2000)
+
+        # Read-back verification in Table
+        has_locked_row = await page.evaluate(r"""(rubId) => {
+            const rows = document.querySelectorAll("#tableRapportDet tbody tr, table.dataTable tbody tr");
+            for (let tr of rows) {
+                if (tr.textContent && tr.textContent.includes(rubId)) return true;
+            }
+            return false;
+        }""", rub_id)
+        if has_locked_row:
+            logger.log("ROW_VERIFIED", "OK", f"Confirmed row for rubrique [{rub_id}] in table.")
+
         logger.log("ADD_ROW_DONE", "OK", f"Rubrique [{rub_id}] locked in with checkmark.")
         print(f"    [✓] Rubrique [{rub_id}] locked in with checkmark (✓).")
         success_count += 1

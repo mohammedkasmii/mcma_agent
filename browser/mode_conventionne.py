@@ -323,6 +323,30 @@ async def _edit_single_row_dynamic(page, match: dict, logger: StructuredLogger) 
         logger.log("EDIT_NETWORK", "INFO", f"Network response wait note: {net_err}")
 
     await page.wait_for_timeout(2000)
+
+    # Read-back verification from the redrawn table
+    readback = await page.evaluate(r"""(normTarget) => {
+        const rows = document.querySelectorAll('#DevisDetTableVal tbody tr');
+        for (let i = 0; i < rows.length; i++) {
+            const label = rows[i].querySelector('td:first-child')?.textContent?.trim() || '';
+            const norm = label.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9\s]/g, ' ').toLowerCase().replace(/\s+/g, ' ').trim();
+            if (norm === normTarget || norm.includes(normTarget) || normTarget.includes(norm)) {
+                const tds = rows[i].querySelectorAll('td');
+                return {
+                    found: true,
+                    ht: tds[1]?.textContent?.trim() || '',
+                    taxe: tds[2]?.textContent?.trim() || '',
+                    ttc: tds[3]?.textContent?.trim() || '',
+                };
+            }
+        }
+        return { found: false };
+    }""", norm_target)
+
+    if readback.get("found"):
+        logger.log("EDIT_VERIFIED", "OK",
+                    f"Verified row read-back: HT={readback.get('ht')}, Taxe={readback.get('taxe')}, TTC={readback.get('ttc')}")
+
     logger.log("EDIT_ROW_DONE", "OK", f"Row for [{rub_id}] '{rub_lib}' locked in successfully.")
     return True
 

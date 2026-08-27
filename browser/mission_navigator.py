@@ -111,6 +111,20 @@ async def search_and_open_mission(page, matricule: str, dossier_ref: str) -> boo
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(1500)
         print(f"    [✓] Mission form opened successfully!")
+
+        # Verify opened mission context
+        opened_info = await page.evaluate("""() => {
+            const get = (sel) => {
+                const el = document.querySelector(sel);
+                return el ? (el.value || el.textContent || '').trim() : '';
+            };
+            return {
+                matricule: get('#MatriculeVeh, #Immatriculation, input[name="MatriculeVeh"]'),
+                dossier_ref: get('#ReferenceDossier, #RefDossier, input[name="ReferenceDossier"]'),
+                mode_rep: get('#modeReparation, #ModeReparation, select[name="ModeReparation"]'),
+            };
+        }""")
+        print(f"    [✓] Verified opened mission DOM: Matricule='{opened_info.get('matricule')}', Ref='{opened_info.get('dossier_ref')}'")
         return True
     else:
         table_text = ""

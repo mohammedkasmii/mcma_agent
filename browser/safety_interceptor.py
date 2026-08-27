@@ -9,10 +9,13 @@ from typing import List
 
 MUTATING_ENDPOINTS: List[str] = [
     "**/garageModifierValDevis",
+    "**/createDevisDet",
+    "**/deleteDevisDet",
     "**/expertCloturerMission",
     "**/expertEnregistrerMission",
     "**/cloturerMission",
     "**/enregistrerMission",
+    "**/validerDevis",
     "**/ajouterDocument",
     "**/deleteDocument",
     "**/cloturerTraitement",

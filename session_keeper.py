@@ -79,7 +79,7 @@ async def check_session_health(auth_file: str = AUTH_STATE_FILE, headless: bool 
             current_url = page.url.lower()
             page_content = await page.content()
 
-            # Check for expiration / login page indicators
+            # 1. Check for login page indicators
             is_login_page = (
                 "login" in current_url
                 or "expert_.phtml" in page_content
@@ -94,6 +94,24 @@ async def check_session_health(auth_file: str = AUTH_STATE_FILE, headless: bool 
                     "user_name": None,
                     "url": page.url,
                     "message": "Session EXPIRED. Page redirected to Login. Run 'python auth_setup.py' to renew.",
+                    "timestamp": ts,
+                }
+
+            # 2. Check for dashboard presence
+            has_dashboard = (
+                await page.locator("#formRecherche, #ReferenceCie, #Matricule, a[href*='logout'], a[href*='Login/logout']").count() > 0
+                or "/expertise/" in current_url
+                or "/frontexpert" in current_url
+            )
+
+            if not has_dashboard:
+                await browser.close()
+                return {
+                    "valid": False,
+                    "status_code": response.status if response else None,
+                    "user_name": None,
+                    "url": page.url,
+                    "message": "Dashboard not reachable or unauthenticated. Run 'python auth_setup.py' to renew.",
                     "timestamp": ts,
                 }
 

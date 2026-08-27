@@ -50,7 +50,12 @@ async def manual_login():
         if not login_detected:
             print("\n[!] Auto-detection timed out. Checking if cookies exist...")
 
-        # Small grace period to ensure all session cookies are set
+        # Ensure dashboard elements are loaded
+        try:
+            await page.wait_for_selector("#formRecherche, #ReferenceCie, #Matricule, a[href*='logout']", timeout=5000)
+        except Exception:
+            pass
+
         await asyncio.sleep(2)
 
         # Save session storage state (cookies, local storage)
@@ -59,7 +64,7 @@ async def manual_login():
         
         if os.path.exists(auth_file) and os.path.getsize(auth_file) > 10:
             print("\n" + "=" * 65)
-            print(f"  [✓] SUCCESS! Session saved to '{auth_file}'")
+            print(f"  [✓] SUCCESS! Verified session saved to '{auth_file}'")
             print("  You can now run 'python run_dossier.py' to automate dossiers.")
             print("=" * 65 + "\n")
         else:

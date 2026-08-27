@@ -5,3 +5,4 @@ pymupdf
 pydantic
 requests
 httpx
+pytest
