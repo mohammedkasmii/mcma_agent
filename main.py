@@ -57,6 +57,19 @@ async def health_check():
     return {"status": "ok", "service": "mcma-automation-agent", "version": "2.0.0"}
 
 
+@app.get("/api/v1/cached-notifications")
+async def api_get_cached_notifications():
+    """Returns the latest extracted notifications from logs/mcma_notifications.json instantly without launching browser."""
+    path = os.path.join(LOGS_DIR, "mcma_notifications.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return {"status": "success", "data": json.load(f)}
+        except Exception:
+            pass
+    return {"status": "empty", "data": None}
+
+
 @app.get("/api/v1/notifications")
 async def api_get_notifications(headless: bool = True):
     """Fetches all active notifications, categories, and datatables from MCMA."""
@@ -69,6 +82,11 @@ async def api_get_notifications(headless: bool = True):
             page = await context.new_page()
             try:
                 notifs = await fetch_all_notifications(page, headless=headless)
+                # Also save to cache
+                os.makedirs(LOGS_DIR, exist_ok=True)
+                cache_path = os.path.join(LOGS_DIR, "mcma_notifications.json")
+                with open(cache_path, "w", encoding="utf-8") as f:
+                    json.dump(notifs, f, ensure_ascii=False, indent=2)
                 return {"status": "success", "data": notifs}
             finally:
                 await browser.close()

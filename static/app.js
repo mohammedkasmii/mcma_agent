@@ -183,9 +183,23 @@ document.addEventListener('DOMContentLoaded', () => {
     initApp();
 });
 
-function initApp() {
+async function initApp() {
     setupEventListeners();
     renderAll();
+
+    // Auto-load latest real extracted notifications instantly
+    try {
+        const resp = await fetch('/api/v1/cached-notifications');
+        if (resp.ok) {
+            const data = await resp.json();
+            if (data.status === 'success' && data.data && data.data.categories) {
+                currentData = data.data;
+                activeCategory = 'ALL';
+                renderAll();
+                syncText.textContent = "Synchronisé (Cache)";
+            }
+        }
+    } catch(e) {}
 }
 
 function setupEventListeners() {
