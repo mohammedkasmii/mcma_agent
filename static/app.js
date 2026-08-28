@@ -1,17 +1,17 @@
 /**
- * MCMA Notification Hub — Interactive JavaScript Controller
+ * MCMA Notification Hub — Interactive JavaScript Controller with Employee Action Tracking
  */
 
 // Default Sample Data (from script spy)
 const SAMPLE_NOTIFICATIONS = {
     "timestamp": "2026-08-28 16:45:00",
     "total_categories": 2,
-    "total_alerts": 14,
+    "total_alerts": 12,
     "categories": [
         {
             "category_name": "MISSIONS (FACTURES REÇUES)",
             "code_alerte": "67D9A055-75D1-47CF-A94E-70F4245DE751",
-            "count": 12,
+            "count": 10,
             "items": [
                 {
                     "reference": "3.X5.02.2025.01489",
@@ -126,28 +126,28 @@ const SAMPLE_NOTIFICATIONS = {
             ]
         },
         {
-            "category_name": "RELANCES & NOUVELLES MISSIONS",
-            "code_alerte": "84B8E192-31C4-41A8-9B9F-841A847C2011",
+            "category_name": "RELANCES REÇUES (EXPERT)",
+            "code_alerte": "1B03D4D6-6A29-4C93-955E-EF97663862A2",
             "count": 2,
             "items": [
                 {
-                    "reference": "3.10.05.2026.00412",
+                    "reference": "3.AK.02.2026.00025",
                     "id_sinistre": "815201",
                     "date_survenance": "27/07/2026 11:30",
-                    "societaire": "KHALID ALAMI",
+                    "societaire": "ASAKI EL HOUCINE",
                     "police": "310B25100912",
-                    "matricule": "44912-B-1",
-                    "nature": "CORPOREL",
-                    "statut": "EN COURS",
+                    "matricule": "04612-B-48",
+                    "nature": "MATÉRIEL",
+                    "statut": "DÉCLARÉ",
                     "direct_url": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/815201/rubrique/gestionexpert-index"
                 },
                 {
-                    "reference": "3.10.05.2026.00415",
+                    "reference": "3.AK.02.2026.00037",
                     "id_sinistre": "815209",
                     "date_survenance": "28/07/2026 09:15",
-                    "societaire": "STE ATLAS LOGISTICS",
+                    "societaire": "SETTI BILAL",
                     "police": "310B24100155",
-                    "matricule": "19482-D-6",
+                    "matricule": "12324-A-52",
                     "nature": "MATÉRIEL",
                     "statut": "DÉCLARÉ",
                     "direct_url": "https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/815209/rubrique/gestionexpert-index"
@@ -161,12 +161,16 @@ const SAMPLE_NOTIFICATIONS = {
 let currentData = SAMPLE_NOTIFICATIONS;
 let activeCategory = 'ALL';
 let currentSearchQuery = '';
+let currentActionFilter = 'ALL'; // 'ALL', 'TODO', 'IN_PROGRESS', 'DONE'
+let employeeActions = {}; // { reference: { status: 'TODO'|'IN_PROGRESS'|'DONE'|'WAITING', note: '...', updated_at: '...' } }
+let currentEditingRef = null;
 
 // DOM Elements
 const kpiTotal = document.getElementById('kpiTotal');
-const kpiFactures = document.getElementById('kpiFactures');
+const kpiDone = document.getElementById('kpiDone');
+const kpiProgressPct = document.getElementById('kpiProgressPct');
+const kpiTodo = document.getElementById('kpiTodo');
 const kpiCategories = document.getElementById('kpiCategories');
-const kpiLastSync = document.getElementById('kpiLastSync');
 const categoryTabs = document.getElementById('categoryTabs');
 const tableBody = document.getElementById('tableBody');
 const searchInput = document.getElementById('searchInput');
@@ -178,16 +182,39 @@ const fileInput = document.getElementById('fileInput');
 const syncText = document.getElementById('syncText');
 const toastContainer = document.getElementById('toastContainer');
 
+// Modal Elements
+const noteModal = document.getElementById('noteModal');
+const modalClaimRef = document.getElementById('modalClaimRef');
+const modalStatusSelect = document.getElementById('modalStatusSelect');
+const modalNoteText = document.getElementById('modalNoteText');
+const btnCloseModal = document.getElementById('btnCloseModal');
+const btnCancelNote = document.getElementById('btnCancelNote');
+const btnSaveNote = document.getElementById('btnSaveNote');
+
 // Initialize on Load
 document.addEventListener('DOMContentLoaded', () => {
     initApp();
 });
 
 async function initApp() {
+    loadLocalActions();
     setupEventListeners();
     renderAll();
 
-    // Auto-load latest real extracted notifications instantly
+    // 1. Fetch saved actions from backend
+    try {
+        const actResp = await fetch('/api/v1/notification-actions');
+        if (actResp.ok) {
+            const actData = await actResp.json();
+            if (actData.actions) {
+                employeeActions = { ...employeeActions, ...actData.actions };
+                saveLocalActions();
+                renderAll();
+            }
+        }
+    } catch (e) {}
+
+    // 2. Auto-load latest real extracted notifications instantly
     try {
         const resp = await fetch('/api/v1/cached-notifications');
         if (resp.ok) {
@@ -199,7 +226,22 @@ async function initApp() {
                 syncText.textContent = "Synchronisé (Cache)";
             }
         }
-    } catch(e) {}
+    } catch (e) {}
+}
+
+function loadLocalActions() {
+    try {
+        const stored = localStorage.getItem('mcma_employee_actions');
+        if (stored) {
+            employeeActions = JSON.parse(stored);
+        }
+    } catch (e) {}
+}
+
+function saveLocalActions() {
+    try {
+        localStorage.setItem('mcma_employee_actions', JSON.stringify(employeeActions));
+    } catch (e) {}
 }
 
 function setupEventListeners() {
@@ -217,12 +259,30 @@ function setupEventListeners() {
         renderTable();
     });
 
+    // Action filter pills
+    document.querySelectorAll('.filter-pill').forEach(pill => {
+        pill.addEventListener('click', () => {
+            document.querySelectorAll('.filter-pill').forEach(p => p.classList.remove('active'));
+            pill.classList.add('active');
+            currentActionFilter = pill.dataset.actionFilter;
+            renderTable();
+        });
+    });
+
     // File Upload (JSON)
     btnUploadFile.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', handleFileUpload);
 
     // Live Refresh
     btnRefreshLive.addEventListener('click', handleLiveRefresh);
+
+    // Modal Events
+    btnCloseModal.addEventListener('click', closeModal);
+    btnCancelNote.addEventListener('click', closeModal);
+    btnSaveNote.addEventListener('click', saveModalNote);
+    noteModal.addEventListener('click', (e) => {
+        if (e.target === noteModal) closeModal();
+    });
 }
 
 function renderAll() {
@@ -232,27 +292,24 @@ function renderAll() {
 }
 
 function renderKPIs() {
-    let totalAlerts = 0;
-    let facturesCount = 0;
+    const allItems = getAllItems(true); // all across all categories
+    const totalAlerts = allItems.length;
 
-    (currentData.categories || []).forEach(cat => {
-        const count = cat.items ? cat.items.length : 0;
-        totalAlerts += count;
-        if (cat.category_name && cat.category_name.toLowerCase().includes('facture')) {
-            facturesCount += count;
+    let doneCount = 0;
+    allItems.forEach(item => {
+        const action = employeeActions[item.reference] || {};
+        if (action.status === 'DONE') {
+            doneCount++;
         }
     });
 
+    const todoCount = totalAlerts - doneCount;
+    const pct = totalAlerts > 0 ? Math.round((doneCount / totalAlerts) * 100) : 0;
+
     kpiTotal.textContent = totalAlerts;
-    kpiFactures.textContent = facturesCount;
+    kpiDone.innerHTML = `${doneCount} <span class="metric-sub" id="kpiProgressPct">(${pct}%)</span>`;
+    kpiTodo.textContent = todoCount;
     kpiCategories.textContent = (currentData.categories || []).length;
-    
-    if (currentData.timestamp) {
-        const timePart = currentData.timestamp.split(' ')[1] || currentData.timestamp;
-        kpiLastSync.textContent = timePart;
-    } else {
-        kpiLastSync.textContent = new Date().toLocaleTimeString();
-    }
 }
 
 function renderCategoryTabs() {
@@ -286,10 +343,10 @@ function renderCategoryTabs() {
     });
 }
 
-function getAllItems() {
+function getAllItems(ignoreCategoryFilter = false) {
     let all = [];
     (currentData.categories || []).forEach(cat => {
-        if (activeCategory === 'ALL' || activeCategory === cat.code_alerte) {
+        if (ignoreCategoryFilter || activeCategory === 'ALL' || activeCategory === cat.code_alerte) {
             (cat.items || []).forEach(item => {
                 all.push({
                     ...item,
@@ -302,10 +359,21 @@ function getAllItems() {
 }
 
 function renderTable() {
-    const allItems = getAllItems();
+    const allItems = getAllItems(false);
 
-    // Filter by search query
+    // Filter by search query and action status
     const filtered = allItems.filter(item => {
+        const action = employeeActions[item.reference] || { status: 'TODO', note: '' };
+        const status = action.status || 'TODO';
+
+        // Action Filter
+        if (currentActionFilter !== 'ALL') {
+            if (currentActionFilter === 'TODO' && status !== 'TODO') return false;
+            if (currentActionFilter === 'IN_PROGRESS' && status !== 'IN_PROGRESS') return false;
+            if (currentActionFilter === 'DONE' && status !== 'DONE') return false;
+        }
+
+        // Search Filter
         if (!currentSearchQuery) return true;
         const haystack = [
             item.reference,
@@ -314,7 +382,8 @@ function renderTable() {
             item.police,
             item.nature,
             item.statut,
-            item.date_survenance
+            item.date_survenance,
+            action.note || ''
         ].join(' ').toLowerCase();
         return haystack.includes(currentSearchQuery);
     });
@@ -328,13 +397,34 @@ function renderTable() {
     emptyState.style.display = 'none';
 
     tableBody.innerHTML = filtered.map(row => {
+        const action = employeeActions[row.reference] || { status: 'TODO', note: '' };
+        const actStatus = action.status || 'TODO';
+        const isDone = actStatus === 'DONE';
+        const hasNote = Boolean(action.note && action.note.trim());
         const statusClass = getStatusClass(row.statut);
         const directHref = row.direct_url.startsWith('http') 
             ? row.direct_url 
             : `https://sinauto.mamda-mcma.ma${row.direct_url}`;
 
+        const pillLabel = getActionPillLabel(actStatus);
+        const pillClass = getActionPillClass(actStatus);
+
         return `
-            <tr>
+            <tr class="${isDone ? 'row-done' : ''}">
+                <td>
+                    <div class="employee-action-cell">
+                        <span class="action-status-pill ${pillClass}" onclick="cycleActionStatus('${row.reference}')" title="Cliquer pour changer de statut">
+                            ${pillLabel}
+                        </span>
+                        <button class="btn-note ${hasNote ? 'has-note' : ''}" onclick="openNoteModal('${row.reference}')" title="${hasNote ? 'Note : ' + action.note : 'Ajouter une note'}">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 20h9"></path>
+                                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+                            </svg>
+                            ${hasNote ? 'Note' : ''}
+                        </button>
+                    </div>
+                </td>
                 <td>
                     <span class="ref-badge">
                         ${row.reference || 'N/A'}
@@ -375,6 +465,83 @@ function renderTable() {
             </tr>
         `;
     }).join('');
+}
+
+function getActionPillLabel(status) {
+    switch (status) {
+        case 'DONE': return '🟢 Traité';
+        case 'IN_PROGRESS': return '🔵 En Cours';
+        case 'WAITING': return '🟡 En Attente';
+        default: return '⚪ À Traiter';
+    }
+}
+
+function getActionPillClass(status) {
+    switch (status) {
+        case 'DONE': return 'action-pill-done';
+        case 'IN_PROGRESS': return 'action-pill-inprogress';
+        case 'WAITING': return 'action-pill-waiting';
+        default: return 'action-pill-todo';
+    }
+}
+
+function cycleActionStatus(ref) {
+    if (!ref) return;
+    const current = employeeActions[ref] || { status: 'TODO', note: '' };
+    const order = ['TODO', 'IN_PROGRESS', 'DONE', 'WAITING'];
+    const nextIdx = (order.indexOf(current.status || 'TODO') + 1) % order.length;
+    const nextStatus = order[nextIdx];
+
+    updateAction(ref, nextStatus, current.note || '');
+}
+
+async function updateAction(ref, status, note = '') {
+    employeeActions[ref] = {
+        status: status,
+        note: note,
+        updated_at: new Date().toLocaleString('fr-FR')
+    };
+
+    saveLocalActions();
+    renderAll();
+
+    // Sync with backend API
+    try {
+        await fetch('/api/v1/notification-actions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reference: ref, status: status, note: note })
+        });
+    } catch (e) {}
+
+    const label = getActionPillLabel(status);
+    showToast(`${ref} → ${label}`);
+}
+
+function openNoteModal(ref) {
+    currentEditingRef = ref;
+    const action = employeeActions[ref] || { status: 'TODO', note: '' };
+
+    modalClaimRef.textContent = `Sinistre Référence : ${ref}`;
+    modalStatusSelect.value = action.status || 'TODO';
+    modalNoteText.value = action.note || '';
+
+    noteModal.classList.add('active');
+    modalNoteText.focus();
+}
+
+function closeModal() {
+    noteModal.classList.remove('active');
+    currentEditingRef = null;
+}
+
+function saveModalNote() {
+    if (!currentEditingRef) return;
+    const newStatus = modalStatusSelect.value;
+    const newNote = modalNoteText.value.trim();
+
+    updateAction(currentEditingRef, newStatus, newNote);
+    closeModal();
 }
 
 function getStatusClass(statut) {

@@ -52,10 +52,57 @@ class WexiaDossierRequest(BaseModel):
     explicit_chiffrage_id: Optional[str] = None
 
 
+class NotificationActionUpdate(BaseModel):
+    reference: str
+    status: str  # "TODO", "IN_PROGRESS", "DONE", "WAITING"
+    note: Optional[str] = ""
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
     return {"status": "ok", "service": "mcma-automation-agent", "version": "2.0.0"}
+
+
+@app.get("/api/v1/notification-actions")
+async def api_get_notification_actions():
+    """Returns saved employee actions, notes, and statuses from logs/notification_actions.json."""
+    path = os.path.join(LOGS_DIR, "notification_actions.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return {"status": "success", "actions": json.load(f)}
+        except Exception:
+            pass
+    return {"status": "success", "actions": {}}
+
+
+@app.post("/api/v1/notification-actions")
+async def api_update_notification_action(action: NotificationActionUpdate):
+    """Saves or updates an employee action/status/note for a claim reference."""
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    path = os.path.join(LOGS_DIR, "notification_actions.json")
+    current_actions = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                current_actions = json.load(f)
+        except Exception:
+            pass
+    
+    from datetime import datetime
+    current_actions[action.reference] = {
+        "status": action.status,
+        "note": action.note,
+        "updated_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
+    }
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(current_actions, f, ensure_ascii=False, indent=2)
+        return {"status": "success", "reference": action.reference, "action": current_actions[action.reference]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/v1/cached-notifications")
