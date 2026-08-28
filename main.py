@@ -26,6 +26,7 @@ from browser.mission_navigator import search_and_open_mission
 from browser.form_filler import fill_main_form
 from browser.mode_normal import fill_mode_normal
 from browser.mode_conventionne import fill_mode_conventionne
+from browser.notifications import fetch_all_notifications
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -35,7 +36,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 app = FastAPI(
     title="MCMA RPA Automation Agent",
-    description="Automated filing of expertise reports and garage devis on MCMA portal.",
+    description="Automated filing of expertise reports, garage devis, and notifications on MCMA portal.",
     version="2.0.0",
 )
 
@@ -53,6 +54,25 @@ class WexiaDossierRequest(BaseModel):
 async def health_check():
     """Health check endpoint."""
     return {"status": "ok", "service": "mcma-automation-agent", "version": "2.0.0"}
+
+
+@app.get("/api/v1/notifications")
+async def api_get_notifications(headless: bool = True):
+    """Fetches all active notifications, categories, and datatables from MCMA."""
+    if not os.path.exists(AUTH_STATE_FILE):
+        raise HTTPException(status_code=401, detail="MCMA auth session not found. Please run auth_setup.py first.")
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=headless)
+            context = await browser.new_context(storage_state=AUTH_STATE_FILE)
+            page = await context.new_page()
+            try:
+                notifs = await fetch_all_notifications(page, headless=headless)
+                return {"status": "success", "data": notifs}
+            finally:
+                await browser.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/v1/fill-dossier")
