@@ -276,6 +276,12 @@ function setupEventListeners() {
     // Live Refresh
     btnRefreshLive.addEventListener('click', handleLiveRefresh);
 
+    // In-App MCMA Re-authentication
+    const btnReauth = document.getElementById('btnReauth');
+    if (btnReauth) {
+        btnReauth.addEventListener('click', handleReauth);
+    }
+
     // Modal Events
     btnCloseModal.addEventListener('click', closeModal);
     btnCancelNote.addEventListener('click', closeModal);
@@ -283,6 +289,20 @@ function setupEventListeners() {
     noteModal.addEventListener('click', (e) => {
         if (e.target === noteModal) closeModal();
     });
+}
+
+async function handleReauth() {
+    showToast("Ouverture de la fenêtre MCMA...", "info");
+    try {
+        const resp = await fetch('/api/v1/auth/launch-login', { method: 'POST' });
+        if (resp.ok) {
+            showToast("Saisissez votre Identifiant et Code SMS dans la fenêtre ouverte sur l'écran !", "info");
+        } else {
+            showToast("Erreur lors du lancement de l'authentification.", "error");
+        }
+    } catch(e) {
+        showToast("Impossible de lancer la connexion.", "error");
+    }
 }
 
 function renderAll() {

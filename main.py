@@ -64,6 +64,17 @@ async def health_check():
     return {"status": "ok", "service": "mcma-automation-agent", "version": "2.0.0"}
 
 
+@app.post("/api/v1/auth/launch-login")
+async def api_launch_login():
+    """Launches visible browser on the host PC for login & SMS OTP renewal."""
+    try:
+        import subprocess
+        subprocess.Popen([sys.executable, "auth_setup.py"])
+        return {"status": "started", "message": "Fenêtre de connexion MCMA ouverte sur le serveur."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/v1/notification-actions")
 async def api_get_notification_actions():
     """Returns saved employee actions, notes, and statuses from logs/notification_actions.json."""
