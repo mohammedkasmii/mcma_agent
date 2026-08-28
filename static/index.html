@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCMA — Centre de Notifications & Alertes</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Background Gradient Glows -->
+    <div class="bg-glow bg-glow-1"></div>
+    <div class="bg-glow bg-glow-2"></div>
+
+    <div class="app-container">
+        <!-- Top Header Navigation -->
+        <header class="app-header">
+            <div class="header-brand">
+                <div class="brand-logo">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="brand-title">MCMA Sinistres</h1>
+                    <p class="brand-subtitle">Tableau de Bord des Notifications & Alertes</p>
+                </div>
+            </div>
+
+            <div class="header-actions">
+                <div class="sync-status" id="syncStatus">
+                    <span class="pulse-dot"></span>
+                    <span id="syncText">Prêt</span>
+                </div>
+                <button class="btn btn-secondary" id="btnUploadFile" title="Charger un fichier JSON local">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    <span>Importer JSON</span>
+                </button>
+                <input type="file" id="fileInput" accept=".json" style="display: none;">
+                
+                <button class="btn btn-primary" id="btnRefreshLive" title="Actualiser en direct depuis MCMA">
+                    <svg class="refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+                    </svg>
+                    <span>Actualiser MCMA</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- KPI Metric Cards -->
+        <section class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-icon icon-blue">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="8" x2="12" y2="12"></line>
+                        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                    </svg>
+                </div>
+                <div class="metric-info">
+                    <span class="metric-label">Total Alertes</span>
+                    <h3 class="metric-value" id="kpiTotal">0</h3>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-icon icon-purple">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+                        <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+                    </svg>
+                </div>
+                <div class="metric-info">
+                    <span class="metric-label">Factures Reçues</span>
+                    <h3 class="metric-value" id="kpiFactures">0</h3>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-icon icon-amber">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+                    </svg>
+                </div>
+                <div class="metric-info">
+                    <span class="metric-label">Catégories Actives</span>
+                    <h3 class="metric-value" id="kpiCategories">0</h3>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-icon icon-emerald">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                    </svg>
+                </div>
+                <div class="metric-info">
+                    <span class="metric-label">Dernière Synchro</span>
+                    <h3 class="metric-value font-sm" id="kpiLastSync">--:--:--</h3>
+                </div>
+            </div>
+        </section>
+
+        <!-- Main Content Area -->
+        <main class="main-card">
+            <!-- Filter & Search Controls -->
+            <div class="controls-toolbar">
+                <div class="category-tabs" id="categoryTabs">
+                    <button class="tab-btn active" data-category="ALL">
+                        Toutes les alertes <span class="tab-badge" id="badgeAll">0</span>
+                    </button>
+                </div>
+
+                <div class="search-box">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    </svg>
+                    <input type="text" id="searchInput" placeholder="Filtrer par référence, matricule, sociétaire, police...">
+                    <button class="btn-clear" id="btnClearSearch" title="Effacer la recherche">✕</button>
+                </div>
+            </div>
+
+            <!-- Table Container -->
+            <div class="table-responsive">
+                <table class="data-table" id="alertsTable">
+                    <thead>
+                        <tr>
+                            <th>Référence Sinistre</th>
+                            <th>Date Survenance</th>
+                            <th>Nom du Sociétaire</th>
+                            <th>N° Police</th>
+                            <th>Immatriculation</th>
+                            <th>Nature</th>
+                            <th>Statut</th>
+                            <th class="text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tableBody">
+                        <!-- Dynamic Rows Injected Here -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Empty State Display -->
+            <div class="empty-state" id="emptyState" style="display: none;">
+                <div class="empty-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="8" y1="12" x2="16" y2="12"></line>
+                    </svg>
+                </div>
+                <h4 id="emptyTitle">Aucune alerte trouvée</h4>
+                <p id="emptyDesc">Chargez un fichier JSON de notifications ou cliquez sur "Actualiser MCMA".</p>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast Notifications Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="app.js"></script>
+</body>
+</html>

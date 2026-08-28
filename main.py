@@ -10,6 +10,7 @@ import sys
 import json
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from playwright.async_api import async_playwright
 
@@ -176,6 +177,10 @@ async def process_workflow(data: dict) -> dict:
         except Exception as e:
             await browser.close()
             return {"status": "failed", "error": str(e)}
+
+
+if os.path.exists("static"):
+    app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 
 if __name__ == "__main__":
