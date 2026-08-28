@@ -19,6 +19,7 @@ from core.config import (
     BASE_URL,
     AUTH_STATE_FILE,
     TEMP_DIR,
+    LOGS_DIR,
 )
 from core.logger import StructuredLogger
 from mapper.wexia_mapper import WexiaToDossierMapper
