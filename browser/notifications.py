@@ -28,17 +28,29 @@ async def _fetch_category_rows(page, code_alerte: str, title: str, category_url:
     Strategy 2: If AJAX fails, falls back to DOM navigation with auto-retry.
     """
     # -------------------------------------------------------------------------
-    # Strategy 1: Direct In-Page AJAX (Lightning Fast, No Page Reloads)
+    # Strategy 1: Direct In-Page AJAX with Full Dataset Parameters (length=-1)
     # -------------------------------------------------------------------------
     try:
         ajax_res = await page.evaluate(r"""async (codeAlerte) => {
             try {
+                const params = new URLSearchParams({
+                    'length': '-1',
+                    'start': '0',
+                    'iDisplayLength': '-1',
+                    'iDisplayStart': '0',
+                    'rows': '999999',
+                    'limit': '999999',
+                    'page': '1',
+                    'draw': '1'
+                });
                 const resp = await fetch('/SinAuto_MCMA/expertise/notification/getAlerte/CodeAlerte/' + codeAlerte, {
                     method: 'POST',
                     headers: { 
                         'X-Requested-With': 'XMLHttpRequest',
-                        'Accept': 'application/json, text/javascript, */*'
-                    }
+                        'Accept': 'application/json, text/javascript, */*',
+                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                    },
+                    body: params.toString()
                 });
                 if (!resp.ok) return { ok: false, status: resp.status };
                 const text = await resp.text();
@@ -54,7 +66,7 @@ async def _fetch_category_rows(page, code_alerte: str, title: str, category_url:
             }
         }""", code_alerte)
 
-        if ajax_res.get("ok") and ajax_res.get("data"):
+        if ajax_res.get("ok") and ajax_res.get("data") and len(ajax_res["data"]) > 0:
             raw_list = ajax_res["data"]
             items = []
             for row in raw_list:
@@ -91,21 +103,31 @@ async def _fetch_category_rows(page, code_alerte: str, title: str, category_url:
         pass
 
     # -------------------------------------------------------------------------
-    # Strategy 2: DOM Navigation Fallback with Retry & Error Isolation
+    # Strategy 2: DOM Navigation Fallback with Select "Tout" (-1) and Retries
     # -------------------------------------------------------------------------
     for attempt in range(2):
         try:
             await page.goto(category_url, timeout=20000, wait_until="domcontentloaded")
             await page.wait_for_selector("#listeAlerte", timeout=8000)
 
-            # Try to select "Tout" in pagination length dropdown
-            try:
-                sel = page.locator("select[name='listeAlerte_length'], #listeAlerte_length select").first
-                if await sel.count() > 0:
-                    await sel.select_option(value="-1", timeout=1500)
-                    await page.wait_for_timeout(800)
-            except Exception:
-                pass
+            # Trigger "Tout" (-1) on DataTables and DOM Select
+            await page.evaluate(r"""() => {
+                try {
+                    if (window.jQuery && jQuery.fn.DataTable && jQuery.fn.DataTable.isDataTable('#listeAlerte')) {
+                        jQuery('#listeAlerte').DataTable().page.len(-1).draw();
+                    } else if (window.jQuery && jQuery.fn.dataTable) {
+                        jQuery('#listeAlerte').dataTable().fnLengthChange(-1);
+                    }
+                } catch(e) {}
+                
+                const selects = document.querySelectorAll("select[name*='listeAlerte_length'], select[aria-controls='listeAlerte'], #listeAlerte_length select");
+                selects.forEach(sel => {
+                    sel.value = "-1";
+                    sel.dispatchEvent(new Event('change', { bubbles: true }));
+                    if (window.jQuery) jQuery(sel).trigger('change');
+                });
+            }""")
+            await page.wait_for_timeout(1200)
 
             # Extract from DOM Table
             rows_data = await page.evaluate(r"""() => {
