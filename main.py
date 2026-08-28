@@ -262,4 +262,26 @@ if os.path.exists("static"):
 
 if __name__ == "__main__":
     import uvicorn
+    import socket
+
+    local_ip = "127.0.0.1"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        try:
+            local_ip = socket.gethostbyname(socket.gethostname())
+        except Exception:
+            pass
+
+    print("\n" + "=" * 70)
+    print("  🔔  MCMA SINISTRES — CENTRE DE NOTIFICATIONS & ACTIONS")
+    print("=" * 70)
+    print(f"  💻  Accès sur ce PC          : http://localhost:8000")
+    print(f"  👥  Accès pour vos collègues : http://{local_ip}:8000")
+    print("=" * 70)
+    print("  👉  Gardez cette fenêtre ouverte pour que le serveur reste actif.\n")
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
