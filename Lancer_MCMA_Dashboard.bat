@@ -1,9 +1,11 @@
 @echo off
-title MCMA — Centre de Notifications & Suivi des Actions
+setlocal
+cd /d "%~dp0"
+title "MCMA - Centre de Notifications et Suivi des Actions"
 color 0B
 
 echo ======================================================================
-echo    MCMA Sinistres — Tableau de Bord des Notifications
+echo    MCMA Sinistres - Tableau de Bord des Notifications
 echo ======================================================================
 echo.
 
@@ -17,6 +19,7 @@ if %errorlevel% neq 0 (
 )
 
 :: Find local IP address
+set LOCAL_IP=
 for /f "tokens=4" %%a in ('route print ^| find " 0.0.0.0 "') do (
     set LOCAL_IP=%%a
     goto :ip_found
@@ -35,7 +38,7 @@ echo.
 :: Open browser on this PC after 2 seconds
 start /b cmd /c "timeout /t 2 /nobreak >nul && start http://localhost:8000"
 
-:: Start FastAPI application
+:: Start FastAPI application from the script's folder
 python main.py
 
 pause

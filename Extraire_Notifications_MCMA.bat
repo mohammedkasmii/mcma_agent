@@ -1,9 +1,11 @@
 @echo off
-title MCMA — Extraction des Notifications
+setlocal
+cd /d "%~dp0"
+title "MCMA - Extraction des Notifications"
 color 0A
 
 echo ======================================================================
-echo    MCMA Sinistres — Extraction Rapide des Notifications
+echo    MCMA Sinistres - Extraction Rapide des Notifications
 echo ======================================================================
 echo.
 echo [*] Connexion a MCMA et recuperation des alertes en direct...

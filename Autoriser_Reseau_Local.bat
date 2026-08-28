@@ -1,9 +1,11 @@
 @echo off
-title MCMA — Configuration Pare-feu Reseau Local
+setlocal
+cd /d "%~dp0"
+title "MCMA - Configuration Pare-feu Reseau Local"
 color 0E
 
 echo ======================================================================
-echo    MCMA Sinistres — Autorisation du Port 8000 sur le Reseau Local
+echo    MCMA Sinistres - Autorisation du Port 8000 sur le Reseau Local
 echo ======================================================================
 echo.
 echo Ce script configure le Pare-feu Windows Defender pour autoriser
