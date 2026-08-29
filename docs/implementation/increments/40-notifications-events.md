@@ -11,8 +11,8 @@
   poller** that runs under the per-account lease (INC-11), validates/refreshes each account session, and escalates on
   repeated failure via the health/observability surface (INC-20) — replacing the unscheduled, no-escalation baseline keeper.
 - **Why here:** the dashboard read path and SSE depend on persisted, correctly-scoped presence.
-- **Prerequisites:** INC-08 (ReadCapability), INC-10 (persistence), INC-11 (lease — for the session-refresh poller),
-  INC-13 (session vault — the poller refreshes real sessions).
+- **Prerequisites:** INC-08, INC-10, INC-11, INC-13
+- **Prerequisite rationale:** ReadCapability (INC-08), persistence (INC-10), the per-account lease for the poller (INC-11), and the session vault the poller refreshes (INC-13).
 - **Addresses:** ADR-0006; SYSTEM_OVERVIEW/WORKFLOW_CATALOG (W2); BUSINESS_RULES B.9; INV-9 (read-only, no mutation);
   **F31** (session keep-alive: scheduled + escalation via the poller); F27 (demo-data confusion is fixed in the dashboard,
   INC-19; extraction is truthful here).
@@ -26,11 +26,13 @@
 - **Feature flags/adapters:** a flag selects DB-backed vs legacy-JSON read for the dashboard; DB path proven before cutover (INC-22).
 - **PII protection (correction #3 — chosen sequence B):** INC-14 is **fixture/mock-only for real claimant data**. Its
   logic (extraction, category-scoped lifecycle, staging, poller) is developed and tested entirely against **sanitized/
-  synthetic** fixtures. **No production notification/session/claim PII may be persisted until the Production-Data-Readiness
+  synthetic** fixtures. **No production claim/notification claimant data may be persisted until the Production-Data-Readiness
   gate (G-PDR) passes** (`RELEASE_GATES.md`), which requires INC-20 (PII-safe logging + screenshots) and INC-21 (DB outside
-  served dir + BitLocker/SQLCipher + strict NTFS ACL + encrypted backup) to be green. Enabling production ingestion is a
-  later flip gated on G-PDR, not part of INC-14.
-- **Out-of-scope:** SSE (INC-15); dashboard rendering (INC-19); **any persistence of real production PII** (deferred to the G-PDR flip).
+  served dir + BitLocker/SQLCipher + strict NTFS ACL + encrypted backup) to be green. **Encrypted portal *session
+  credentials* are governed by G3 (INC-13), not G-PDR** — they are not blocked by G-PDR once G3 has passed.
+  **Production notification ingestion is owned by INC-22A** (supervised activation after INC-14/20/21 and G-PDR); it is
+  **not** part of INC-14 and defaults **unavailable**.
+- **Out-of-scope:** SSE (INC-15); dashboard rendering (INC-19); **enabling production claimant-data ingestion** (owned by INC-22A, gated on G-PDR).
 - **Tests-first:**
   - **`test_absence_increments_only_when_that_category_complete_and_valid`**; `test_partial_or_failed_category_does_not_touch_counter`; `test_other_category_failure_never_affects_this_category`.
   - `test_three_consecutive_complete_absences_resolve_on_portal`; `test_reappearance_resets_to_active`.

@@ -11,7 +11,8 @@ no live write is possible until INC-23.
   **row-op endpoints** (and auth/session endpoints) the current mock lacks, plus per-request contract fixtures, so every
   Phase 2 safety test runs fully offline.
 - **Why here:** the interception/identity/writer tests need a portal-shaped target that is provably not the real portal.
-- **Prerequisites:** INC-01 (egress), INC-03 (skeleton).
+- **Prerequisites:** INC-01, INC-03
+- **Prerequisite rationale:** egress lockdown (INC-01) and the module skeleton (INC-03).
 - **Addresses:** PORTAL_CONTRACT §7/§8; TEST_STRATEGY integration; supports INC-07..09, INC-14.
 - **Baseline files modified/retired:** `mock_server.py` extended (it is a test/dev harness, not production runtime; safe
   to modify — it is not part of the shipped service). New fixtures added.
@@ -121,7 +122,8 @@ no live write is possible until INC-23.
   read-before/diff-before/verify-after row ops, TOCTOU re-verify — with **charge-mutuelle never written**. Live writes
   remain disabled by the write-enable gate.
 - **Why here:** the write mechanics + all write-safety gates converge here; must be proven before jobs/leases wire them.
-- **Prerequisites:** INC-05 (ExpectedIdentity/plan), INC-08 (capabilities).
+- **Prerequisites:** INC-05, INC-08
+- **Prerequisite rationale:** ExpectedIdentity/plan (INC-05) and the read/login capabilities (INC-08).
 - **Addresses:** ADR-0003/0004; SAFETY_MODEL §1/§4/§4a/§6; INV-2, INV-6, INV-8; F3/F4/F5 (mission selection), F6 (forced
   charge-mutuelle), F7 (duplicate checkmark), F16 (rubrique-row selection).
 - **Baseline files modified/retired:** none retired; baseline `browser/mission_navigator.py`, `mode_normal.py`,

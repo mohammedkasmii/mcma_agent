@@ -50,7 +50,7 @@ sharp-edges and insecure-defaults passes provided the independent critique. If a
 |---|---|---|---|---|
 | SR-1 | `portal_sessions` missing from INC-10 schema list though INC-13 depends on it | High | ACCEPTED | INC-10 (all 20 tables incl. `portal_sessions`) |
 | SR-2 | `ACQUIRING_ACCOUNT_LOCK`/`IDENTITY_VERIFYING` → `ABORTED_ON_RESTART` untested | Med | ACCEPTED | INC-12 (test added) |
-| SR-3 | `IDENTITY_VERIFIED` restart outcome undefined in §7 **and** plan | Med | ACCEPTED (plan) / DEFERRED (architecture §7 enumeration) | INC-12 (pre-write → `ABORTED_ON_RESTART`+release lease, tested); architecture §7 enumeration flagged for owner approval |
+| SR-3 | `IDENTITY_VERIFIED` restart outcome undefined in §7 **and** plan | Med | **RESOLVED** | INC-12 (pre-write → `ABORTED_ON_RESTART`+release lease, tested) **and** `docs/architecture/WORKFLOW_STATE_MODEL.md` §7 now explicitly enumerates `IDENTITY_VERIFIED` and `READ_ONLY_IDENTITY_CHECK` (correction C8) — no longer deferred |
 | SR-4 | `READ_ONLY_IDENTITY_CHECK` restart outcome undefined | Low | ACCEPTED | INC-12 (→ back to `QUEUED`, tested) |
 | SR-5 | Stale-lease release on restart not planned/tested | Low-Med | ACCEPTED | INC-12 (test added) |
 | SR-6 | No idempotency guard against double-counting the same poll run per category | Low | ACCEPTED | INC-14 (test added; `last_complete_poll_version`) |

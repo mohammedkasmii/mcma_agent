@@ -8,7 +8,8 @@
   server-side sessions (HttpOnly/SameSite/Secure), CSRF, the permission enum + role map, and a **secure first-admin
   bootstrap** (local-only, single-use, expiring; a LAN caller can never claim it).
 - **Why here:** every account-scoped endpoint depends on identity; must precede endpoint exposure.
-- **Prerequisites:** INC-10 (users/roles tables).
+- **Prerequisites:** INC-10
+- **Prerequisite rationale:** the users/roles/user_account_access tables (INC-10).
 - **Addresses:** ADR-0008; API_CONTRACTS §2/§3; INV-11; F18 (unauthenticated API), F24 (auth fail-open).
 - **Baseline files modified/retired:** none retired; baseline `main.py` endpoints stay until parity (they are unauth and
   will be retired in INC-22 after the new API reaches parity).

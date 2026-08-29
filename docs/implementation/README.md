@@ -26,7 +26,7 @@ allowlist are defined in INC-03; the allowlist is removed at INC-22.
 | Windows single-instance mutex | **`pywin32` `win32event.CreateMutex`** (named kernel mutex) | authoritative cross-process single-instance on Windows |
 | DPAPI | **`pywin32` `win32crypt.CryptProtectData`/`CryptUnprotectData`** with `CRYPTPROTECT_LOCAL_MACHINE` | the single chosen vault model (LocalMachine + NTFS ACL) |
 | SSE | **`sse-starlette` `EventSourceResponse`** | maintained ASGI SSE for FastAPI; supports `Last-Event-ID` |
-| Dashboard | **Hardened vanilla TS/JS with strict output-escaping + CSP, no build step** | single-office LAN, no build infra, minimal attack surface, CSP-clean/air-gap-friendly |
+| Dashboard | **Hardened vanilla JavaScript — no TypeScript, no build step** — with strict output-escaping + CSP | single-office LAN, no build infra, minimal attack surface, CSP-clean/air-gap-friendly |
 | Structured logging | **stdlib `logging` + a JSON formatter + a redaction filter** (no new runtime dep) | no dependency; deterministic; redaction enforced by a filter |
 | Dependency pinning + Py 3.14 | **all deps pinned+hashed in `uv.lock`; a CI matrix job runs the suite on Python 3.14** | INC-03 acceptance verifies each dep (playwright, pydantic, fastapi, argon2-cffi, sse-starlette, pywin32) has a working 3.14 wheel; a dep lacking 3.14 support is escalated as an owner decision, not silently downgraded |
 

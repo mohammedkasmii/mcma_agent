@@ -3,104 +3,111 @@
 Every safety invariant, known failure, ADR, business rule, preserved feature, and architecture-noncompliance item maps
 to **exactly one primary increment** (plus supporting increments). Nothing from Phase 3 disappears silently.
 
+Columns for every table below: **Primary** (exactly one) · **Supporting** · **Planned test/evidence** · **Gate** (or N/A)
+· **Target module** · **Status** (Planned, or Preserved/re-asserted for baseline-CC items).
+
 ## 1. Safety invariants (INV-1..INV-11)
-| INV | Primary | Supporting | Test | Gate |
-|---|---|---|---|---|
-| INV-1 dry-run write-incapable | INC-08 | INC-09 | dry-run-has-no-writer | G2 |
-| INV-2 mission identity | INC-09 | — | identity mismatch/zero/multiple | G2 |
-| INV-3 default-deny interception | INC-07 | — | unknown-request-aborts | G2 |
-| INV-4 final endpoints blocked | INC-07 | INC-23 | final-abort-not-fake200 | G2/G5 |
-| INV-5 human final validation | INC-12 | INC-23 | READY_FOR_HUMAN_REVIEW terminal | G3/G5 |
-| INV-6 fail-closed mapping (+exact rubrique) | INC-04 | INC-05, INC-09 | fail-closed props; exact-IdRubrique | G1/G2 |
-| INV-7 Decimal, no negative TVA | INC-04 | — | negative-TVA-fails-closed | G1 |
-| INV-8 charge-mutuelle native-only | INC-09 | — | charge-mutuelle-never-written | G2 |
-| INV-9 relance not mutated | INC-14 | — | extraction-read-only | — |
-| INV-10 secrets/PII | INC-13 | INC-19, INC-20, INC-21 | vault/logs/xss/at-rest | G3 |
-| INV-11 API authn / no LAN exposure | INC-16 | INC-17, INC-18 | auth/authz/TLS | G4 |
+| INV | Primary | Supporting | Test/evidence | Gate | Target module | Status |
+|---|---|---|---|---|---|---|
+| INV-1 dry-run write-incapable | INC-08 | INC-09 | dry-run-has-no-writer | G2 | `mcma/portal` | Planned |
+| INV-2 mission identity | INC-09 | — | identity mismatch/zero/multiple | G2 | `mcma/portal` | Planned |
+| INV-3 default-deny interception | INC-07 | — | unknown-request-aborts | G2 | `mcma/portal` | Planned |
+| INV-4 final endpoints blocked | INC-07 | INC-23 | final-abort-not-fake200 | G2/G5 | `mcma/portal` | Planned |
+| INV-5 human final validation | INC-12 | INC-23 | readiness-terminal (`observed_finalizations`≠job) | G3/G5 | `mcma/execution` | Preserved/re-asserted |
+| INV-6 fail-closed mapping (+exact rubrique) | INC-04 | INC-05, INC-09 | fail-closed props; exact-IdRubrique | G1/G2 | `mcma/domain`,`mcma/portal` | Planned |
+| INV-7 Decimal, no negative TVA | INC-04 | — | negative-TVA-fails-closed | G1 | `mcma/domain` | Planned |
+| INV-8 charge-mutuelle native-only | INC-09 | — | charge-mutuelle-never-written | G2 | `mcma/portal` | Planned |
+| INV-9 relance not mutated | INC-14 | — | extraction-read-only | N/A | `mcma/notifications` | Preserved/re-asserted |
+| INV-10 secrets/PII | INC-13 | INC-19, INC-20, INC-21 | vault/logs/xss/at-rest | G3/G-PDR | `mcma/portal`,`mcma/persistence` | Planned |
+| INV-11 API authn / no LAN exposure | INC-16 | INC-17, INC-18 | auth/authz/TLS | G4 | `mcma/app` | Planned |
 
-## 2. Known failures (F1..F33)
-| F | Increment(s) |
-|---|---|
-| F1,F2,F10 preview/unblocked row endpoints | INC-07, INC-08, INC-09, INC-23 |
-| F3,F4,F5 wrong-mission selection/identity | INC-09 |
-| F6 forced charge-mutuelle | INC-09 (retire INC-22) |
-| F7 duplicate checkmark | INC-09 |
-| F8 fail-open interceptor | INC-07 |
-| F9 page-scoped interception | INC-07 |
-| F11 mapping_status unused | INC-05 |
-| F12 false READY/Prêt | INC-19 (workflow INC-12) |
-| F13 glass→1 | INC-04 |
-| F14 out-of-catalogue default | INC-04 |
-| F15 `"mo"` token | INC-04 |
-| F16 rubrique-row selection | INC-09 |
-| F17 negative TVA | INC-04 |
-| F18 unauth LAN API | INC-16, INC-17, INC-18 |
-| F19 error leakage | INC-17 |
-| F20 200-on-failure | INC-17 |
-| F21 PII in logs | INC-20 (vault INC-13) |
-| F22 XSS | INC-19 |
-| F23 gitignore glob / session material exclusion | INC-13 (+ config) |
-| F24 auth fail-open save | INC-13, INC-16 |
-| F25 page.pause in handler | INC-12 |
-| F26 logs-as-DB | INC-10 |
-| F27 demo-as-real | INC-19 |
-| F28 duplicated constants | INC-03 |
-| F29 silent excepts | INC-20 |
-| F30 menu preview no-op | INC-17 (proper endpoint), retire INC-22 |
-| F31 keeper no escalation | INC-14 (session-refresh poller under lease — primary), INC-11 (lease), INC-20 (escalation via health) |
-| F32 screenshot collisions | INC-20 |
-| F33 keyword family inference | INC-04 |
+## 2. Known failures (F1..F33 — each listed individually)
+| F | Primary | Supporting | Test/evidence | Gate | Target module | Status |
+|---|---|---|---|---|---|---|
+| F1 preview clicks row checkmarks | INC-07 | INC-08, INC-09, INC-23 | preview-no-write | G2 | `mcma/portal` | Planned |
+| F2 preview POSTs updateDevisDet | INC-07 | INC-09, INC-23 | unknown/allowlist-gated | G2 | `mcma/portal` | Planned |
+| F3 first-row mission fallback | INC-09 | — | first-row-rejected | G2 | `mcma/portal` | Planned |
+| F4 sole-candidate fallback | INC-09 | — | zero/multiple fail-closed | G2 | `mcma/portal` | Planned |
+| F5 partial matches → writes | INC-09 | — | partial-match fail-closed | G2 | `mcma/portal` | Planned |
+| F6 forced charge-mutuelle | INC-09 | INC-00, INC-22 | never-written; baseline path removed | G2 | `mcma/portal` | Planned |
+| F7 duplicate checkmark | INC-09 | — | single-write-no-duplicate | G2 | `mcma/portal` | Planned |
+| F8 fail-open interceptor | INC-07 | — | abort-not-fake200 | G2 | `mcma/portal` | Planned |
+| F9 page-scoped interception | INC-07 | — | context-scoped | G2 | `mcma/portal` | Planned |
+| F10 dry-run retains write access | INC-08 | INC-09 | dry-run-no-writer | G2 | `mcma/portal` | Planned |
+| F11 mapping_status unused | INC-05 | — | NeedsReview-blocks-writeable | G1 | `mcma/planning` | Planned |
+| F12 false Verified/READY/Prêt | INC-19 | INC-05, INC-09, INC-12, INC-22 | truthful-readiness | G4 | `mcma/web`,`mcma/app` | Planned |
+| F13 glass→rubrique 1 | INC-04 | — | glass-19-24-fail-closed | G1 | `mcma/domain` | Planned |
+| F14 out-of-catalogue default | INC-04 | — | out-of-catalogue-fail-closed | G1 | `mcma/domain` | Planned |
+| F15 `"mo"` token over-match | INC-04 | — | no-mo-substring | G1 | `mcma/domain` | Planned |
+| F16 rubrique-row selection | INC-09 | — | exact-IdRubrique zero/multiple | G2 | `mcma/portal` | Planned |
+| F17 negative TVA | INC-04 | — | negative-TVA-fail-closed | G1 | `mcma/domain` | Planned |
+| F18 unauth LAN API | INC-16 | INC-00, INC-17, INC-18 | auth-required; baseline contained | G4 | `mcma/app` | Planned |
+| F19 error leakage (str(e)) | INC-17 | — | typed-non-sensitive-errors | G4 | `mcma/app` | Planned |
+| F20 HTTP-200-on-failure | INC-17 | — | truthful-status | G4 | `mcma/app` | Planned |
+| F21 PII in logs | INC-20 | INC-13 | log-redaction | G-PDR | `mcma/core` | Planned |
+| F22 dashboard XSS | INC-19 | — | output-escaping | G4 | `mcma/web` | Planned |
+| F23 gitignore glob / session exclusion | INC-13 | — | vault-excluded-from-logs/git/backups | G3 | `mcma/portal` | Planned |
+| F24 auth fail-open save | INC-13 | INC-16 | validated-store; no size-heuristic | G3 | `mcma/portal` | Planned |
+| F25 page.pause in handler | INC-12 | INC-17 | async-jobs; READY terminal | G3 | `mcma/execution` | Planned |
+| F26 logs-as-DB | INC-10 | — | sqlite-persistence | G3 | `mcma/persistence` | Planned |
+| F27 demo-data-as-real | INC-19 | INC-14 | no-sample-default | G4 | `mcma/web` | Planned |
+| F28 duplicated constants | INC-03 | — | single `mcma.core.config` | G1 | `mcma/core` | Planned |
+| F29 silent excepts | INC-20 | — | no-silent-except-swallow | G-PDR | `mcma/core`,`mcma/app` | Planned |
+| F30 menu preview no-op | INC-17 | INC-22 | proper endpoint; retired | G4 | `mcma/app` | Planned |
+| F31 keeper no scheduling/escalation | INC-14 | INC-11, INC-20 | poller-under-lease-escalates | N/A | `mcma/notifications` | Planned |
+| F32 screenshot name collisions | INC-20 | — | unique-names + retention | N/A | `mcma/core` | Planned |
+| F33 keyword family inference | INC-04 | — | no-keyword-4-6/13-15 | G1 | `mcma/domain` | Planned |
 
-## 3. ADRs
-| ADR | Increment(s) |
-|---|---|
-| 0001 modular monolith | INC-03 |
-| 0002 deterministic planning | INC-04, INC-05 |
-| 0003 read/write capability separation | INC-08, INC-09 |
-| 0004 network default-deny + final block | INC-07 (write-enable INC-23) |
-| 0005 SQLite WAL + outbox | INC-10, INC-15 |
-| 0006 claim identity + category presence | INC-10, INC-14 |
-| 0007 session vault + leases | INC-11, INC-13 |
-| 0008 API auth/authz + TLS | INC-16, INC-17, INC-18 |
-| 0009 SSE + delta recovery | INC-15 |
-| 0010 incremental migration | whole roadmap (INC-01..23) |
+## 3. ADRs (0001..0010)
+| ADR | Primary | Supporting | Test/evidence | Gate | Target module | Status |
+|---|---|---|---|---|---|---|
+| 0001 modular monolith | INC-03 | — | import-linter contract | G1 | `mcma/*` | Planned |
+| 0002 deterministic planning | INC-05 | INC-04 | plan_hash determinism | G1 | `mcma/planning` | Planned |
+| 0003 read/write capability separation | INC-08 | INC-09 | capability safety tests | G2 | `mcma/portal` | Planned |
+| 0004 network default-deny + final block | INC-07 | INC-23 | default-deny/final-abort | G2/G5 | `mcma/portal` | Planned |
+| 0005 SQLite WAL + outbox | INC-10 | INC-15 | wal/outbox atomicity | G3 | `mcma/persistence` | Planned |
+| 0006 claim identity + category presence | INC-10 | INC-14 | identity/presence | G3 | `mcma/persistence` | Planned |
+| 0007 session vault + leases | INC-11 | INC-13 | leases/vault fail-closed | G3 | `mcma/persistence`,`mcma/portal` | Planned |
+| 0008 API auth/authz + TLS | INC-16 | INC-17, INC-18 | auth/authz/TLS | G4 | `mcma/app` | Planned |
+| 0009 SSE + delta recovery | INC-15 | INC-17 | replay/resync | G4 | `mcma/app`,`mcma/persistence` | Planned |
+| 0010 incremental migration (meta) | INC-00 | INC-01..23 (whole roadmap) | gate sequence upheld | all gates | — | Planned |
 
 ## 4. Business rules (BUSINESS_RULES §B)
-| Rule | Increment |
-|---|---|
-| B.1 three-origin | INC-04 |
-| B.2 glass 19–24 | INC-04 |
-| B.3 charge mutuelle native | INC-09 |
-| B.4 out-of-catalogue fail-closed | INC-04 |
-| B.5 mission identity two-tier | INC-09 |
-| B.6 negative TVA fail-closed | INC-04 |
-| B.7 labour structured-first | INC-04 |
-| B.8 multi-account extensible | INC-10 (accounts registry schema), INC-11, INC-13, INC-17 |
-| B.9 persistence identity | INC-10, INC-14 |
-| B.10 LAN security | INC-16, INC-17, INC-18 |
+| Rule | Primary | Supporting | Test/evidence | Gate | Target module | Status |
+|---|---|---|---|---|---|---|
+| B.1 three-origin | INC-04 | — | three-origin 1/2/3 | G1 | `mcma/domain` | Planned |
+| B.2 glass 19–24 | INC-04 | — | component×operation; fail-closed | G1 | `mcma/domain` | Planned |
+| B.3 charge mutuelle native | INC-09 | INC-04 | never-written | G2 | `mcma/portal` | Planned |
+| B.4 out-of-catalogue fail-closed | INC-04 | — | fail-closed | G1 | `mcma/domain` | Planned |
+| B.5 mission identity two-tier | INC-09 | — | two-tier + registration mandatory | G2 | `mcma/portal` | Planned |
+| B.6 negative TVA fail-closed | INC-04 | — | INVALID_TAX_ALLOCATION | G1 | `mcma/domain` | Planned |
+| B.7 labour structured-first | INC-04 | — | structured-first; ambiguous fail-closed | G1 | `mcma/domain` | Planned |
+| B.8 multi-account extensible | INC-10 | INC-11, INC-13, INC-17 | accounts registry; no hardcoded count | G3 | `mcma/persistence` | Planned |
+| B.9 persistence identity | INC-10 | INC-14 | account_id+idSinistre | G3 | `mcma/persistence` | Planned |
+| B.10 LAN security | INC-16 | INC-17, INC-18 | auth/authz/TLS/subnet | G4 | `mcma/app` | Planned |
 
 ## 5. Preserved recovery features (FEATURE_INVENTORY)
-| Feature | Increment |
-|---|---|
-| Manual login + OTP | INC-13 (tool), INC-16 (app auth) |
-| Session save/restore/validate; expiry detection | INC-13, INC-14 |
-| Session keep-alive / refresh daemon | INC-14 (session-refresh poller under lease — primary), INC-11, INC-20 |
-| Multi-account (Oujda/Nador) | INC-11, INC-13, INC-17 |
-| Mission search / open | INC-09 |
-| Mission identity verification | INC-09 |
-| Read dossier JSON + validate | INC-05 |
-| Form-fill (normal) / garage conventionné / row editing / native calc | INC-09 |
-| Rubrique discovery & mapping | INC-04, INC-05 |
-| Monetary calculation | INC-04 |
-| Notification extraction | INC-14 |
-| Relance (read-only) | INC-14 |
-| Dashboard | INC-19 |
-| FastAPI endpoints | INC-16, INC-17 |
-| SSE / live events | INC-15 |
-| Screenshots / diagnostics | INC-20 |
-| Readiness reports (truthful) | INC-12, INC-19, INC-20 |
-| Windows launchers / employee startup | INC-18 (TLS serve), INC-22 (retire old) |
-| Tests & fixtures | INC-01, INC-02, all |
+| Feature | Primary | Supporting | Test/evidence | Gate | Target module | Status |
+|---|---|---|---|---|---|---|
+| Manual login + OTP | INC-13 | INC-16 | onboarding tool + app auth | G3/G4 | `mcma/portal`,`mcma/app`,`tools/` | Planned |
+| Session save/restore/validate; expiry detection | INC-13 | INC-14 | vault + validity checks | G3 | `mcma/portal` | Planned |
+| Session keep-alive / refresh daemon | INC-14 | INC-11, INC-20 | poller under lease + escalation | N/A | `mcma/notifications` | Planned |
+| Multi-account (Oujda/Nador) | INC-13 | INC-10, INC-11, INC-17 | vault + registry + per-account authz | G3/G4 | `mcma/portal`,`mcma/persistence` | Planned |
+| Mission search / open | INC-09 | — | search exactly-one + open | G2 | `mcma/portal` | Planned |
+| Mission identity verification | INC-09 | — | two-tier gate + TOCTOU | G2 | `mcma/portal` | Planned |
+| Read dossier JSON + validate | INC-05 | INC-04 | typed input + fail-closed | G1 | `mcma/mapping`,`mcma/domain` | Planned |
+| Form-fill / garage conventionné / row editing / native calc | INC-09 | INC-12 | RBW/DBW/VAW; native recalc | G2 | `mcma/portal` | Planned |
+| Rubrique discovery & mapping | INC-04 | INC-05 | classification props | G1 | `mcma/domain` | Planned |
+| Monetary calculation | INC-04 | — | Decimal + remainder allocation | G1 | `mcma/core`,`mcma/domain` | Preserved/re-asserted |
+| Notification extraction | INC-14 | INC-08 | length=-1 + DOM fallback (fixtures) | N/A (prod via G-PDR) | `mcma/notifications` | Planned |
+| Relance (read-only) | INC-14 | — | generic category, no mutation | N/A | `mcma/notifications` | Preserved/re-asserted |
+| Dashboard | INC-19 | INC-15, INC-17 | escaping/CSP/readiness | G4 | `mcma/web` | Planned |
+| FastAPI endpoints | INC-17 | INC-16 | typed routers + authz | G4 | `mcma/app` | Planned |
+| SSE / live events | INC-15 | INC-17 | global-cursor + resync | G4 | `mcma/app`,`mcma/persistence` | Planned |
+| Screenshots / diagnostics | INC-20 | — | unique names + retention + redaction | G-PDR | `mcma/core` | Planned |
+| Readiness reports (truthful) | INC-12 | INC-19, INC-20 | real-check readiness | G3/G4 | `mcma/execution`,`mcma/web` | Planned |
+| Windows launchers / employee startup | INC-18 | INC-00, INC-22 | TLS serve; old launchers retired | G4 | `deploy/` | Planned |
+| Tests & fixtures | INC-01 | INC-02, all | egress lockdown + characterization | G0 | `tests/` | Planned |
 
 ## 6. Architecture requirements — the full 40-item matrix (correction #5)
 Baseline class per Phase 3 `docs/architecture/TRACEABILITY_MATRIX.md` §1: **CC** compliant · **PC** partial · **CN**
@@ -154,8 +161,10 @@ The three baseline **CC** items (18 Decimal money; INV-5 human-final-validation;
 and re-asserted by tests in INC-04 / INC-12 / INC-14 respectively.
 
 ## 7. Completeness statement
-- **No orphans:** every INV, every F1..F33, every ADR, every business rule, every preserved feature, and every
-  noncompliant architecture item has a primary increment and a planned test.
+- **No orphans (proven by the fully-columned tables above):** §1 lists all 11 INV, §2 lists **F1..F33 individually**, §3
+  all 10 ADRs, §4 all 10 business rules, §5 every preserved feature, and §6 all 40 architecture items — **each row carries
+  exactly one primary increment, its supporting increments, a planned test/evidence, a blocking gate (or N/A), a target
+  module, and a status.** The claim of no orphans rests on those explicit fields, not on a summary.
 - **Duplicate work / shared dependencies:** INC-04 underpins INC-05/09 (rules); INC-10 underpins INC-11..21 (schema);
   INC-07 underpins INC-08/09 (interception); INC-13's DPAPI helper is reused by INC-12's `job_inputs` encryption (interface
   shared; INC-12 uses an injected encryptor stubbed until INC-13 lands).

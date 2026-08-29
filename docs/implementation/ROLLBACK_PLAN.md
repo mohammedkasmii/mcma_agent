@@ -35,17 +35,25 @@ whole-branch as a last resort.
 | INC-19 | re-serve the legacy static dashboard |
 | INC-20 | revert to baseline logger |
 | INC-21 | revert backup scripts (additive) |
-| **INC-22** | **restore retired baseline files from git; re-enable legacy flags (highest blast radius — retirement list is explicit and revertible)** |
-| INC-23 | flip write-enable gate OFF → read-only + dry-run; documented canary rollback |
+| **INC-22** | redeploy the **last tested, tagged, post-INC-00 contained release**; if a preserved feature regressed, restore **only the explicitly identified safe/read-only compatibility code** for it. **Never** restore the baseline writer or a legacy write flag (both permanently removed at INC-00). |
+| INC-23 | **revoke/expire the approved `confirmed_row_ops` contract record, close the writer capability, redeploy the last read-only pre-G5 release** → read-only + dry-run. No flag/env/CLI restores writing. |
 
 ## Phase-level rollback
 Revert the phase's increments in reverse order; re-run the previous phase's gate to confirm the system returns to its
-last-green state. Because baseline code is retired only at INC-22, any rollback before Phase 7 leaves the baseline intact.
+last-green state. Baseline **read** paths are retired only at INC-22, so a rollback before Phase 7 leaves the
+**write-contained** baseline read paths intact — the baseline **writer** was already permanently removed at INC-00 and is
+never restored.
+
+## Operational rollback target (definition)
+After INC-00, the **operational rollback target is always the last tested, tagged, post-INC-00 contained release**
+(read-only, write capability permanently removed). The production baseline `0290fe9` is **historical/reference evidence
+only** — it is **never** an operational rollback target, because it contains the unsafe writer that INC-00 removed.
 
 ## Whole-branch recovery (last resort)
-`refactor/solid-architecture` retains the full history; the production baseline `0290fe9` is recoverable at any time.
-The SQLite DB is recoverable via the INC-21 online-backup/restore runbook. No live-portal state is ever changed before
-INC-23's supervised canary, so pre-canary rollback has no external side effects.
+`refactor/solid-architecture` retains full history for **forensic/reference** purposes. Operational recovery redeploys
+the last tagged post-INC-00 contained release (above); it never checks out or runs `0290fe9`. The SQLite DB is recoverable
+via the INC-21 online-backup/restore runbook. No live-portal state is ever changed before INC-23's supervised canary, so
+pre-canary rollback has no external side effects.
 
 ## Data recovery
 - DB corruption/loss → restore from the latest verified online backup (INC-21).

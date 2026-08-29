@@ -8,7 +8,8 @@
   defective baseline paths — only after parity is demonstrated.
 - **Why here:** obsolete paths (unauth API, forced charge-mutuelle, logs-as-DB, duplicated constants, fail-open
   interceptor, fail-open auth save, no-op menu preview) must not linger once replaced; but never removed before parity.
-- **Prerequisites:** INC-14, INC-17, INC-19, INC-20, **INC-21** (all replacements exist and are proven, incl. backup/at-rest before retiring baseline persistence paths).
+- **Prerequisites:** INC-14, INC-17, INC-19, INC-20, INC-21
+- **Prerequisite rationale:** all replacements exist and are proven, incl. backup/at-rest (INC-21) before retiring baseline persistence paths.
 - **Addresses:** "preserve every working feature" + safe replacement; F6, F8, F12, F24, F26, F28, F30; retirement of
   `browser/safety_interceptor.py` (old), `browser/mode_normal.py` charge-mutuelle force, `main.py` unauth API + `process_workflow`, `core/logger.py`, `menu.py` preview, `auth_setup.py` fail-open save, duplicated constants.
 - **Baseline files modified/retired:** the above baseline files are removed/replaced **after** parity tests pass. This is
@@ -31,12 +32,27 @@
 - **Safe offline verification:** `python -m pytest -v` (whole suite, offline).
 - **Safety gates:** parity gate; must not regress G0–G4.
 - **Expected git-diff scope:** deletions of retired baseline files + `tests/parity/*` + reference updates.
-- **Rollback:** restore the retired files from git (they remain in history); re-enable legacy flags. This is the
-  highest-blast-radius increment — keep the retirement list explicit and revertible.
+- **Rollback:** redeploy the **last tested, tagged, post-INC-00 contained release** (read-only) and, if a specific
+  preserved feature regressed, restore **only the explicitly identified safe/read-only compatibility code** for that
+  feature from the contained state. **Never** restore the retired baseline *writer* and **never** re-enable a legacy write
+  flag — those were permanently removed at INC-00. The production baseline `0290fe9` is **historical/reference evidence
+  only**, never an operational rollback target.
 - **Risks/failure behavior:** if parity is not fully proven for a feature, that feature's baseline path is **kept** (not deleted) and flagged for a follow-up increment.
 - **Subincrement split (correction #7):**
-  - **INC-22A** — the **feature-parity suite** proving every preserved feature (new-vs-old equivalence or documented
-    improvement); no deletions yet. Gate: parity must be green before 22B.
+  - **INC-22A** — (i) the **feature-parity suite** proving every preserved feature (new-vs-old equivalence or documented
+    improvement, no deletions yet), and (ii) **supervised production notification-ingestion activation** (correction #2):
+    - **Owner/precondition:** activation is available **only after** INC-14, INC-20, INC-21 **and G-PDR** have passed; it
+      **defaults unavailable** before the gate.
+    - **Approval requirement:** explicit owner sign-off, recorded, before the first production ingestion.
+    - **Evidence:** the G-PDR checklist artifacts (DB outside served dir; BitLocker/SQLCipher; verified NTFS ACL;
+      verified encrypted-backup destination; PII-safe logging + screenshot proof).
+    - **Tests:** `test_production_ingestion_unavailable_before_g_pdr`; `test_production_ingestion_requires_owner_approval`;
+      `test_ingestion_rollback_returns_to_synthetic_without_deleting_evidence`.
+    - **Rollback:** **disable production ingestion and return to synthetic/mock data** without deleting any already-retained
+      evidence/records.
+    - **Definition of Done:** parity green; activation gated on G-PDR + approval; rollback proven to fall back to synthetic
+      data with retained evidence intact.
+    - Gate: parity + G-PDR + approval must all hold before 22B.
   - **INC-22B** — **retire** the baseline paths (delete the retired files, update references), **tighten the import
     contract** (remove the legacy allowlist so the final ownership rule applies with no exceptions), flip read flags to
     DB-backed permanently, and prove rollback (`test_rollback_flag_flip_returns_to_last_green`) — never restoring the
@@ -52,7 +68,8 @@
   contracts against approved safe evidence / a captured mock-contract, satisfy the write-enable gate (confirmed contract
   records **and** all safety tests green), then perform a controlled **canary** with human final validation still mandatory.
 - **Why here:** it is the terminal safety gate; everything upstream converges here (critical path endpoint).
-- **Prerequisites:** INC-09 (writer), INC-12 (jobs), INC-13 (vault), INC-18 (TLS), INC-22 (parity).
+- **Prerequisites:** INC-09, INC-12, INC-13, INC-18, INC-22
+- **Prerequisite rationale:** the writer (INC-09), jobs (INC-12), vault (INC-13), TLS (INC-18), and parity+retirement (INC-22).
 - **Addresses:** ADR-0004 (A5 write-enable gate); INV-1..INV-8 (all write-safety invariants must be verified); the
   master-prompt rule that endpoint names in the baseline do **not** authorize writes.
 - **Baseline files modified/retired:** none (baseline already retired at INC-22).
@@ -83,7 +100,10 @@
   supervised on-site procedure, not part of CI).
 - **Safety gates:** **G5 — the live-write gate.** No live write before this passes with explicit owner approval.
 - **Expected git-diff scope:** `portal/contracts/*`, `deploy/canary.md`, tests.
-- **Rollback:** flip the write-enable gate OFF; the system reverts to read-only + dry-run; documented canary rollback.
+- **Rollback:** **revoke/expire the approved portal-contract record** (`confirmed_row_ops`), **close the writer
+  capability**, and **redeploy the last read-only pre-G5 release**. The system returns to read-only + dry-run. No boolean,
+  environment variable, CLI option, or generic feature flag may restore writing — write capability exists only while a
+  valid, commit-bound contract record is present, and rollback removes it.
 - **Risks/failure behavior:** if any safety test regresses or a contract is unconfirmed, the gate stays OFF (fail-closed);
   no live write is possible.
 - **Definition of Done:** gate logic tested; canary runbook complete; owner sign-off obtained before the supervised canary.

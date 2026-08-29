@@ -14,7 +14,7 @@
   **Review SR-1 (was HIGH):** `portal_sessions` (DATA_MODEL §2) is included here — INC-13 depends on it; it must not be omitted.
   **Review SR-7:** migrations follow the **expand/contract** (compatibility-aware) discipline (DATA_MODEL §10); add `test_migration_is_expand_contract_compatible` (a new column is added nullable/defaulted before any code requires it).
 - **DB migration impact:** creates the initial schema (forward migration `0001`).
-- **Dependency/config impact:** stdlib `sqlite3` only (no new runtime dep). DB path from `core.config`, outside any served dir.
+- **Dependency/config impact:** stdlib `sqlite3` only (no new runtime dep). DB path from **`mcma.core.config`**, outside any served dir.
 - **Feature flags/adapters:** the DB is created but not yet the authority for notifications/actions (dual-write/cutover is INC-14/22).
 - **Out-of-scope:** business use of the tables (later increments).
 - **Tests-first (repository-contract):**
@@ -87,7 +87,8 @@
   input_hash/plan_hash; identity re-verified before writing), **idempotency**, and **deterministic restart reconciliation**
   with exact `ERROR` reason codes.
 - **Why here:** the async execution engine; must precede API job endpoints and any live write.
-- **Prerequisites:** INC-05 (plan), INC-10 (persistence), INC-11 (leases).
+- **Prerequisites:** INC-05, INC-10, INC-11
+- **Prerequisite rationale:** the deterministic plan (INC-05), persistence (INC-10), and leases (INC-11).
 - **Addresses:** ADR-0002/0005; WORKFLOW_STATE_MODEL §2/§6/§7; **INV-5** (automation stops at `READY_FOR_HUMAN_REVIEW`;
   never finalizes; `FINALIZED_BY_HUMAN` is observed-only); correction #5; F25 (`page.pause` in handler → async jobs +
   READY_FOR_HUMAN_REVIEW).

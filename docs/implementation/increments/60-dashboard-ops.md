@@ -5,19 +5,19 @@
 ## INC-19 — Dashboard migration: XSS removal, truthful readiness, no demo-as-real
 
 - **Purpose/outcome:** Rebuild the employee dashboard against the authenticated API + SSE with **safe rendering** (no
-  unescaped `innerHTML`; strict output-escaping in a hardened vanilla TS/JS render layer, no build step; **CSP enforced**),
-  **truthful readiness** (labels from
+  unescaped `innerHTML`; strict output-escaping in a **hardened vanilla JavaScript** render layer — **no TypeScript, no
+  build step**; **CSP enforced**), **truthful readiness** (labels from
   real checks, never a `finally` block or file existence), and **no fabricated demo data rendered as real**.
 - **Why here:** depends on the authenticated API (INC-17) and SSE (INC-15).
 - **Prerequisites:** INC-15, INC-17.
 - **Addresses:** F12 (false READY/Prêt), F22 (XSS), F27 (demo-as-real); INV-10.
 - **Baseline files modified/retired:** `static/index.html`, `static/app.js`, `static/style.css` are replaced by the new
   dashboard; the baseline static app is retired only after parity (INC-22).
-- **Target modules/files introduced:** `web/` (new dashboard — either hardened vanilla JS with strict escaping + CSP, or
-  a small build per ADR/architecture; keep it simple and CSP-clean), served by `app` over TLS. Tests under
+- **Target modules/files introduced:** `mcma/web/` (new dashboard — **hardened vanilla JavaScript, no TypeScript, no
+  build step**, strict escaping + CSP), served by `mcma.app` over TLS. Tests under
   `tests/web/` (unit tests for the escaping/render helpers) + a headless-DOM safety test.
 - **DB migration impact:** none.
-- **Dependency/config impact:** if a build tool is introduced it is dev-only; otherwise none.
+- **Dependency/config impact:** none — no build tool (hardened vanilla JavaScript, no build step).
 - **Feature flags/adapters:** the new dashboard is served at the authenticated path; the legacy static app is removed at parity.
 - **Out-of-scope:** any write UI for missions (final validation remains a human action in the real portal).
 - **Tests-first:** **`test_portal_data_is_escaped_not_innerHTML`** (a `<script>`/quote in a field cannot break out);

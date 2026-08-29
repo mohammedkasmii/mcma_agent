@@ -10,7 +10,8 @@ fail-closed — absence of evidence blocks progression.
 | **G2** Write-safety core (no live writes) | INC-09 | Phase 3 | dry-run has no writer; final endpoints abort; unknown requests fail closed; identity + exact-IdRubrique fail closed; charge-mutuelle never written — all against the mock; live writes still disabled |
 | **G3** Durable orchestration | INC-13 | Phase 4 | deterministic crash-recovery; OS mutex + lease single-writer; vault fails closed on decrypt/binding failure |
 | **G4** Authenticated TLS API | INC-18 | Phase 6 | TLS-only (refuse without cert); per-account authorized API; server-derived audit |
-| **G-PDR** Production-data-readiness | INC-20 + INC-21 | **any persistence of real production PII** (notifications/sessions/claims) | DB outside served directories; BitLocker **or** SQLCipher condition satisfied; strict NTFS ACL verified; encrypted backup destination verified; PII-safe logging **and** screenshot behavior verified. No production PII is stored before this gate — INC-14 stays fixture/mock-only until it passes. |
+| **G3** (portal session credentials — see below) | INC-13 | storing/using a real encrypted portal session | DPAPI LocalMachine, **verified** service-account-only NTFS ACL, account binding, atomic storage, rotation/revocation, fail-closed decryption. **Portal session credentials are governed by G3, NOT G-PDR** — once G3 passes, encrypted sessions are usable and are never "blocked until G-PDR". |
+| **G-PDR** Production-data-readiness | INC-20 + INC-21 | **any persistence/emission of real production claimant data**: claim/notification records, screenshots, exports, logs, plan snapshots, and backups (**not** portal session credentials, which are G3) | DB outside served directories; BitLocker **or** SQLCipher condition satisfied; strict NTFS ACL verified; encrypted backup destination verified; PII-safe logging **and** screenshot behavior verified. No production claimant data is stored/emitted before this gate — INC-14 stays fixture/mock-only until it passes. |
 | **G5** Live-write gate | INC-23 | any live row write | confirmed row-op contracts from approved evidence; full safety suite green; write-enable gate satisfied; final endpoints still blocked; **explicit owner approval** before the supervised canary |
 
 ## Standing prohibitions (apply throughout, not just at a gate)
@@ -26,5 +27,7 @@ fail-closed — absence of evidence blocks progression.
   crash-recovery resolves to a non-writing, reviewable state.
 
 ## Per-increment gate participation
-G0: INC-01. G1: INC-03,04,05. G2: INC-06,07,08,09. G3: INC-10,11,12,13. G4: INC-16,17,18 (INC-19,20,21 are quality gates,
-not blocking safety gates). G5: INC-23 (with INC-09/12/13/18/22 as prerequisites).
+G0: INC-01 (with INC-00 containment as prerequisite). G1: INC-03,04,05. G2: INC-06,07,08,09. G3: INC-10,11,12,13
+(portal session credentials become usable once G3 passes). **G-PDR: INC-20 + INC-21 gate it; INC-14 stays fixture/mock-only
+until it passes; production notification ingestion is activated in INC-22A only after G-PDR + INC-14/20/21.** G4: INC-16,17,18.
+G5: INC-23 (with INC-09/12/13/18/22 as prerequisites).

@@ -13,7 +13,8 @@ changing working behavior.
   legacy writer **cannot issue a row write at all**, and cannot be restored through configuration, environment variables,
   CLI arguments, or feature flags. The **only** path to a live write, ever, is the new `VerifiedMissionWriter` after **G5**.
 - **Why here:** first control; leaving the baseline writer/API live (or flag-restorable) for the whole rebuild is the largest standing risk.
-- **Prerequisites:** none (first increment).
+- **Prerequisites:** none
+- **Prerequisite rationale:** the first increment.
 - **Addresses:** standing prohibition applied to the baseline; INV-1/2/3/8, INV-11 (interim); F6, F8, F18.
 - **Containment mechanism (no runtime boolean — correction #1):** the write-performing code paths are **deleted or
   hard-`raise`d** (their bodies replaced by an unconditional `RuntimeError("baseline live-write permanently removed; use
@@ -69,11 +70,13 @@ changing working behavior.
 - **Purpose/outcome:** No test process — including subprocesses and Chromium — can reach the production host. This is the
   precondition for every later increment that touches the browser.
 - **Why here:** ADR-0010 step 1; the master prompt requires unconditional production-egress blocking before browser work.
-- **Prerequisites:** **INC-00** (baseline write capability removed first).
+- **Prerequisites:** INC-00
+- **Prerequisite rationale:** baseline write capability removed first.
 - **Addresses:** TEST_STRATEGY §1; the recovery "no production-domain blocking exists" gap (`TEST_EVIDENCE.md`); INV-10.
 - **Baseline files modified/retired:** none retired. Adds test-infra only.
 - **Target modules/files introduced:** `conftest.py` (repo root), `tests/_egress_guard.py` (socket guard + pytest plugin
-  hook), `pyproject.toml`/`pytest.ini` (register the plugin + `pytest-socket` config), `ci/no-egress.md` (OS/CI runbook),
+  hook), `pyproject.toml` (registers the plugin + `pytest-socket` config under `[tool.pytest.ini_options]` — **pytest
+  config lives in `pyproject.toml` only**), `ci/no-egress.md` (OS/CI runbook),
   `tests/safety/test_egress_proof.py`.
 - **DB migration impact:** none.
 - **Dependency/config impact:** add dev-only `pytest-socket`. No runtime dependency change.
@@ -118,7 +121,8 @@ changing working behavior.
 - **Purpose/outcome:** Pin the *current* observable behavior of the genuinely-working baseline paths so later refactors
   are provably behavior-preserving (or intentionally, explicitly changed).
 - **Why here:** ADR-0010 step 2; you cannot safely refactor the mapper/notifier without a regression net.
-- **Prerequisites:** INC-01 (egress lockdown) — characterization of any browser path must be offline.
+- **Prerequisites:** INC-01
+- **Prerequisite rationale:** characterization of any browser path must be offline (egress lockdown first).
 - **Addresses:** "preserve every working feature" (master prompt); `FEATURE_INVENTORY.md`; the existing 19 tests
   (`TEST_EVIDENCE.md`) are preserved and extended.
 - **Baseline files modified/retired:** none (tests are added around existing code; no production edit).

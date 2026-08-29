@@ -26,7 +26,10 @@
 - **Baseline files modified/retired:** none retired here; the `mcma/` packages are created alongside the (write-contained)
   baseline read paths.
 - **Target modules/files introduced:** `mcma/` package skeleton (`mcma/<module>/__init__.py` for the nine modules);
-  `pyproject.toml`; `mcma/tests/contracts/test_import_boundaries.py` (import-linter contracts) + the plan-lint drift check.
+  **`mcma/core/config.py`** (typed settings; the DB path and all runtime settings come from `mcma.core.config`);
+  `pyproject.toml` (holds the `[tool.pytest.ini_options]`, `import-linter`, and `uv` config — **pytest configuration
+  lives in `pyproject.toml` only**, no `pytest.ini`/`setup.cfg`); **top-level** `tests/contracts/test_import_boundaries.py`
+  (import-linter contracts) + `tests/plan/test_roadmap_prereqs_match_graph.py`. All tests live under top-level `tests/*`.
 - **DB migration impact:** none.
 - **Dependency/config impact:** dev-only **import-linter** (chosen tool — correction #6) with contracts in `pyproject.toml`;
   `ruff`/`ty` as non-breaking dev tools. See README §Implementation choices for the resolved toolchain.
@@ -38,15 +41,19 @@
   - `test_single_owner_playwright_sqlite_fastapi` — only `mcma.portal` imports playwright; only `mcma.persistence` imports
     sqlite3; only `mcma.app` imports fastapi (legacy `main.py`/`browser/*` are on the temporary allowlist until INC-22).
   - `test_no_dependency_cycles` — the module graph is acyclic and one-directional.
-  - **`test_roadmap_prereqs_match_graph`** (correction #2 drift check) — parses each `Prerequisites:` in
-    `docs/implementation/increments/*.md`, the canonical dependency table, and the Mermaid edges in `REBUILD_ROADMAP.md`;
-    asserts all three are identical (a plan-lint over the docs, run in CI so the plan cannot silently drift).
+  - **`test_roadmap_prereqs_match_graph`** (corrections #2/#6 drift check) — for each increment it extracts the
+    **normalized set of canonical `INC-XX` identifiers** from the single `**Prerequisites:**` line (the field contains
+    **only** `INC-XX` tokens and `none`; any human rationale lives on the separate `**Prerequisite rationale:**` line and
+    is ignored), from the canonical dependency table in `REBUILD_ROADMAP.md`, and from the Mermaid graph edges; it asserts
+    all three normalized sets are **identical for all 24 increments**. Because the field is single-line and token-only, no
+    multiline wrapping can cause an INC ID to be missed. Runs in CI so the plan cannot silently drift.
 - **Initial failing-test expectation:** fails (packages/contract absent).
 - **Mock/fixtures:** none.
 - **Implementation steps:** create package skeleton → author import-linter contract from MODULE_BOUNDARIES → wire into
-  `python -m pytest` → add `core.config` typed settings stub (no secrets).
+  `python -m pytest` → add `mcma/core/config.py` typed settings stub (no secrets).
 - **Acceptance criteria:** contract tests green; skeleton importable; baseline scripts still run unchanged.
-- **Safe offline verification:** `python -m pytest tests/contracts -v`; `lint-imports` (if used).
+- **Safe offline verification:** `python -m pytest tests/contracts -v`; **`lint-imports`** (mandatory — import-linter is
+  a required CI/verification command, run on every increment).
 - **Safety gates:** contributes to G1.
 - **Expected git-diff scope:** new packages + `pyproject.toml` + `tests/contracts/`. No baseline `.py` edits.
 - **Rollback:** delete new packages/config; baseline untouched.
