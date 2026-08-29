@@ -73,8 +73,9 @@ Status legend: **verified** (confirmed in code) · **partial** (implemented with
 
 ### Rubrique discovery & mapping — **partial (fail-open holes)**
 - `mapper/wexia_mapper.py:517-551` `_determine_part_rubrique`; colle/kits `_classify_colle_or_adhesive:483-492`; labour `_determine_labour_rubrique:494-514`.
-- Holes: out-of-catalogue `mcma_rubric_id` is silently discarded then inferred (`:578`) — **must fail closed** (resolved requirement); matrix `.get(...)` default-to-carrosserie fallback (`:550`); over-broad 2-letter `"mo"` labour token (`:508`).
-- Recognized glass operations currently fold into rubrique 1 (`_determine_part_rubrique` → family carrosserie) — **must use dedicated rubriques 20/22** (resolved requirement; see `BUSINESS_RULES.md`).
+- Holes: out-of-catalogue `mcma_rubric_id` is silently discarded then inferred (`:578`) — **must fail closed** (`BUSINESS_RULES.md` B.4); matrix `.get(...)` default-to-carrosserie fallback (`:550`); over-broad 2-letter `"mo"` labour token (`:508`) — **must use structured item_type/operation_type first** (`BUSINESS_RULES.md` B.7).
+- Keyword-based family inference to rubriques 4–6 / 13–15 (`:541-544,550`) is **disallowed** under the three-origin rule: ordinary parts map only by origin to 1/2/3 (`BUSINESS_RULES.md` B.1; `KNOWN_FAILURES.md` F33).
+- Recognized glass operations currently fold into rubrique 1 (`_determine_part_rubrique` → family carrosserie) — **must use the component×operation mapping for rubriques 19–24, ambiguous glass failing closed** (`BUSINESS_RULES.md` B.2; `KNOWN_FAILURES.md` F13).
 
 ### Row editing & native recalculation — **verified**
 - `_edit_single_row_dynamic` (`mode_conventionne.py:182-351`) re-locates by normalized label, edits, awaits `updateDevisDet`, reads back — but never compares read-back to intended values and returns True regardless (`:351`).
@@ -84,7 +85,7 @@ Status legend: **verified** (confirmed in code) · **partial** (implemented with
 - Strict `Decimal` + `ROUND_HALF_UP` + last-line tax remainder allocation (`wexia_mapper.py:109-125,638-664`); ±0.01 assertions (`:671-676`). Floats appear only at the portal JS boundary (inherent). Latent: per-line TVA can go negative (`:646`).
 
 ### Charge mutuelle — **broken (forced overwrite)**
-- `browser/mode_normal.py:122-144` sets `MontantChargeMutuelle = repair total` and `MontantChargeSocietaire = '0'` after native calc, discarding the portal split. **Resolved requirement:** do not force to zero, do not overwrite with an invented formula; preserve native values or require human review. See `BUSINESS_RULES.md`.
+- `browser/mode_normal.py:122-144` sets `MontantChargeMutuelle = repair total` and `MontantChargeSocietaire = '0'` after native calc, discarding the portal split. **Authoritative decision:** portal-native calculation is authoritative in **both** modes; neither mode may write `MontantChargeSocietaire` or `MontantChargeMutuelle`; independent of final save. See `BUSINESS_RULES.md` B.3.
 
 ## Notifications, dashboard, API
 

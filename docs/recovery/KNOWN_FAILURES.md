@@ -55,19 +55,22 @@ Produced at `wexia_mapper.py:278-279`; **zero readers** in `run_dossier.py` / `p
 ## S2/S6 — Mapping correctness (resolved-requirement contradictions)
 
 ### F13. Recognized glass operations fold into rubrique 1 — **S2, CONFIRMED**
-The mapper has no producer for glass rubriques 19-24; a `pare-brise`/`vitre` part line falls through `_determine_part_rubrique` (`wexia_mapper.py:517-551`) to `family=carrosserie` ⇒ rubrique 1 (`test_mapper.py:68`). Must use dedicated 20/22, unknown glass fail closed (`BUSINESS_RULES.md` B.1).
+The mapper has no producer for glass rubriques 19-24; a `pare-brise`/`vitre` part line falls through `_determine_part_rubrique` (`wexia_mapper.py:517-551`) to `family=carrosserie` ⇒ rubrique 1 (`test_mapper.py:68`). Must use the supplied component×operation mapping for 19–24; ambiguous/conflicting glass fails closed; never rubrique 1 (`BUSINESS_RULES.md` B.2).
+
+### F33. Keyword-based family inference to rubriques 4–6 / 13–15 — **S2, CONFIRMED**
+`_determine_part_rubrique` infers `family = mecanique/electrique` from item-name keywords (`wexia_mapper.py:541-544`) and maps to 4–6 / 13–15 via `SYSTEM_RUBRIQUE_MATRIX` (`:550`). The three-origin rule forbids inferring these rubriques from part-description keywords: ordinary parts map only by origin to 1/2/3 (`BUSINESS_RULES.md` B.1). *(Rubriques 10/11 peinture-fournitures are likewise not to be produced by keyword inference; painting routes to 16 or labour 12.)*
 
 ### F14. Out-of-catalogue `mcma_rubric_id` silently inferred — **S2, CONFIRMED**
 `wexia_mapper.py:578` accepts only in-catalog ids and otherwise falls through to inference instead of failing closed. Must fail closed (`BUSINESS_RULES.md` B.3). The matrix `.get` default (`:550`) is a second latent fail-open.
 
 ### F15. Over-broad `"mo"` labour token — **S3, CONFIRMED**
-`_determine_labour_rubrique` (`:508`) substring-tests the 2-letter `"mo"` against the whole normalized string, so "demontage", "commande", "modification", "amovible" collapse to rubrique 7, narrowing the intended `ValueError` at `:512`.
+`_determine_labour_rubrique` (`:508`) substring-tests the 2-letter `"mo"` against the whole normalized string, so "demontage", "commande", "modification", "amovible" collapse to rubrique 7, narrowing the intended `ValueError` at `:512`. Required: remove unrestricted `mo` matching; use structured `item_type`/`operation_type` first; generic peinture/mécanique/électrique alone is insufficient; ambiguous fails closed (`BUSINESS_RULES.md` B.7).
 
 ### F16. Rubrique substring collisions (garage-conventionné matcher) — **S2, CONFIRMED (latent)**
 `_match_single_rubrique` (`mode_conventionne.py:105-138`) does bidirectional substring matching ≥4 chars (`:127,135`) on first-row-wins order; `"colle"` (25) ⊂ `"kit colle vitre"` (27) / `"kit colle pare brise"` (26); aliases duplicated across ids 10/11/16 (`core/constants.py:126-165`). Matching is label-text only — `IdRubrique` is never verified. Mitigation present: `match_all_rubriques` is all-or-nothing (`:175`, aborts on any unmatched), but that does not prevent a mutually-consistent wrong assignment.
 
-### F17. Latent negative TVA — **S3, CONFIRMED**
-Per-line `tva_val` (`wexia_mapper.py:646`) is unguarded and can go negative if earlier 20% rounding overshoots the target; a negative `Taxe` could be written.
+### F17. Latent negative TVA — **S1/S3, CONFIRMED**
+Per-line `tva_val` (`wexia_mapper.py:646`) is unguarded and can go negative if earlier 20% rounding overshoots the target; a negative `Taxe` could be written. Required behaviour: no negative-TVA line, no silent clamp — deterministic non-negative redistribution to 0.01 MAD or fail closed with `NEEDS_REVIEW: INVALID_TAX_ALLOCATION`; no 0.05 MAD tolerance (`BUSINESS_RULES.md` B.6).
 
 ---
 

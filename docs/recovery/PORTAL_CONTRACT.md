@@ -11,7 +11,7 @@ The portal-facing surface the agent depends on: URLs, DOM selectors and HTTP end
 ## 1. Base URLs (verified)
 
 - Root: `https://sinauto.mamda-mcma.ma/SinAuto_MCMA/` (`core/config.py:22`).
-- Dashboard/mission: `https://sinauto.mamda-mcma.ma/SinAuto_MCMA/expertise/FrontExpert/` (`core/config.py:23`).
+- **Canonical mission route: `/expertise/frontexpert/`.** The current code uses the case variant `.../SinAuto_MCMA/expertise/FrontExpert/` (`core/config.py:23`). Treat the lowercase form as canonical; the deployed portal is case-insensitive on this segment *(inference — not verified live; both forms are recorded so later code can normalize to the canonical spelling)*.
 
 ## 2. Authentication surface (verified selectors)
 

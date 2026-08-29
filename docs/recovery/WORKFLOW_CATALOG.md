@@ -24,7 +24,7 @@ Each workflow lists its trigger, step sequence with `file:line` evidence, side e
 - **Steps:**
   1. Require `mcma_auth_state.json`, else exit/401 (`get_notifications.py:35-40`; `main.py:135-136`).
   2. Launch Chromium with saved state (`get_notifications.py:49-51`; `main.py:139-140`).
-  3. Navigate `.../expertise/FrontExpert/`; `check_session_validity` else raise (`browser/notifications.py:180-185`).
+  3. Navigate the mission route (canonical `/expertise/frontexpert/`; code uses the case variant `.../expertise/FrontExpert/`); `check_session_validity` else raise (`browser/notifications.py:180-185`).
   4. Refresh navbar alerts; discover categories from `#listeAlertes a[href*="notification/alerte/"]` (`:203`).
   5. Per category: in-page fetch POST to `.../notification/getAlerte/CodeAlerte/{code}` with `length=-1` (`:33-101`); DOM DataTable fallback (`:108-170`).
   6. Write `logs/mcma_notifications.json` (`get_notifications.py:57-62`; `main.py:146-148`).

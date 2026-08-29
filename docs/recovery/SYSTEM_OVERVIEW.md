@@ -10,7 +10,7 @@ Facts are cited to `file:line`. Statements marked *(inference)* are reasoned con
 MCMA SinAuto automation agent: a Playwright-driven tool that logs a human expert into the MAMDA/MCMA "SinAuto" insurance portal, extracts notification/alert queues for an office dashboard, and (for form-filling) navigates to an expertise mission and fills repair-estimate rubrique rows. Final, irreversible portal actions are intended to remain a human responsibility.
 
 - Base URL: `https://sinauto.mamda-mcma.ma/SinAuto_MCMA/` (`core/config.py:22`).
-- Mission/dashboard route: `.../expertise/FrontExpert/` (`core/config.py:23`).
+- **Canonical mission route: `/expertise/frontexpert/`**; the current code uses the case variant `.../expertise/FrontExpert/` (`core/config.py:23`). See `PORTAL_CONTRACT.md` §1.
 
 ## 2. Components and responsibilities (verified)
 
@@ -54,4 +54,6 @@ MCMA SinAuto automation agent: a Playwright-driven tool that logs a human expert
 
 ## 6. What is explicitly NOT present on this branch (verified)
 
-SQLite/WAL persistence, Server-Sent Events, a Vite/React frontend, a multi-account vault, per-account locks, encrypted auth state, and distinct PLAN/PREVIEW/DRAFT/FINAL execution modes are **described in `PROJECT_ARCHITECTURE_BLUEPRINT.md` but not implemented here**. Treat the blueprint as a target, not a description of this baseline. (Architecture design is out of scope for this phase.)
+SQLite/WAL persistence, Server-Sent Events, a Vite/React frontend, a multi-account vault, per-account locks, encrypted auth state, and distinct PLAN/PREVIEW/DRAFT/FINAL execution modes are **described in `PROJECT_ARCHITECTURE_BLUEPRINT.md` but not implemented here**.
+
+Two of these are now **authoritative Phase 2 decisions** (targets for a later phase, still absent on this branch): **SQLite (WAL)** persistence with claims identified by portal `idSinistre` (`UNIQUE(account_id, portal_claim_id)`, category membership modelled separately) and **SSE** for dashboard notification — see `BUSINESS_RULES.md` B.9. Multi-account support and server-side authentication are likewise decided (`BUSINESS_RULES.md` B.8, B.10) but deferred until after core safety. Treat everything in this section as target, not current baseline. (Architecture design is out of scope for this phase.)
