@@ -37,7 +37,7 @@ playwright install chromium
 ## 🔑 Étape 3 : Authentification Initiale MCMA (Login + OTP)
 
 ```powershell
-python auth_setup.py
+python -m tools.auth_setup
 ```
 
 1. Une fenêtre de navigateur s'ouvre automatiquement sur la page de connexion MCMA.
@@ -52,10 +52,10 @@ python auth_setup.py
 Lancez l'extracteur de notifications :
 
 ```powershell
-python get_notifications.py
+python -m tools.get_notifications
 ```
 
-*(Ou en arrière-plan sans ouvrir de fenêtre : `python get_notifications.py --headless`)*
+*(Ou en arrière-plan sans ouvrir de fenêtre : `python -m tools.get_notifications --headless`)*
 
 **Résultats :**
 - Récupère toutes les catégories d'alertes du menu supérieur (`#listeAlertes`).
@@ -89,7 +89,7 @@ Puis ouvrez votre navigateur à l'adresse :
 Pour éviter les déconnexions et les expirations d'OTP pendant la journée, laissez ce script tourner dans un terminal séparé :
 
 ```powershell
-python session_keeper.py
+python -m tools.session_keeper
 ```
 
 ---

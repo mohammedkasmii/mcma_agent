@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 title "MCMA - Sauvegarde de la base de donnees"
 
 if not exist "backups" mkdir "backups"

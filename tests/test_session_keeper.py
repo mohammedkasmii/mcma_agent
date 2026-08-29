@@ -7,7 +7,7 @@ and command-line arguments.
 
 import pytest
 import asyncio
-from session_keeper import check_session_health, DEFAULT_INTERVAL_MINUTES
+from tools.session_keeper import check_session_health, DEFAULT_INTERVAL_MINUTES
 
 
 def test_session_health_missing_file():

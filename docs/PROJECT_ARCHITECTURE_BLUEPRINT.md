@@ -217,7 +217,7 @@ schedules change.
 
 ## 6. Session & OTP Model — The Morning Ritual
 
-⬜ **PLANNED** (🟡 `auth_setup.py` and `main.py:69` are the single-account seed of this)
+⬜ **PLANNED** (🟡 `tools/auth_setup.py` and `main.py:69` are the single-account seed of this)
 
 **Decision:** Authentication is a supervised human ritual performed once per account per day, not an
 unattended daemon.
@@ -561,7 +561,7 @@ nothing to populate them — and an audit log you cannot attribute is not an aud
 
 **Required:**
 
-- **Restrict the firewall rule to the office subnet.** `Autoriser_Reseau_Local.bat` currently opens
+- **Restrict the firewall rule to the office subnet.** `scripts/Autoriser_Reseau_Local.bat` currently opens
   port 8000 to `profile=any`, which includes guest Wi-Fi. It must be scoped
   (`remoteip=192.168.1.0/24`, private profile only).
 - **Attribution.** On first visit the dashboard asks *« Qui êtes-vous ? »* and stores the chosen name
@@ -628,11 +628,11 @@ cannot share a switch with a development mode.**
 
 `core/config.py:12` documented `TEST_MODE` as blocking *"all mutating POST endpoints."* The
 interceptor list did not match that claim. Verified against the network capture, the generated
-client, and `mock_server.py`:
+client, and `tools/mock_server.py`:
 
 | Endpoint | Was blocked? | Exists on the portal? | Assessment |
 |:---|:---:|:---:|:---|
-| `createDevisDet` | ✅ yes | ❌ **nowhere** — not in the capture, not in `mock_server.py`, not in the generated client | **Phantom.** Guarded a name that does not exist |
+| `createDevisDet` | ✅ yes | ❌ **nowhere** — not in the capture, not in `tools/mock_server.py`, not in the generated client | **Phantom.** Guarded a name that does not exist |
 | `createRapportDefDet` | ❌ **no** | ✅ real — `REPORT.md:29`, `generated_client.py:551`, `mock_server.py:745` | **Accidental gap.** Mode Normal row creation, unguarded |
 | `updateDevisDet` | ❌ no | ✅ real | **Deliberate by design** — `mode_conventionne.py` awaits and validates this response; only `garageModifierValDevis` was treated as the thing to block |
 
@@ -668,7 +668,7 @@ written; the `config.py` docstring claiming all mutating endpoints were blocked 
    These were **in-place edits of four pre-existing Table 2 rows**, not row creations: HT, Taxe and
    Vétusté values were overwritten. `#DEVISDET_Btn` was untouched, so the devis was never validated
    and the values remain editable. If this run targeted the live portal rather than
-   `mock_server.py`, an expert should re-check those four amounts on dossier `MCM26-08-26.WEX6747`.
+   `tools/mock_server.py`, an expert should re-check those four amounts on dossier `MCM26-08-26.WEX6747`.
 
    **Mode Normal never fired a single write** in any recorded run — so the accidental
    `createRapportDefDet` gap, while real, was never exercised. No orphan rows exist.
@@ -696,7 +696,7 @@ browser.
 
 > **Correction to v4.0.** v4.0 placed `garageModifierValDevis` in the mode-gated tier, where
 > `DRAFT_WRITE` would have permitted it. That was wrong.
-> `GARAGE_CONVENTIONNE_ANALYSIS.md:78` records it as *"triggered directly by `ValiderDevis()` upon
+> `docs/GARAGE_CONVENTIONNE_ANALYSIS.md:78` records it as *"triggered directly by `ValiderDevis()` upon
 > clicking `#DEVISDET_Btn`"*; its payload carries `Check_VALIDEVIS: "O"`; and on success the portal
 > hides the submit button and permanently locks `#blocDevisValide`. It **is** the final *Valider
 > Devis* action under a second name — so v4.0 blocked it as `validerDevis` in Tier 1 and allowed it
@@ -723,7 +723,7 @@ class JobPolicy:
 | Mode Conventionné | `updateDevisDet` **only** — in-place row edits on `#DevisDetTableVal` |
 | Mode Normal | `createRapportDefDet` **only** — row creation on `#tableRapportDet` |
 
-Both endpoints are **confirmed against the network capture and `mock_server.py`**, not inferred.
+Both endpoints are **confirmed against the network capture and `tools/mock_server.py`**, not inferred.
 Full paths:
 
 ```
@@ -877,7 +877,7 @@ visibility would still expose it.
 **Required before deployment:**
 
 1. Replace `SAMPLE_NOTIFICATIONS` with obviously fictional fixtures, in the style of
-   `json_dossier_example.md` (`ALAOUI Mohamed` / `12345-A-7`), which is correctly synthetic.
+   `docs/json_dossier_example.md` (`ALAOUI Mohamed` / `12345-A-7`), which is correctly synthetic.
 2. Scrub history if the repository will ever be made public.
 3. Transfer the code **without** publishing the repository:
    - `git bundle create mcma.bundle --all` → USB → `git clone mcma.bundle` (full history, offline); or
@@ -983,7 +983,7 @@ the agency's chosen operating model. Revisit if portal credentials ever stop bei
 
 **Three controls adopted in place of PINs** — all mandatory, all specified in §9.2:
 
-1. **Subnet-restricted firewall.** `Autoriser_Reseau_Local.bat` scoped to
+1. **Subnet-restricted firewall.** `scripts/Autoriser_Reseau_Local.bat` scoped to
    `remoteip=192.168.1.0/24`, private profile only. Guest Wi-Fi locked out. (Today it opens
    `profile=any`.)
 2. **Mandatory CSRF protection** on every write endpoint, preventing drive-by requests from any

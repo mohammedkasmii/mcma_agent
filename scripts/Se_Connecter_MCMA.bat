@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 title "MCMA - Connexion et Authentification OTP"
 color 0E
 
@@ -16,7 +16,7 @@ echo.
 echo ======================================================================
 echo.
 
-python auth_setup.py
+python -m tools.auth_setup
 
 echo.
 echo ======================================================================

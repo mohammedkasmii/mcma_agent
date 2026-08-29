@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 title "MCMA - Installation du demarrage automatique"
 color 0B
 

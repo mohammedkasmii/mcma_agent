@@ -34,7 +34,7 @@ Lisez cette section en premier. Elle évite les mauvaises surprises.
 | **Pas de mot de passe sur le tableau de bord** | Toute personne sur le réseau de l'agence peut l'ouvrir. C'est pourquoi le pare-feu est **restreint au sous-réseau de l'agence** (étape 4) : le Wi-Fi invité est exclu. |
 | **Un seul PC serveur** | S'il est éteint, le tableau de bord est inaccessible. Les données restent intactes. |
 
-> 👉 Détails et feuille de route dans `PROJECT_ARCHITECTURE_BLUEPRINT.md`.
+> 👉 Détails et feuille de route dans `docs/PROJECT_ARCHITECTURE_BLUEPRINT.md`.
 
 ---
 
@@ -158,7 +158,7 @@ Doit afficher `Python 3.10.x` ou supérieur. Si vous obtenez une erreur, Python 
 
 ### 4.2 Installer les dépendances
 
-Double-cliquez sur **`setup_new_pc.bat`**.
+Double-cliquez sur **`scripts/setup_new_pc.bat`**.
 
 Ou en ligne de commande :
 
@@ -229,7 +229,7 @@ Ouvrez PowerShell **en tant qu'administrateur** (clic droit → *Exécuter en ta
 netsh advfirewall firewall add rule name="MCMA Dashboard (Port 8000)" dir=in action=allow protocol=TCP localport=8000 profile=private remoteip=192.168.1.0/24
 ```
 
-> ⚠️ **N'utilisez pas `Autoriser_Reseau_Local.bat` tel quel.** Ce script ouvre le port à `profile=any`, ce qui inclut le **Wi-Fi invité**. La commande ci-dessus le restreint au réseau privé de l'agence uniquement. Adaptez `192.168.1.0/24` si votre réseau utilise un autre préfixe.
+> ⚠️ **N'utilisez pas `scripts/Autoriser_Reseau_Local.bat` tel quel.** Ce script ouvre le port à `profile=any`, ce qui inclut le **Wi-Fi invité**. La commande ci-dessus le restreint au réseau privé de l'agence uniquement. Adaptez `192.168.1.0/24` si votre réseau utilise un autre préfixe.
 
 Vérification :
 
@@ -270,13 +270,13 @@ La commande est **rejouable sans risque** : elle ne crée pas de doublons.
 
 📱 **Ayez le téléphone qui reçoit les SMS à portée de main.**
 
-Double-cliquez sur **`Se_Connecter_MCMA.bat`**.
+Double-cliquez sur **`scripts/Se_Connecter_MCMA.bat`**.
 
 Ou :
 
 ```powershell
 cd C:\mcma_agent
-python auth_setup.py
+python -m tools.auth_setup
 ```
 
 Ce qui se passe :
@@ -296,7 +296,7 @@ Message attendu :
 Vérification à tout moment :
 
 ```powershell
-python session_keeper.py --check
+python -m tools.session_keeper --check
 ```
 
 > 🔒 Le fichier `mcma_auth_state.json` contient vos cookies de session. Il est exclu de Git et **ne doit jamais être partagé ni copié** sur un autre poste.
@@ -311,7 +311,7 @@ Ou :
 
 ```powershell
 cd C:\mcma_agent
-python get_notifications.py --headless
+python -m tools.get_notifications --headless
 ```
 
 Résultat attendu :
@@ -416,7 +416,7 @@ Le système a besoin d'une **session Windows ouverte** (pas d'un service Windows
 
 ### 11.2 Créer la tâche planifiée
 
-**Méthode rapide** — clic droit sur **`Installer_Demarrage_Auto.bat`** → *Exécuter en tant qu'administrateur*.
+**Méthode rapide** — clic droit sur **`scripts/Installer_Demarrage_Auto.bat`** → *Exécuter en tant qu'administrateur*.
 Le script crée la tâche et affiche les deux réglages restants à cocher à la main.
 
 **Méthode manuelle** — Planificateur de tâches (`taskschd.msc`) → *Créer une tâche…*
@@ -500,7 +500,7 @@ Ensuite, plus rien à faire : le système se synchronise **tout seul toutes les 
 | `python n'est pas reconnu` | PATH non configuré | Réinstaller Python en cochant *Add python.exe to PATH*, puis rouvrir PowerShell |
 | Les collègues ne peuvent pas ouvrir la page | Pare-feu ou mauvaise IP | Refaire l'étape 4 en administrateur ; vérifier l'IP avec `ipconfig` |
 | La page s'ouvre sur le serveur mais pas ailleurs | Règle pare-feu absente ou mauvais sous-réseau | Vérifier `remoteip=192.168.1.0/24` correspond bien à votre réseau |
-| `MCMA session expired` | Session expirée | `Se_Connecter_MCMA.bat` (code SMS requis) |
+| `MCMA session expired` | Session expirée | `scripts/Se_Connecter_MCMA.bat` (code SMS requis) |
 | « Actualiser » ne renvoie rien | Session expirée, ou portail fermé (après 18h) | Reconnexion ; après 18h, attendre le lendemain |
 | Le PC devient très lent | Plusieurs actualisations simultanées | Attendre ; une seule personne actualise à la fois |
 | Tableau de bord inaccessible d'un coup | Fenêtre noire fermée, ou PC redémarré | Relancer `DEMARRER_MCMA.bat` ; mettre en place l'étape 9 |
@@ -513,7 +513,7 @@ Ensuite, plus rien à faire : le système se synchronise **tout seul toutes les 
 ```powershell
 cd C:\mcma_agent
 
-python session_keeper.py --check     # état de la session MCMA
+python -m tools.session_keeper --check     # état de la session MCMA
 python -m pytest -q                  # intégrité du code (attendu : 32 passed)
 ipconfig                             # adresse IP du serveur
 curl http://localhost:8000/health    # le serveur répond-il ?
@@ -537,10 +537,10 @@ Le code du remplissage automatique des rapports d'expertise est présent mais **
 | :--- | :--- |
 | `POST /api/v1/fill-dossier` | Refus HTTP 503 |
 | `POST /api/v1/fill-dossier-from-wexia` | Refus HTTP 503 |
-| `python run_dossier.py` | Refuse et quitte |
-| `menu.py` option 1 | Marquée `[DESACTIVE]` |
+| `python -m tools.run_dossier` | Refuse et quitte |
+| ~~`menu.py`~~ (supprimé) | Marquée `[DESACTIVE]` |
 
-**Ne tentez pas de l'activer à l'agence.** Sa réactivation exige des travaux préalables décrits dans `PROJECT_ARCHITECTURE_BLUEPRINT.md` §11 : politique de sécurité à deux niveaux, vérification de l'écriture qui échoue en cas de doute, et rapport de contrôle avant validation humaine.
+**Ne tentez pas de l'activer à l'agence.** Sa réactivation exige des travaux préalables décrits dans `docs/PROJECT_ARCHITECTURE_BLUEPRINT.md` §11 : politique de sécurité à deux niveaux, vérification de l'écriture qui échoue en cas de doute, et rapport de contrôle avant validation humaine.
 
 ---
 
@@ -575,7 +575,7 @@ Le code du remplissage automatique des rapports d'expertise est présent mais **
 ╠══════════════════════════════════════════════════════════════════╣
 ║  EN CAS DE BLOCAGE                                               ║
 ║   cd C:\mcma_agent                                               ║
-║   python session_keeper.py --check                               ║
+║   python -m tools.session_keeper --check                               ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
 
@@ -587,7 +587,7 @@ Cochez au fur et à mesure :
 
 - [ ] Python 3.10+ installé, `Add to PATH` coché
 - [ ] Code copié dans `C:\mcma_agent`
-- [ ] `setup_new_pc.bat` exécuté sans erreur
+- [ ] `scripts/setup_new_pc.bat` exécuté sans erreur
 - [ ] `python -m pytest -q` → `32 passed`
 - [ ] Adresse IP du serveur fixée : `______________________`
 - [ ] Règle pare-feu créée avec `remoteip=` du sous-réseau de l'agence
@@ -610,10 +610,10 @@ Cochez au fur et à mesure :
 
 | Document | Contenu |
 | :--- | :--- |
-| `PROJECT_ARCHITECTURE_BLUEPRINT.md` | Architecture cible, décisions, feuille de route |
-| `NOTIFICATIONS_SETUP_GUIDE.md` | Guide rapide développeur |
+| `docs/PROJECT_ARCHITECTURE_BLUEPRINT.md` | Architecture cible, décisions, feuille de route |
+| `docs/NOTIFICATIONS_SETUP_GUIDE.md` | Guide rapide développeur |
 | `README.md` | Vue d'ensemble et état des modules |
-| `GARAGE_CONVENTIONNE_ANALYSIS.md` | Analyse technique du portail (Phase 2) |
+| `docs/GARAGE_CONVENTIONNE_ANALYSIS.md` | Analyse technique du portail (Phase 2) |
 
 **Dépôt Git :** `https://github.com/mohammedkasmii/mcma_agent` — **privé, à garder privé** (§2.1).
 **Branche déployée :** `feat/disable-form-filling-agent`

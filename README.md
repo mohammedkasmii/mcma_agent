@@ -33,7 +33,7 @@ python main.py           # demarre le serveur + le poller automatique
 | `POST /api/v1/refresh` | Synchronisation manuelle (verrou par compte) |
 | `POST /api/v1/employee-actions` | Statut + note + auteur |
 
-📘 **Installation à l'agence : voir [`GUIDE_INSTALLATION_AGENCE.md`](GUIDE_INSTALLATION_AGENCE.md).**
+📘 **Installation à l'agence : voir [`docs/GUIDE_INSTALLATION_AGENCE.md`](docs/GUIDE_INSTALLATION_AGENCE.md).**
 
 ---
 
@@ -47,8 +47,8 @@ Le **module de remplissage automatique des formulaires** (Mode Normal / Mode Con
 | :--- | :--- |
 | `POST /api/v1/fill-dossier` | `503` + message explicatif |
 | `POST /api/v1/fill-dossier-from-wexia` | `503` + message explicatif |
-| `python run_dossier.py` | Refuse et quitte (code 2) |
-| `menu.py` option 1 | Marquée `[DESACTIVE]` |
+| `python -m tools.run_dossier` | Refuse et quitte (code 2) |
+| ~~`menu.py`~~ (supprimé) | Marquée `[DESACTIVE]` |
 | `POST /api/v1/map-wexia-dossier` | ✅ **reste disponible** — traduction Wexia → MCMA, hors ligne, sans navigateur |
 
 Le drapeau est défini à un seul endroit : [`core/features.py`](core/features.py). Pour le déverrouiller (développeurs uniquement) :
@@ -57,34 +57,49 @@ Le drapeau est défini à un seul endroit : [`core/features.py`](core/features.p
 $env:MCMA_ENABLE_FORM_FILLING = "1"; python main.py
 ```
 
-Voir `PROJECT_ARCHITECTURE_BLUEPRINT.md` §11 et §15 pour les conditions de réactivation.
+Voir `docs/PROJECT_ARCHITECTURE_BLUEPRINT.md` §11 et §15 pour les conditions de réactivation.
 
 ---
 
-## 📁 Project Structure & Input Folders
+## 📁 Structure du projet
 
 ```
 mcma_agent/
-├── input_dossier/           <── Drop your dossier JSON file here (e.g. dossier.json)
-│   └── dossier.json
-├── input_documents/         <── Drop your 3 PDF files here
-│   ├── devis.pdf            (Auto-detected as IdNature 56: Devis)
-│   ├── photos_avant.pdf     (Auto-detected as IdNature 63: Photos avant)
-│   └── rapport_expertise.pdf(Auto-detected as IdNature 40: Rapport)
+├── main.py                     point d'entree : construit l'app, lance uvicorn
+├── DEMARRER_MCMA.bat           <- ce que l'agence double-clique
+├── Ouvrir_MCMA_Employe.bat     raccourci employe (+ .url)
 │
-├── run_dossier.py           <── Main script: run this to execute automation
-├── main.py                  <── FastAPI server for web API integration
-├── mapper.py                <── Field & rubric translator
-├── auth_setup.py            <── One-time interactive login / session saver
-└── README.md
+├── api/          couche HTTP : system, state, accounts, filling
+├── workflows/    orchestrations metier (process_workflow)
+├── portal/       tout ce qui parle au portail MCMA (fetch, extractor, poller, auth)
+├── browser/      mecanique Playwright uniquement (DOM, formulaires, securite)
+├── db/           seule couche qui touche SQLite (schema, repository, migrate)
+├── mapper/       Wexia JSON -> contrat MCMA (pur, deterministe)
+├── core/         config, constantes, fenetre horaire, drapeaux de fonctionnalites
+├── static/       tableau de bord (aucune etape de build)
+├── tests/        57 tests
+│
+├── docs/         blueprint, guide d'installation, analyses
+├── scripts/      installation et maintenance (.bat)
+└── tools/        utilitaires developpeur (CLI hors service)
 ```
+
+**Sens des dependances**, du haut vers le bas — jamais l'inverse :
+
+```
+api  ->  workflows  ->  portal  ->  browser  ->  core
+                    ->  db      ->  core
+                    ->  mapper  ->  core
+```
+
+`core/` n'importe rien. Aucun cycle.
 
 ---
 
 ## ⚙️ How to Setup on a New PC (2 Options)
 
 ### 🟢 Option A: 1-Click Automated Setup (Easiest)
-Just double-click **[`setup_new_pc.bat`](file:///c:/Users/hp/Desktop/mcma_agent/setup_new_pc.bat)**!
+Just double-click **[`scripts/setup_new_pc.bat`](file:///c:/Users/hp/Desktop/mcma_agent/setup_new_pc.bat)**!
 It will automatically:
 1. Check that Python is installed.
 2. Upgrade `pip`.
@@ -119,7 +134,7 @@ It will automatically:
 Because MCMA requires SMS/OTP authentication, generate your session token once:
 
 ```powershell
-python auth_setup.py
+python -m tools.auth_setup
 ```
 * Enter your username, password, and OTP in the browser window.
 * As soon as you land on the dashboard, it saves `mcma_auth_state.json` and closes.
@@ -136,7 +151,7 @@ Just drop your files in the two folders:
 2. Put your 3 PDF files inside `input_documents/`
 3. Run:
 ```powershell
-python run_dossier.py
+python -m tools.run_dossier
 ```
 
 ---
@@ -144,7 +159,7 @@ python run_dossier.py
 ### Method 2: Custom Paths via CLI
 
 ```powershell
-python run_dossier.py --json "input_dossier/custom_dossier.json" `
+python -m tools.run_dossier --json "input_dossier/custom_dossier.json" `
                       --devis "input_documents/devis.pdf" `
                       --photos "input_documents/photos_avant.pdf" `
                       --rapport "input_documents/rapport_expertise.pdf"

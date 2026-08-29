@@ -7,7 +7,7 @@ alias resolution, and logger utilities of garage_conventionne.py.
 
 import os
 import pytest
-from garage_conventionne import (
+from browser.mode_conventionne import (
     GCLogger,
     match_all_rubriques,
     _match_single_rubrique,
