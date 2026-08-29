@@ -9,10 +9,23 @@ whole-branch as a last resort.
   restores it; the only live-write path is the post-G5 `VerifiedMissionWriter`.
 - **Additive-first (after INC-00):** INC-01..21 add new modules alongside the (now write-contained) baseline read paths;
   full baseline retirement happens at INC-22 and is recoverable from git history — but a rollback never reinstates the unsafe writer.
+- **PII safety is sticky (never rolled back below protection while data exists):**
+  - **Before** any production claimant data has ever been ingested, additive modules may be removed normally.
+  - **Once** production claimant data has ever been ingested, rollback must **first disable production ingestion**.
+  - **While any production claimant data remains stored**, ALL G-PDR controls remain **mandatory** and may not be rolled
+    back below their safe state: PII-safe/redacted logging; safe screenshot behavior; protected DB location; NTFS ACL;
+    BitLocker or SQLCipher; encrypted backups; safe authenticated dashboard rendering.
+  - The INC-19/20/21 controls may be removed **only after** production data is securely **purged or migrated to another
+    equally protected system**. Otherwise rollback **redeploys the last safe version of those controls or stops the
+    affected service** — it never reverts to the baseline logger or the unsafe legacy dashboard over production data.
 - **Feature flags:** where old and new coexist (dashboard read source, notification store), a flag flips back instantly.
 - **Reversible-where-safe migrations:** schema migrations are compatibility-aware (expand/contract); not all are
   reversible, so the safety net is the tested **backup/restore** runbook (INC-21), not a guaranteed down-migration.
-- **Write-enable gate:** the live-write gate (INC-23) flips OFF instantly, reverting to read-only + dry-run.
+- **Live-write authorization (INC-23) is data-driven, never a switch:** to roll back writes, **revoke/expire the approved
+  `confirmed_row_ops` contract record, close every writer capability/context, and redeploy the last tested read-only
+  pre-G5 release.** A `VerifiedMissionWriter` can be constructed only while valid approved `confirmed_row_ops` records
+  exist for the **exact deployed commit** and every G5 requirement passes. **No boolean, environment variable, CLI option,
+  or feature flag controls write authorization.**
 
 ## Per-increment rollback (summary; each increment file has the authoritative entry)
 | Increment | Rollback |
@@ -32,9 +45,10 @@ whole-branch as a last resort.
 | INC-15 | disable SSE route; outbox harmless if unread |
 | INC-16/17 | unmount the new auth app / API |
 | INC-18 | revert to loopback serve (never to plain-HTTP LAN) |
-| INC-19 | re-serve the legacy static dashboard |
-| INC-20 | revert to baseline logger |
-| INC-21 | revert backup scripts (additive) |
+| INC-19 | **never re-serve the unsafe legacy dashboard over production data**; redeploy the last safe (escaped/CSP/authenticated) dashboard, or **stop the UI** |
+| INC-20 | **never restore the baseline logger** (it leaks PII); redeploy the last PII-safe/redacted logger, or **stop the service** |
+| INC-21 | backup scripts revertible **before** production data exists; **while any production claimant data remains, do NOT remove the at-rest/backup protections** (DB location, NTFS ACL, BitLocker/SQLCipher, encrypted backups) — remove only after secure purge/migration, else redeploy the last safe controls or stop the service |
+| INC-22A (prod ingestion) | disable production ingestion and return to synthetic/mock data; **preserve all retained-data protections and evidence** (never delete retained records or their protections) |
 | **INC-22** | redeploy the **last tested, tagged, post-INC-00 contained release**; if a preserved feature regressed, restore **only the explicitly identified safe/read-only compatibility code** for it. **Never** restore the baseline writer or a legacy write flag (both permanently removed at INC-00). |
 | INC-23 | **revoke/expire the approved `confirmed_row_ops` contract record, close the writer capability, redeploy the last read-only pre-G5 release** → read-only + dry-run. No flag/env/CLI restores writing. |
 

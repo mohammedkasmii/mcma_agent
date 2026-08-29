@@ -56,8 +56,10 @@ no live write is possible until INC-23.
   abort), `portal/final_endpoints.py` (permanent blocklist). Tests under `tests/portal/safety/`.
 - **DB migration impact:** none.
 - **Dependency/config impact:** playwright (already present); `portal` is the sole importer.
-- **Feature flags/adapters:** a **write-enable gate** config exists but defaults **OFF** and is not a bare boolean — it
-  requires confirmed contract records + passing safety tests (checked in INC-23). Read interception is always on.
+- **Feature flags/adapters:** live-write authorization is **data-driven, not a flag/boolean/switch** — a
+  `VerifiedMissionWriter` can be constructed **only** when valid, approved `confirmed_row_ops` records exist for the exact
+  deployed commit and the safety suite is green (established at INC-23). Until then no such records exist, so **no writer
+  is constructible** (writes are inherently disabled, not toggled off). Read interception is always on.
 - **Out-of-scope:** capabilities themselves (INC-08); identity (INC-09).
 - **Tests-first (safety):**
   - **`test_unknown_request_is_aborted`** (GET included — a GET not in a read contract is denied).
@@ -135,7 +137,8 @@ no live write is possible until INC-23.
 - **Dependency/config impact:** none new.
 - **Feature flags/adapters (review SEC-3 — structural, not a flag):** mock-writes are permitted **only** because the
   reviewed contract tuple's **host is loopback** — never by a global "mock mode"/`TEST_MODE`-style flag. A non-loopback
-  host can never be write-allowed while the write-enable gate is OFF. This avoids re-creating the `TEST_MODE` cliff.
+  (live) host can never be write-allowed while no approved `confirmed_row_ops` records exist (i.e. before G5); live-write
+  authorization is data-driven, not a toggle. This avoids re-creating the `TEST_MODE` cliff.
 - **Out-of-scope:** durable jobs/leases (Phase 3); enabling live writes (INC-23).
 - **Tests-first (safety):**
   - identity: **`test_zero_match_fails_closed`**, **`test_multiple_match_fails_closed`**, **`test_registration_plate_alone_insufficient`**, `test_missing_registration_fails_closed`, `test_contradictory_identifiers_fail_closed`, `test_toctou_reverify_before_first_write_and_after_navigation`.
@@ -143,14 +146,15 @@ no live write is possible until INC-23.
   - write mechanics: `test_read_before_write_diff_skips_unchanged`, `test_verify_after_write_mismatch_aborts`, `test_single_write_no_duplicate_checkmark`.
   - **`test_charge_mutuelle_fields_never_written`** (mutuelle/societaire never in any write; only native recalc invoked).
   - **`test_dry_run_never_constructs_writer`** (execution path check).
-  - **`test_no_non_loopback_host_write_allowed_while_gate_off`** (SEC-3: only a loopback contract host may be write-allowed
-    while the write-enable gate is OFF; any live/non-loopback write target is aborted).
+  - **`test_no_non_loopback_host_write_allowed_before_g5`** (SEC-3: only a loopback contract host may be write-allowed
+    while no approved `confirmed_row_ops` records exist; any live/non-loopback write target is aborted).
 - **Initial failing-test expectation:** all fail (module absent).
 - **Mock/fixtures:** INC-06 mock with the mission/row surface; identity fixtures with matching/mismatching identifiers.
 - **Implementation steps:** identity gate → search exactly-one → open in one context → verify all → exact-IdRubrique row
   op → RBW/DBW/VAW → TOCTOU re-verify → assert charge-mutuelle unreachable.
-- **Acceptance criteria:** every write-safety property green against the mock; **no live write possible** (write-enable
-  gate OFF, verified by a test that a live-host write is aborted by interception).
+- **Acceptance criteria:** every write-safety property green against the mock; **no live write possible** (no approved
+  `confirmed_row_ops` records exist yet, so no writer is constructible for a live host — verified by a test that a
+  live-host write is aborted by interception).
 - **Safe offline verification:** `python -m pytest tests/portal/writer -v`.
 - **Safety gates:** **G2** (phase gate) — dry-run has no writer; final endpoints abort; unknown requests fail closed;
   identity/rubrique fail closed; charge-mutuelle never written — all proven, **live writes still disabled**.

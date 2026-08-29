@@ -31,7 +31,9 @@
 - **Safe offline verification:** `python -m pytest tests/web -v` (+ DOM/mock test).
 - **Safety gates:** none new; UI-safety gate.
 - **Expected git-diff scope:** `web/*`, `tests/web/*`.
-- **Rollback:** re-serve the legacy static app (until it is retired at INC-22).
+- **Rollback:** **never re-serve the unsafe legacy dashboard over production claimant data.** Redeploy the **last safe
+  (escaped/CSP/authenticated) dashboard**, or **stop the UI** if no safe version is available. (Before any production
+  claimant data has ever been ingested, the additive dashboard module may simply be removed.)
 - **Risks/failure behavior:** rendering defaults to escaped output; unknown/failed loads show an explicit error, not demo data.
 - **Subincrement split (correction #7):**
   - **INC-19A** — the hardened render layer: strict output-escaping helpers + **CSP** + truthful-readiness helpers
@@ -69,7 +71,8 @@
 - **Safe offline verification:** `python -m pytest tests/core/logging -v`.
 - **Safety gates:** none new; observability gate.
 - **Expected git-diff scope:** `core/logging.py`, `core/screenshots.py`, `persistence/audit.py`, `app/api/health.py`, tests.
-- **Rollback:** revert to baseline logger (until retired).
+- **Rollback:** **never restore the baseline logger** — it is known to leak PII. Redeploy the **last PII-safe/redacted
+  logger**, or **stop the service** if none is available. (The baseline logger is never an operational rollback target.)
 - **Risks/failure behavior:** redaction defaults to over-redacting; a logging failure never crashes the request but is surfaced.
 - **Definition of Done:** redaction + audit + health tests green.
 - **Approval boundary:** stop before INC-21.
@@ -102,7 +105,10 @@
 - **Safe offline verification:** `python -m pytest tests/ops/backup -v`.
 - **Safety gates:** contributes to release readiness.
 - **Expected git-diff scope:** `ops/*`, `deploy/at_rest.md`, tests.
-- **Rollback:** backups are additive; revert scripts.
+- **Rollback:** the backup scripts are additive and revertible **before** any production data exists. **While any
+  production claimant data remains stored, the at-rest/backup protections (DB location, NTFS ACL, BitLocker/SQLCipher,
+  encrypted backups) must NOT be removed** — they may be removed only after that data is securely purged or migrated to
+  an equally protected system; otherwise redeploy the last safe version of these controls or stop the affected service.
 - **Risks/failure behavior:** a running-file-copy is prevented by design; missing at-rest protection blocks PII storage.
 - **Definition of Done:** backup/restore + at-rest-gate tests green.
 - **Approval boundary:** stop before INC-22.

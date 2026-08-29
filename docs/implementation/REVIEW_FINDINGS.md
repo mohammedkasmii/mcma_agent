@@ -9,9 +9,10 @@ independent findings; the primary agent verified and synthesized them (no subage
 
 ## A. Reviews that produced no change
 - **Contradiction review (recovery ↔ architecture ↔ implementation):** clean. No plan statement contradicts a recovery
-  decision or an ADR. One *omission* surfaced (WORKFLOW_STATE_MODEL §7 does not enumerate the `IDENTITY_VERIFIED` /
-  `READ_ONLY_IDENTITY_CHECK` restart outcomes) — resolved in the plan (INC-12) and flagged as a deferred architecture
-  touch-up (see SR-3 below and §Remaining decisions).
+  decision or an ADR. One *omission* was found during review — `WORKFLOW_STATE_MODEL.md` §7 did not enumerate the
+  `IDENTITY_VERIFIED` / `READ_ONLY_IDENTITY_CHECK` restart outcomes — and it has been **corrected in
+  `docs/architecture/WORKFLOW_STATE_MODEL.md` §7**. **SR-3 and SR-4 are RESOLVED; no architecture touch-up remains
+  deferred for those states** (see the resolved SR-3/SR-4 table entries in §E and correction C8 in §H).
 - **Spec-to-code-compliance vs `0290fe9`:** the plan is consistent with the Phase 3 baseline classification. Every
   `CURRENTLY_NONCOMPLIANT` / `PARTIALLY_COMPLIANT` / `NOT_IMPLEMENTED` item maps to a primary increment (the Phase 4
   backlog); the three `CURRENTLY_COMPLIANT` items (Decimal money, human-final-validation, relance-not-mutated) are
@@ -51,7 +52,7 @@ sharp-edges and insecure-defaults passes provided the independent critique. If a
 | SR-1 | `portal_sessions` missing from INC-10 schema list though INC-13 depends on it | High | ACCEPTED | INC-10 (all 20 tables incl. `portal_sessions`) |
 | SR-2 | `ACQUIRING_ACCOUNT_LOCK`/`IDENTITY_VERIFYING` → `ABORTED_ON_RESTART` untested | Med | ACCEPTED | INC-12 (test added) |
 | SR-3 | `IDENTITY_VERIFIED` restart outcome undefined in §7 **and** plan | Med | **RESOLVED** | INC-12 (pre-write → `ABORTED_ON_RESTART`+release lease, tested) **and** `docs/architecture/WORKFLOW_STATE_MODEL.md` §7 now explicitly enumerates `IDENTITY_VERIFIED` and `READ_ONLY_IDENTITY_CHECK` (correction C8) — no longer deferred |
-| SR-4 | `READ_ONLY_IDENTITY_CHECK` restart outcome undefined | Low | ACCEPTED | INC-12 (→ back to `QUEUED`, tested) |
+| SR-4 | `READ_ONLY_IDENTITY_CHECK` restart outcome undefined | Low | **RESOLVED** | INC-12 (→ back to `QUEUED`, tested) **and** `WORKFLOW_STATE_MODEL.md` §7 now enumerates it (C8) |
 | SR-5 | Stale-lease release on restart not planned/tested | Low-Med | ACCEPTED | INC-12 (test added) |
 | SR-6 | No idempotency guard against double-counting the same poll run per category | Low | ACCEPTED | INC-14 (test added; `last_complete_poll_version`) |
 | SR-7 | Expand/contract migration discipline not stated/tested | Low | ACCEPTED | INC-10 (policy + test) |

@@ -101,8 +101,9 @@
   **Footgun guard (review SE-1):** the `job_inputs` encryptor is fail-closed — if the **production** DPAPI backend is
   unavailable, storing a job input **refuses** (job → `ERROR`), never falling back to a weak/test encryptor. The stub is
   selectable **only** in tests (enforced by a config guard); INC-12 must not run against production data before INC-13.
-- **Feature flags/adapters:** EXECUTE runner performs writes only through the `VerifiedMissionWriter`, whose live-write
-  path is still disabled (write-enable gate OFF). So EXECUTE against a live host cannot write.
+- **Feature flags/adapters:** the EXECUTE runner performs writes only through a `VerifiedMissionWriter`, which is **not
+  constructible** here because no approved `confirmed_row_ops` records exist yet (data-driven; established only at INC-23).
+  So EXECUTE against a live host cannot write — not because a flag is off, but because the write capability cannot be built.
 - **Out-of-scope:** the API endpoints (INC-17); enabling live writes (INC-23).
 - **Tests-first (repository + state + crash):**
   - **`test_atomic_enqueue_all_or_nothing`** (inject a failure in the tx → nothing committed).

@@ -139,8 +139,10 @@ live-write gate, reachable after endpoint-contract confirmation. INC-00 precedes
 - **Gate 3 (after INC-13):** durable jobs survive crash-recovery deterministically; leases + OS mutex enforce single
   writer; vault fails closed on decrypt/binding failure. (G3.)
 - **Gate 4 (after INC-18):** TLS-only; authenticated, per-account-authorized API; server-derived audit. (G4.)
-- **Gate 5 (INC-23):** endpoint-contract confirmed against approved evidence; write-enable gate flips only under the
-  canary procedure with human final validation still mandatory. (G5 — the live-write gate.)
+- **Gate 5 (INC-23):** endpoint-contract confirmed against approved evidence. **A `VerifiedMissionWriter` can be
+  constructed only when valid, approved `confirmed_row_ops` records exist for the exact deployed commit and every G5
+  requirement passes** — live-write authorization is data-driven, not a flip/boolean/flag. Performed only under the
+  supervised canary procedure with human final validation still mandatory. (G5 — the live-write gate.)
 
 ## Deviations from ADR-0010 (with justification)
 ADR-0010's ordered list is followed. Two clarifications, not deviations:
