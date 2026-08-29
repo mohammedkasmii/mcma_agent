@@ -177,8 +177,10 @@ CREATE TABLE job_inputs (
 - **Retention/deletion:** kept until `expires_at`, then deleted; a completed/terminal job's input may be purged earlier
   per policy. `pii_class` drives handling.
 - **Crash recovery:** on restart, a resumable job re-reads its `job_inputs` row; the runner recomputes `content_hash`
-  and asserts it equals `automation_jobs.input_hash` before proceeding. If the input is missing/expired, the job cannot
-  resume and is marked needs-review (never executed on a guessed input).
+  and asserts it equals `automation_jobs.input_hash` before proceeding. If the input is missing, expired, undecryptable,
+  or hash-mismatched, the job **fails closed to `ERROR`** with the exact reason code — `MISSING_JOB_INPUT`,
+  `INPUT_EXPIRED`, `INPUT_UNDECRYPTABLE`, or `INPUT_HASH_MISMATCH` respectively (`WORKFLOW_STATE_MODEL.md` §7) — and is
+  **never** executed on a guessed input.
 - **EXECUTE exact-input rule:** an EXECUTE job references its approved DRY_RUN (`parent_job_id`) and executes **only** if
   the retained input's `content_hash` and the recomputed `plan_hash` match the approved snapshot; any mismatch →
   fail closed `INPUT_CHANGED`.

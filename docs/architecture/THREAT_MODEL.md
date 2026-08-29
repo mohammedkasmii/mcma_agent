@@ -47,7 +47,7 @@ desktop **onboarding tool** ↔ vault/DB (separate process). Each boundary is en
 | T24 | Direct EXECUTE bypassing dry-run (correction #3) | No `mode` param; EXECUTE only via `/jobs/{dry_run_job_id}/executions` requiring a `DRY_RUN_VERIFIED` parent (same account+workflow), server-derived authorizer, matching input_hash/plan_hash, unexpired input | INV-1/INV-11 |
 | T25 | Cross-account presence row (correction #4) | Composite FK `(account_id, claim_pk)` → `claims`; repository test proves mismatched pair insertion fails | write-safety |
 | T22 | False "READY/Verified/Prêt" (F12) | Readiness reflects a real check, never file existence or a finally block | INV-5 |
-| T23 | Async job input lost/tampered across restart (correction #4) | Encrypted `job_inputs` (content_hash, ownership, expiry, DPAPI); recompute+match before execute/resume; missing/expired → needs-review | INV-10 |
+| T23 | Async job input lost/tampered across restart (correction #4) | Encrypted `job_inputs` (content_hash, ownership, expiry, DPAPI); recompute+match before execute/resume; missing/expired/undecryptable/hash-mismatched → **fail closed to `ERROR`** with reason `MISSING_JOB_INPUT`/`INPUT_EXPIRED`/`INPUT_UNDECRYPTABLE`/`INPUT_HASH_MISMATCH` (never executed on a guessed input) | INV-10 |
 
 ## 5. Residual risks (accepted / deferred)
 - **Plain-HTTP internal tooling** is disallowed in production (TLS required); a misconfiguration that disables TLS
