@@ -90,7 +90,10 @@ ExpectedIdentity {                 # correction #4: registration is MANDATORY
 - **Determinism:** a plan builder is a pure function of typed input; steps are stably ordered (rubrique_id, then first
   source pointer); no wall-clock/randomness/set-iteration affects output. Same input → identical steps and `plan_hash`
   (property-tested, `TEST_STRATEGY.md`).
-- Any `NeedsReview` present ⇒ non-writeable (no `ExecutablePlan` can be formed).
+- **Structural write-gating:** a `ProposedPlan` with any `NeedsReview` is non-writeable. `ExecutablePlanData` **cannot be
+  produced** unless execution authorization and the `input_hash`/`plan_hash` checks pass; and `AuthorizedExecution`
+  **cannot be constructed** without **both** a valid `ExecutablePlanData` **and** a `VerifiedMissionWriter` (owned by
+  `execution`, `MODULE_BOUNDARIES.md` §4). No single flag or plan field can bypass these steps.
 - **ExpectedIdentity** requires a **mandatory normalized registration plate** plus at least one of insurer reference /
   idSinistre; the identity gate (`SAFETY_MODEL.md` §4) enforces all supplied identifiers agree and a plate alone is insufficient.
 

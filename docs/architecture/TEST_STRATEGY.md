@@ -53,8 +53,10 @@ Tests drive only `mock_server`/fixtures; any real-portal connection fails loudly
 - **Safety tests** (the component whose failure is most consequential): context-level **default-deny** aborts unknown
   requests (GET not auto-safe); **final endpoints abort** (never fake-200); **dry-run constructs no writer**; write
   allowlist enforced; **charge-mutuelle fields never appear** in any allowlist or plan; route-handler exceptions abort;
-  `service_workers` blocked; external domains blocked; **plan has no `mode`/`read_only`** and no `ExecutablePlan` forms
-  without authorization (correction #3); **rubrique-row selection by exact `IdRubrique`, exactly one match** — substring/
+  `service_workers` blocked; external domains blocked; **plan has no `mode`/`read_only`**; **`ExecutablePlanData` cannot be
+  produced without passing authorization + `input_hash`/`plan_hash` checks**, and **`AuthorizedExecution` cannot be
+  constructed without both valid `ExecutablePlanData` and a `VerifiedMissionWriter`** (correction #3); **rubrique-row
+  selection by exact `IdRubrique`, exactly one match** — substring/
   first-row/positional fallback rejected, zero/multiple fail closed (F16, correction #7); **truthful readiness** — a
   "READY/Verified/Prêt" label is set only after a real check passes, never from file existence or a `finally` block
   (F12, correction #7); **portal never re-acquires the lease / never imports persistence** (import contract) and on

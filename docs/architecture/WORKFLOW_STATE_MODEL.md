@@ -18,8 +18,8 @@ A DRY_RUN can never become a write. An EXECUTE job is **separately authorized**,
 ```mermaid
 stateDiagram-v2
   direction LR
-  [*] --> CREATED
-  CREATED --> PLANNING
+  [*] --> QUEUED
+  QUEUED --> PLANNING
   PLANNING --> NEEDS_REVIEW
   PLANNING --> PLANNED
   PLANNED --> READ_ONLY_IDENTITY_CHECK
@@ -35,8 +35,8 @@ No `VerifiedMissionWriter` is ever constructed for a DRY_RUN — the write path 
 ```mermaid
 stateDiagram-v2
   direction LR
-  [*] --> CREATED
-  CREATED --> PLANNING
+  [*] --> QUEUED
+  QUEUED --> PLANNING
   PLANNING --> NEEDS_REVIEW
   PLANNING --> PLANNED
   PLANNED --> ACQUIRING_ACCOUNT_LOCK
@@ -106,13 +106,12 @@ any navigation/redraw**, so a stale page cannot cause a write against the wrong 
   half-created job). Valid statuses are constrained by a CHECK (`DATA_MODEL.md` §4).
 - **Atomic transitions:** each transition writes the job row + its outbox event in **one transaction**; `state_version`
   = the account's monotonic version at that transition.
-- **Restart reconciliation** (before serving), by status:
-  - `QUEUED` **with a valid, unexpired `job_inputs`** → **resume safely** (re-enqueue for the runner; planning is pure so
-    re-planning is deterministic). `QUEUED` **without** valid input → **fail closed** (`ERROR`, reason `MISSING_JOB_INPUT`);
-    never executed on a guessed input.
-  - `{PLANNING, PLANNED}` (pure, no portal, no lease) → safe to re-plan from the retained input, or mark
-    `ABORTED_ON_RESTART` for operator resubmit — chosen deterministically because planning has **no external side
-    effects** and the input is content-hash-verified; either way no portal state was touched.
+- **Restart reconciliation** (before serving), by status — **fully deterministic, no operator- or config-dependent choice:**
+  - `{QUEUED, PLANNING, PLANNED}` → **verify the retained `job_inputs`** (present, unexpired, decryptable, `content_hash`
+    matches `input_hash`) → **return the job to `QUEUED`** → **deterministically re-plan from the beginning**. Planning is
+    pure and has no external side effects, and no portal state was touched, so this is always safe. If the input is
+    **missing, expired, undecryptable, or hash-mismatched** → **`ERROR`** with the appropriate fail-closed reason
+    (`MISSING_JOB_INPUT` / `INPUT_EXPIRED` / `INPUT_UNDECRYPTABLE` / `INPUT_HASH_MISMATCH`). Never executed on a guessed input.
   - `{ACQUIRING_ACCOUNT_LOCK, IDENTITY_VERIFYING}` (no writes yet) → `ABORTED_ON_RESTART`; release the lease.
   - `{WRITING, VERIFYING}` (writes possibly partial) → `INTERRUPTED_NEEDS_HUMAN_REVIEW` with a diff report; **never
     automatically resumed or replayed.**
