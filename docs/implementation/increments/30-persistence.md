@@ -33,6 +33,12 @@
 - **Expected git-diff scope:** `persistence/*`, `tests/persistence/*`.
 - **Rollback:** delete `persistence/*`; no baseline dependency yet.
 - **Risks/failure behavior:** integrity violations raise at the DB layer (fail-closed).
+- **Subincrement split (correction #7):**
+  - **INC-10A** — `mcma/persistence/db.py` (connection, WAL/`foreign_keys`/`busy_timeout`), the migration runner +
+    `0001_init.sql` creating **all 20 tables**, `schema_migrations`; tests: WAL/FK on, all tables present, status CHECK,
+    composite FK, NOT-NULL idSinistre, migration applies+records, expand/contract policy.
+  - **INC-10B** — `mcma/persistence/repositories/*.py` (one per aggregate) with typed CRUD; tests: cross-account insert
+    fails, unmatched-notifications staging, uniqueness, repository round-trips.
 - **Definition of Done:** schema + integrity + migration tests green; DB outside served dir.
 - **Approval boundary:** stop before INC-11.
 
@@ -127,6 +133,13 @@
 - **Expected git-diff scope:** `execution/*`, `tests/execution/jobs/`.
 - **Rollback:** delete `execution/jobs.py` etc.; baseline workflow untouched.
 - **Risks/failure behavior:** any crash-recovery ambiguity resolves fail-closed (`ERROR`/`INTERRUPTED_NEEDS_HUMAN_REVIEW`).
+- **Subincrement split (correction #7):**
+  - **INC-12A** — `mcma/execution/inputs.py` + atomic **enqueue** (`automation_jobs` QUEUED + `job_inputs` +
+    state-version + outbox in one tx) + idempotency + the status-CHECK contract; tests: atomic-all-or-nothing,
+    idempotent-resubmit, fail-closed encryptor.
+  - **INC-12B** — `mcma/execution/jobs.py` (DRY_RUN + EXECUTE state machines; EXECUTE authorization + hash re-check) and
+    `mcma/execution/reconcile.py` (deterministic restart, all reason codes, INV-5 terminal); tests: the full state +
+    restart + INV-5 set listed above.
 - **Definition of Done:** state/crash tests green; atomic enqueue proven.
 - **Approval boundary:** stop before INC-13.
 
@@ -166,7 +179,8 @@
     **hard, verified** precondition — LocalMachine DPAPI ciphertext is decryptable by any local user, so if the
     service-account-only ACL cannot be applied and verified, the store **aborts** rather than persist the session).
 - **Initial failing-test expectation:** all fail (modules absent).
-- **Mock/fixtures:** in-memory crypto backend; temp vault dir with ACL assertions where feasible on Windows.
+- **Mock/fixtures:** in-memory crypto backend (test-only); on Windows CI, a temp vault dir with the restrictive NTFS ACL
+  **applied and asserted** (the ACL is a hard precondition, not "where feasible" — see Risks).
 - **Implementation steps:** DPAPI encrypt/decrypt (injected backend) → atomic store → in-memory handoff protocol →
   service validation + lease-before-replace → rotation/revocation → fail-closed paths.
 - **Acceptance criteria:** all vault safety tests green; plaintext never on disk; write jobs require positive identity.
@@ -178,5 +192,12 @@
   (documented; a mismatch is caught by the decryption-failure test on the real host). **The service-account-only NTFS ACL
   is the sole confidentiality control for LocalMachine DPAPI and is therefore a HARD precondition (SEC-5): the vault
   refuses to persist a session if that ACL cannot be set and verified** — not "where feasible".
+- **Subincrement split (correction #7):**
+  - **INC-13A** — `mcma/portal/vault.py`: DPAPI LocalMachine encrypt/decrypt (injected backend), atomic store, **hard
+    NTFS-ACL precondition**, rotation/revocation, decrypt/binding fail-closed; tests: decrypt-fail, binding-mismatch,
+    atomic-replace, ACL-precondition, prod-rejects-non-DPAPI.
+  - **INC-13B** — `mcma/app/onboarding.py` (one-time local token, no server browser) + `tools/onboarding_tool.py`
+    (headed LoginCapability, in-memory handoff) + service validation + **lease-before-replace**; tests: no-plaintext/
+    vault write by tool, lease-before-replace, sessions-login-no-server-browser.
 - **Definition of Done:** vault safety tests green; **Gate 3 review** ready.
 - **Approval boundary:** stop; **Gate 3 review** before Phase 4.

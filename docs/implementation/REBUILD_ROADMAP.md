@@ -34,14 +34,49 @@ with justification. Each increment has limited blast radius and an independent o
 
 ## Dependency graph (arrow = "must land before")
 
+## Canonical dependency table (single source of truth — correction #2)
+Every increment's `Prerequisites` field, the Mermaid graph below, and `TRACEABILITY_BACKLOG.md` are all derived from
+this one table. **Consistency rule:** the graph has an edge `X → Y` **iff** `X ∈ prerequisites(Y)` in this table, and
+each increment file's `Prerequisites` must match its row here exactly. A drift check (below) makes this reproducible.
+
+| Increment | Prerequisites |
+|---|---|
+| INC-00 | — |
+| INC-01 | INC-00 |
+| INC-02 | INC-01 |
+| INC-03 | INC-02 |
+| INC-04 | INC-03 |
+| INC-05 | INC-04 |
+| INC-06 | INC-01, INC-03 |
+| INC-07 | INC-06 |
+| INC-08 | INC-07 |
+| INC-09 | INC-05, INC-08 |
+| INC-10 | INC-03 |
+| INC-11 | INC-10 |
+| INC-12 | INC-05, INC-10, INC-11 |
+| INC-13 | INC-10, INC-11 |
+| INC-14 | INC-08, INC-10, INC-11, INC-13 |
+| INC-15 | INC-10, INC-14 |
+| INC-16 | INC-10 |
+| INC-17 | INC-12, INC-15, INC-16 |
+| INC-18 | INC-17 |
+| INC-19 | INC-15, INC-17 |
+| INC-20 | INC-10 |
+| INC-21 | INC-10 |
+| INC-22 | INC-14, INC-17, INC-19, INC-20, INC-21 |
+| INC-23 | INC-09, INC-12, INC-13, INC-18, INC-22 |
+
+**Drift check (reproducible):** a plan-lint step parses each `Prerequisites:` line from `increments/*.md`, compares the
+set to this table, and compares both to the graph edges below; any mismatch fails. (Planned as `tests/plan/test_roadmap_prereqs_match_graph.py` in INC-03's plan-contract tests — see INC-03.)
+
 ```mermaid
 graph TD
   INC00[INC-00 baseline containment] --> INC01[INC-01 egress]
   INC01 --> INC02[INC-02 characterization]
-  INC01 --> INC06[INC-06 mock server]
   INC02 --> INC03[INC-03 skeleton]
   INC03 --> INC04[INC-04 domain]
   INC04 --> INC05[INC-05 plan]
+  INC01 --> INC06[INC-06 mock server]
   INC03 --> INC06
   INC06 --> INC07[INC-07 interception]
   INC07 --> INC08[INC-08 read/login caps]
@@ -49,25 +84,31 @@ graph TD
   INC08 --> INC09
   INC03 --> INC10[INC-10 persistence]
   INC10 --> INC11[INC-11 mutex/leases]
-  INC10 --> INC12[INC-12 jobs]
-  INC05 --> INC12
+  INC05 --> INC12[INC-12 jobs]
+  INC10 --> INC12
   INC11 --> INC12
   INC10 --> INC13[INC-13 vault]
   INC11 --> INC13
-  INC10 --> INC14[INC-14 notifications]
-  INC08 --> INC14
+  INC08 --> INC14[INC-14 notif + poller]
+  INC10 --> INC14
+  INC11 --> INC14
+  INC13 --> INC14
   INC10 --> INC15[INC-15 outbox/SSE]
   INC14 --> INC15
   INC10 --> INC16[INC-16 auth]
-  INC16 --> INC17[INC-17 authz/endpoints]
-  INC12 --> INC17
+  INC12 --> INC17[INC-17 authz/endpoints]
   INC15 --> INC17
+  INC16 --> INC17
   INC17 --> INC18[INC-18 TLS]
   INC15 --> INC19[INC-19 dashboard]
   INC17 --> INC19
   INC10 --> INC20[INC-20 observability]
   INC10 --> INC21[INC-21 backup]
-  INC17 --> INC22[INC-22 parity/retire]
+  INC14 --> INC22[INC-22 parity/retire]
+  INC17 --> INC22
+  INC19 --> INC22
+  INC20 --> INC22
+  INC21 --> INC22
   INC09 --> INC23[INC-23 write-enable gate]
   INC12 --> INC23
   INC13 --> INC23
@@ -75,15 +116,17 @@ graph TD
   INC22 --> INC23
 ```
 
-## Critical path (corrected — three parallel branches converge at INC-23)
-The longest chain is the **write-safety branch**: `INC-00 → INC-01 → INC-03 → INC-04 → INC-05 → INC-09`. Two other
-branches run in parallel and only **reconverge at INC-23** (they are not a single line — INC-09, INC-12 and INC-13 have
-no direct edges between them):
-- **portal-safety branch:** INC-06 → INC-07 → INC-08 → **INC-09**
-- **persistence/jobs branch:** INC-10 → INC-11 → **INC-12**; INC-10/INC-11 → **INC-13**
-- **API/TLS branch:** INC-10 → INC-16 → INC-17 → **INC-18**
-**INC-23** (the sole live-write gate) depends on INC-09, INC-12, INC-13, INC-18 and INC-22 — it is the convergence point,
-reachable only after endpoint-contract confirmation. INC-00 (baseline containment) precedes everything.
+## Critical path (recomputed from the corrected graph)
+The longest path (13 increments) runs through the notifications → SSE → API → dashboard → cutover chain and converges at
+INC-23:
+
+`INC-00 → INC-01 → INC-02 → INC-03 → INC-06 → INC-07 → INC-08 → INC-14 → INC-15 → INC-17 → INC-19 → INC-22 → INC-23`
+
+There are several equal-length (13-node) longest paths (e.g., substituting the persistence chain
+`INC-10 → INC-11 → INC-13 → INC-14` for `INC-06 → INC-07 → INC-08 → INC-14`, since INC-14 depends on both INC-08 and
+INC-13). **INC-09, INC-12 and INC-13 are parallel branches with no direct edges between them** (the earlier
+`INC-09 → INC-12 → INC-13` linear claim was wrong and is removed); they reconverge only at **INC-23**, the sole
+live-write gate, reachable after endpoint-contract confirmation. INC-00 precedes everything.
 
 ## Phase gates (must pass before the next phase begins)
 - **Gate 0 (after INC-01):** the proof test shows a subprocess and a headless Chromium cannot reach the production host.

@@ -87,9 +87,33 @@ sharp-edges and insecure-defaults passes provided the independent critique. If a
 unmapped preserved artifact (the session keep-alive daemon) now has a primary owner (INC-14). All ACCEPTED findings were
 corrected in the documents named above.
 
-## Remaining decisions for the owner (see also OPEN items)
-1. **Architecture §7 enumeration (SR-3, deferred):** `WORKFLOW_STATE_MODEL.md` §7 should be amended to explicitly list
-   `IDENTITY_VERIFIED` and `READ_ONLY_IDENTITY_CHECK` restart outcomes to match the plan (both are pre-write / read-only →
-   fail-closed). The plan already specifies the safe deterministic behavior; this is a one-paragraph architecture-doc
-   consistency fix held for owner approval since Phase 4 scope is `docs/implementation/` only.
-2. **Cert renewal automation (AR-L6, deferred):** whether to automate renewal-with-overlap or keep it a runbook step.
+## H. Phase-4 correction round (owner-directed, 10 items — all ACCEPTED)
+| # | Correction | Disposition | Doc(s) changed |
+|---|---|---|---|
+| C1 | Remove MIGRATION_MODE footgun → **permanent unconditional** baseline containment + full surface inventory + tests before Playwright + never-restore rollback | ACCEPTED | INC-00, ROLLBACK_PLAN, TEST_PLAN, README, RELEASE_GATES |
+| C2 | Make prerequisites/graph/roadmap/gates/backlog identical; INC-01←INC-00; INC-14/INC-22 edges; INC-22←INC-21; recomputed critical path; canonical dependency table + drift check | ACCEPTED | REBUILD_ROADMAP, INC-00/01/22, INC-03 (drift test), TRACEABILITY_BACKLOG |
+| C3 | PII: INC-14 fixture/mock-only; **G-PDR** production-data-readiness gate before any real PII | ACCEPTED | INC-14, RELEASE_GATES |
+| C4 | Collision-free package strategy under **`mcma/`**; import contract + temporary legacy allowlist; tightened at INC-22 | ACCEPTED | INC-03, README (namespace) |
+| C5 | Full explicit 40-item architecture matrix (no summary paragraph) | ACCEPTED | TRACEABILITY_BACKLOG §6 |
+| C6 | Resolve implementation choices (uv, import-linter, pywin32 mutex+DPAPI, sse-starlette, hardened vanilla dashboard, stdlib logging, 3.14 verification); remove "A/B/optional/where feasible" | ACCEPTED | README §Implementation choices; INC-03/13/18; 60-dashboard-ops; 50-api-auth |
+| C7 | Implementable increments: micro-cycle framing + subincrement splits (10A/B, 12A/B, 13A/B, 17A/B, 19A/B, 22A/B); no false 2–5 min claim | ACCEPTED | README, INC-10/12/13/17/19/22 |
+| C8 | Architecture restart alignment: §7 enumerates READ_ONLY_IDENTITY_CHECK (→QUEUED/re-plan) and IDENTITY_VERIFIED (→ABORTED_ON_RESTART+release lease); neither writes | ACCEPTED | `docs/architecture/WORKFLOW_STATE_MODEL.md` §7 (**this resolves the previously-deferred SR-3**) |
+| C9 | SSE/auth ownership: injected `Authorizer` in INC-15; real authenticated authz + revocation in INC-17 (no circular dep) | ACCEPTED | INC-15, INC-17 |
+| C10 | Reporting cleanup: `4a3483cb` = approved Phase 3 revision (not HEAD); remove local-auth-vs-AD and BitLocker-vs-SQLCipher as "unresolved"; keep real portal row-contract confirmation as a genuine G5 requirement; update this file | ACCEPTED | README, REVIEW_FINDINGS (this section) |
+
+## Decided (no longer "unresolved")
+- **Auth backend:** **local auth now, with an `AuthProvider` seam** for a future Windows-AD provider — decided (ADR-0008,
+  INC-16). Not an open question.
+- **At-rest encryption:** **a deployment gate with an established conditional rule** — BitLocker + strict NTFS ACL +
+  encrypted backups; SQLCipher becomes mandatory only if that guarantee cannot be met (`deploy/at_rest.md`, INC-21,
+  G-PDR). Not an open design choice.
+
+## Remaining genuine owner decisions
+1. **Real portal row-contract confirmation (kept as a genuine G5 requirement):** the exact live `updateDevisDet` /
+   `createRapportDefDet` request/response contracts must be confirmed against approved safe evidence before the INC-23
+   write-enable gate can be satisfied. This is deliberately not resolved in planning.
+2. **Cert renewal automation (AR-L6):** automate renewal-with-overlap, or keep it a runbook step.
+3. **Python-3.14 wheel availability** for any dependency that lacks a 3.14 wheel at implementation time (escalated by
+   INC-03, not silently downgraded).
+
+*(The previously-deferred architecture §7 enumeration is now resolved by C8 and is no longer an open item.)*

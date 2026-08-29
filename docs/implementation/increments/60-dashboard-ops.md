@@ -5,7 +5,8 @@
 ## INC-19 — Dashboard migration: XSS removal, truthful readiness, no demo-as-real
 
 - **Purpose/outcome:** Rebuild the employee dashboard against the authenticated API + SSE with **safe rendering** (no
-  unescaped `innerHTML`; encode/escape or framework-escaped; CSP where feasible), **truthful readiness** (labels from
+  unescaped `innerHTML`; strict output-escaping in a hardened vanilla TS/JS render layer, no build step; **CSP enforced**),
+  **truthful readiness** (labels from
   real checks, never a `finally` block or file existence), and **no fabricated demo data rendered as real**.
 - **Why here:** depends on the authenticated API (INC-17) and SSE (INC-15).
 - **Prerequisites:** INC-15, INC-17.
@@ -32,6 +33,11 @@
 - **Expected git-diff scope:** `web/*`, `tests/web/*`.
 - **Rollback:** re-serve the legacy static app (until it is retired at INC-22).
 - **Risks/failure behavior:** rendering defaults to escaped output; unknown/failed loads show an explicit error, not demo data.
+- **Subincrement split (correction #7):**
+  - **INC-19A** — the hardened render layer: strict output-escaping helpers + **CSP** + truthful-readiness helpers
+    (real-check-driven); tests: escaping (breakout attempts), readiness-not-from-finally, no-sample-data-default.
+  - **INC-19B** — wire the dashboard to the authenticated API + SSE, remove demo-as-real default, authenticated+CSRF
+    action updates; tests: action-auth/CSRF, live-data-only, SSE-consumption.
 - **Definition of Done:** XSS/readiness/demo tests green.
 - **Approval boundary:** stop before INC-20.
 
@@ -50,7 +56,7 @@
   names + retention), `persistence/audit.py` (hashes only), real health/ready in `app/api/health.py`. Tests under
   `tests/core/logging/`.
 - **DB migration impact:** uses `audit_events`.
-- **Dependency/config impact:** stdlib `logging` (+ optional `structlog`, dev-justified).
+- **Dependency/config impact:** **stdlib `logging` + a JSON formatter + a redaction filter** (no new runtime dependency — resolved choice, README §Implementation choices).
 - **Feature flags/adapters:** none.
 - **Out-of-scope:** external log shipping.
 - **Tests-first:** **`test_logs_never_contain_cookies_tokens_or_pii`** (redaction filter over representative records);
@@ -82,8 +88,9 @@
 - **Target modules/files introduced:** `ops/backup.py` (online backup + verify), `deploy/at_rest.md` (BitLocker/ACL
   checklist + SQLCipher fallback decision gate), `ops/restore.md`. Tests under `tests/ops/backup/`.
 - **DB migration impact:** none (operates on the DB).
-- **Dependency/config impact:** optional SQLCipher (only if the BitLocker+encrypted-backup guarantee cannot be met) — a
-  gated decision, not a default dependency.
+- **Dependency/config impact:** SQLCipher is a **conditional deployment requirement** (mandatory only if the
+  BitLocker + encrypted-backup guarantee cannot be met — a documented deployment gate, `deploy/at_rest.md`), not an
+  unresolved implementation choice and not a default dependency.
 - **Feature flags/adapters:** the SQLCipher path is a config gate documented in `deploy/at_rest.md`.
 - **Out-of-scope:** enterprise backup infrastructure.
 - **Tests-first:** **`test_backup_uses_online_api_not_file_copy`**; `test_restore_roundtrip_integrity`;

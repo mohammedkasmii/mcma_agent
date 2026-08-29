@@ -8,22 +8,39 @@
   so purity is a test, not a convention.
 - **Why here:** must precede any module code (ADR-0001, MODULE_BOUNDARIES).
 - **Prerequisites:** INC-02.
-- **Addresses:** ADR-0001; MODULE_BOUNDARIES §1–§4; F28 (duplicated constants → single `core.config`).
-- **Baseline files modified/retired:** none retired yet; new packages created alongside baseline. Baseline scripts keep
-  working (parity retirement is INC-22).
-- **Target modules/files introduced:** empty packages `core/`, `domain/`, `mapping/`, `planning/`, `persistence/`,
-  `portal/`, `execution/`, `notifications/`, `app/` (each `__init__.py`); `pyproject.toml`; `tests/contracts/test_import_boundaries.py` (import-linter config or a custom AST check).
+- **Addresses:** ADR-0001; MODULE_BOUNDARIES §1–§4; F28 (duplicated constants → single `mcma.core.config`).
+- **Collision-free migration strategy (correction #4 — exact, not left to the implementer):** the repository **already
+  contains** top-level `core/`, `browser/`, `mapper/`, `main.py`, `mock_server.py`. To avoid name collisions, **all new
+  modules live under a single top-level package `mcma/`**: `mcma/core`, `mcma/domain`, `mcma/mapping`, `mcma/planning`,
+  `mcma/persistence`, `mcma/portal`, `mcma/execution`, `mcma/notifications`, `mcma/app`. The legacy top-level `core/`,
+  `browser/`, `mapper/`, `main.py`, `mock_server.py` are **left untouched** (except INC-00's write-removal) until INC-22
+  retirement. Wherever a later increment writes a path like `domain/x.py` it means **`mcma/domain/x.py`**.
+- **Ownership rules (enforced by the import contract):**
+  - `mcma.portal` is the **only** module that may import `playwright`; `mcma.persistence` the only one importing `sqlite3`;
+    `mcma.app` the only one importing `fastapi`; `mcma.domain`/`mcma.mapping`/`mcma.planning` import no I/O libs.
+  - **Temporary legacy allowlist:** the baseline top-level `core`, `browser`, `mapper`, `main`, `mock_server` are exempt
+    from the final ownership rule (they may import playwright etc.) — the contract does **not** require them to comply
+    until they are retired in INC-22. `mock_server` is tagged **test infrastructure** (loopback-only), not production.
+  - **No new module may import a legacy package** (one-way: legacy is allowed to exist, but `mcma.*` never depends on it).
+  - **INC-22 tightens the contract:** the legacy allowlist is deleted and the final ownership rule applies with no exceptions.
+- **Baseline files modified/retired:** none retired here; the `mcma/` packages are created alongside the (write-contained)
+  baseline read paths.
+- **Target modules/files introduced:** `mcma/` package skeleton (`mcma/<module>/__init__.py` for the nine modules);
+  `pyproject.toml`; `mcma/tests/contracts/test_import_boundaries.py` (import-linter contracts) + the plan-lint drift check.
 - **DB migration impact:** none.
-- **Dependency/config impact:** dev-only `import-linter` (or an equivalent AST test). Optional `modern-python` tooling
-  (`ruff`, `ty`) as non-breaking dev tools.
+- **Dependency/config impact:** dev-only **import-linter** (chosen tool — correction #6) with contracts in `pyproject.toml`;
+  `ruff`/`ty` as non-breaking dev tools. See README §Implementation choices for the resolved toolchain.
 - **Feature flags/adapters:** none.
 - **Out-of-scope:** any business logic (INC-04+).
 - **Tests-first:**
-  - `test_domain_imports_no_io` — importing `domain`/`mapping`/`planning` must not transitively import
+  - `test_domain_imports_no_io` — importing `mcma.domain`/`mcma.mapping`/`mcma.planning` must not transitively import
     `playwright`, `sqlite3`, `fastapi`, `httpx`, `requests`.
-  - `test_single_owner_playwright_sqlite_fastapi` — only `portal` imports playwright; only `persistence` imports sqlite3;
-    only `app` imports fastapi.
+  - `test_single_owner_playwright_sqlite_fastapi` — only `mcma.portal` imports playwright; only `mcma.persistence` imports
+    sqlite3; only `mcma.app` imports fastapi (legacy `main.py`/`browser/*` are on the temporary allowlist until INC-22).
   - `test_no_dependency_cycles` — the module graph is acyclic and one-directional.
+  - **`test_roadmap_prereqs_match_graph`** (correction #2 drift check) — parses each `Prerequisites:` in
+    `docs/implementation/increments/*.md`, the canonical dependency table, and the Mermaid edges in `REBUILD_ROADMAP.md`;
+    asserts all three are identical (a plan-lint over the docs, run in CI so the plan cannot silently drift).
 - **Initial failing-test expectation:** fails (packages/contract absent).
 - **Mock/fixtures:** none.
 - **Implementation steps:** create package skeleton → author import-linter contract from MODULE_BOUNDARIES → wire into

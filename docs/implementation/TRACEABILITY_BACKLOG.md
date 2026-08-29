@@ -102,10 +102,56 @@ to **exactly one primary increment** (plus supporting increments). Nothing from 
 | Windows launchers / employee startup | INC-18 (TLS serve), INC-22 (retire old) |
 | Tests & fixtures | INC-01, INC-02, all |
 
-## 6. Architecture-noncompliance items (TRACEABILITY_MATRIX §1 — the 40 items)
-Every item classified `CN`/`PC`/`NI` at baseline maps to a primary increment above (safety items → INC-04..09; data →
-INC-10..15; API/auth → INC-16..18; ops/observability/deploy → INC-20/21/18; the write-enable gate → INC-23). The `CC`
-items (Decimal money, human-final-validation, relance-not-mutated) are preserved and re-asserted by tests in INC-04/12/14.
+## 6. Architecture requirements — the full 40-item matrix (correction #5)
+Baseline class per Phase 3 `docs/architecture/TRACEABILITY_MATRIX.md` §1: **CC** compliant · **PC** partial · **CN**
+noncompliant · **NI** not-implemented. Module paths are under `mcma/` (correction #4). Status = **Planned** unless the
+baseline item is **CC** (Preserved/re-asserted).
+
+| # | Requirement | Base | Primary | Supporting | Planned test | Gate | Target module | Status |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Modular monolith boundaries | NI | INC-03 | — | import contract | G1 | `mcma/*` | Planned |
+| 2 | Dependency rules between modules | CN | INC-03 | — | import-linter | G1 | `mcma/*` | Planned |
+| 3 | Typed input & normalization | PC | INC-04 | INC-05 | property | G1 | `mcma/domain`,`mcma/mapping` | Planned |
+| 4 | Workflow registry | NI | INC-05 | — | unit | G1 | `mcma/planning` | Planned |
+| 5 | Typed execution plans (pure data) | NI | INC-05 | INC-04 | determinism | G1 | `mcma/planning`,`mcma/domain` | Planned |
+| 6 | Deterministic planning | PC | INC-05 | INC-04 | `plan_hash` stable | G1 | `mcma/planning` | Planned |
+| 7 | Separate read/write capabilities | CN | INC-08 | INC-09 | safety | G2 | `mcma/portal` | Planned |
+| 8 | Dry-run technically write-incapable | CN | INC-08 | INC-09 | dry-run-no-writer | G2 | `mcma/portal` | Planned |
+| 9 | Context-level network interception | CN | INC-07 | — | safety (context route) | G2 | `mcma/portal` | Planned |
+| 10 | Default-deny write policy | CN | INC-07 | — | unknown→abort | G2 | `mcma/portal` | Planned |
+| 11 | Permanent final-endpoint blocking | PC | INC-07 | INC-23 | final-abort | G2/G5 | `mcma/portal` | Planned |
+| 12 | Explicit row-op allowlist | CN | INC-07 | INC-09, INC-23 | allowlist | G2 | `mcma/portal`,`mcma/planning` | Planned |
+| 13 | Mission identity gate | CN | INC-09 | — | identity fail-closed | G2 | `mcma/portal` | Planned |
+| 14 | Read-before-write | NI | INC-09 | INC-12 | integration | G2 | `mcma/portal`,`mcma/execution` | Planned |
+| 15 | Diff-before-write | NI | INC-09 | INC-12 | integration | G2 | `mcma/portal`,`mcma/execution` | Planned |
+| 16 | Verify-after-write | NI | INC-09 | INC-12 | integration | G2 | `mcma/portal`,`mcma/execution` | Planned |
+| 17 | Fail-closed mapping | PC | INC-04 | INC-05, INC-09 | property (NeedsReview) | G1 | `mcma/domain` | Planned |
+| 18 | Decimal monetary calculations | CC | INC-04 | — | property (money) | G1 | `mcma/core`,`mcma/domain` | Preserved/re-asserted |
+| 19 | Native portal charge-mutuelle | CN | INC-09 | INC-04 | never-written | G2 | `mcma/portal`,`mcma/domain` | Planned |
+| 20 | SQLite WAL persistence | NI | INC-10 | — | repo contract | G3 | `mcma/persistence` | Planned |
+| 21 | Transactional event outbox | NI | INC-15 | INC-12 | outbox atomicity | G3 | `mcma/persistence` | Planned |
+| 22 | Claim identity account_id+idSinistre | NI | INC-10 | INC-14 | uniqueness/NOT NULL | G3 | `mcma/persistence` | Planned |
+| 23 | Separate category-presence history | NI | INC-10 | INC-14 | per-category presence | G3 | `mcma/persistence` | Planned |
+| 24 | Complete-poll absence transitions | NI | INC-14 | INC-10 | three-poll-per-category | G-PDR | `mcma/notifications` | Planned |
+| 25 | Monotonic state versions | NI | INC-10 | INC-15 | version | G3 | `mcma/persistence` | Planned |
+| 26 | SSE with delta-query recovery | NI | INC-15 | INC-17 | replay/resync | G4 | `mcma/app`,`mcma/persistence` | Planned |
+| 27 | Extensible account registry | NI | INC-10 | INC-13, INC-17 | accounts CRUD | G3 | `mcma/persistence` | Planned |
+| 28 | Session-to-account binding | CN | INC-13 | INC-10 | binding fail-closed | G3 | `mcma/portal`,`mcma/persistence` | Planned |
+| 29 | Per-account lock / lease | NI | INC-11 | INC-12 | lease acquire/fence | G3 | `mcma/persistence`,`mcma/execution` | Planned |
+| 30 | Asynchronous automation jobs | CN | INC-12 | INC-17 | job lifecycle | G3 | `mcma/execution`,`mcma/app` | Planned |
+| 31 | Server-side employee authentication | CN | INC-16 | — | auth | G4 | `mcma/app` | Planned |
+| 32 | Role authorization | CN | INC-16 | INC-17 | RBAC | G4 | `mcma/app` | Planned |
+| 33 | Secure session cookies & CSRF | CN | INC-16 | — | auth/CSRF | G4 | `mcma/app` | Planned |
+| 34 | Server-derived audit identity | CN | INC-17 | INC-10 | audit | G4 | `mcma/app`,`mcma/persistence` | Planned |
+| 35 | Separate view vs automation perms | CN | INC-16 | INC-17 | viewer-no-mutate | G4 | `mcma/app` | Planned |
+| 36 | Configurable LAN exposure | CN | INC-18 | INC-00 | config; auth-not-disabled | G4 | `mcma/core`,`mcma/app` | Planned |
+| 37 | Secret & PII protection | CN | INC-13 | INC-19, INC-20, INC-21 | vault/redaction/xss | G3/G-PDR | `mcma/portal`,`mcma/persistence` | Planned |
+| 38 | Tests with unconditional prod-domain block | CN | INC-01 | INC-00 | socket-guard/proof | G0 | `tests/` | Planned |
+| 39 | Observability without leaking data | CN | INC-20 | — | log-redaction | G-PDR | `mcma/core`,`mcma/app` | Planned |
+| 40 | Deployment, migration & rollback | NI | INC-18 | INC-21, INC-22, INC-10 | migration+restore | G4/G5 | `deploy/`,`ops/` | Planned |
+
+The three baseline **CC** items (18 Decimal money; INV-5 human-final-validation; INV-9 relance-not-mutated) are preserved
+and re-asserted by tests in INC-04 / INC-12 / INC-14 respectively.
 
 ## 7. Completeness statement
 - **No orphans:** every INV, every F1..F33, every ADR, every business rule, every preserved feature, and every
@@ -113,4 +159,7 @@ items (Decimal money, human-final-validation, relance-not-mutated) are preserved
 - **Duplicate work / shared dependencies:** INC-04 underpins INC-05/09 (rules); INC-10 underpins INC-11..21 (schema);
   INC-07 underpins INC-08/09 (interception); INC-13's DPAPI helper is reused by INC-12's `job_inputs` encryption (interface
   shared; INC-12 uses an injected encryptor stubbed until INC-13 lands).
-- **Critical path:** INC-01 → INC-03 → INC-04 → INC-05 → INC-09 → INC-12 → INC-13 → INC-23 (the live-write gate).
+- **Critical path (from the canonical dependency table in `REBUILD_ROADMAP.md`):**
+  `INC-00 → INC-01 → INC-02 → INC-03 → INC-06 → INC-07 → INC-08 → INC-14 → INC-15 → INC-17 → INC-19 → INC-22 → INC-23`
+  (13 increments; several equal-length paths exist). INC-09/INC-12/INC-13 are **parallel** branches (no direct edges
+  between them) that reconverge only at INC-23 — the earlier linear `INC-09 → INC-12 → INC-13` claim was incorrect and is removed.

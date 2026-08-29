@@ -78,6 +78,9 @@
   - **`test_no_mode_field_exists`**; `test_executions_endpoint_requires_dry_run_verified_parent_same_account_workflow`;
     `test_executions_rejects_needs_review_or_identity_failed_parent`; `test_executions_requires_matching_hashes_and_unexpired_input`;
     `test_dry_runs_idempotency_key_dedupes_resubmit` (review AR-L5); `test_jobs_plan_permission_does_not_grant_jobs_execute`.
+  - **`test_sse_uses_real_authorizer_and_revocation_drops_stream`** (correction #9): INC-17 provides the concrete
+    `Authorizer` implementation for the SSE stream (from INC-15) and proves that revoking a user's `user_account_access`
+    drops/rebuilds their live stream. INC-15's stub is replaced by this real, authenticated authorizer here.
 - **Initial failing-test expectation:** fail (routers absent).
 - **Mock/fixtures:** TestClient; temp DB; stub portal (no live host).
 - **Implementation steps:** authz dependency → typed errors → routers → dry-runs/executions endpoints with all guards.
@@ -87,6 +90,12 @@
 - **Expected git-diff scope:** `app/api/*`, tests.
 - **Rollback:** unmount the new API.
 - **Risks/failure behavior:** authorization failures deny; execution guards fail closed.
+- **Subincrement split (correction #7):**
+  - **INC-17A** — `mcma/app/api/authz.py` (permission + per-account `user_account_access` checks, incl. list-row
+    filtering) + `mcma/app/api/errors.py` (typed problem responses + correlation id + redaction) + server-derived audit;
+    tests: per-account/list-filter/audit/typed-errors.
+  - **INC-17B** — `mcma/app/api/*.py` routers, esp. `POST /jobs/dry-runs` and `POST /jobs/{id}/executions` with all
+    guards, plus the concrete SSE `Authorizer` + revocation; tests: no-mode/executions-guards/idempotency/SSE-revocation.
 - **Definition of Done:** authz + endpoint-guard tests green.
 - **Approval boundary:** stop before INC-18.
 
@@ -106,7 +115,8 @@
   `deploy/serve.md` (single Windows service, one worker, single-instance mutex, configurable bind/subnet). Tests under
   `tests/app/serve/` (config-level: cert-missing → refuse to serve; no HTTP listener in production mode).
 - **DB migration impact:** none.
-- **Dependency/config impact:** TLS config from `core.config`; optional subnet allowlist (defense-in-depth; never disables auth).
+- **Dependency/config impact:** TLS config from `mcma.core.config`; a **configurable** subnet allowlist (defense-in-depth,
+  off by default; when set it filters but **never** disables auth).
 - **Feature flags/adapters:** a documented dev-mode may use loopback TLS with a dev cert; production requires the internal CA cert.
 - **Out-of-scope:** obtaining the actual office certificates (operational task in the runbook).
 - **Tests-first:** `test_service_refuses_to_start_without_valid_cert`; `test_no_plain_http_listener_in_production_mode`

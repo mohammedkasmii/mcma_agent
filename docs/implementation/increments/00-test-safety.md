@@ -6,52 +6,61 @@ changing working behavior.
 
 ---
 
-## INC-00 — Baseline live-write containment (review SEC-1, SEC-6)
+## INC-00 — Baseline live-write **permanent** containment (reviews SEC-1, SEC-6; correction #1)
 
-- **Purpose/outcome:** **Neutralize the baseline's live-write and unauthenticated-exposure surfaces before anything else**,
-  so the "no live form filling until G5" prohibition binds the *baseline* too — not only the new stack. The baseline is
-  known-unsafe (INV-1/INV-2/INV-3/INV-8 VIOLATED: preview writes rows, wrong-mission writes, fail-open interceptor, forced
-  charge-mutuelle) and, being additive, keeps running until INC-22 unless contained now.
-- **Why here:** it is the very first control; leaving the baseline writer/API live for the whole rebuild is itself the
-  largest standing risk (safety review Finding 1/6).
+- **Purpose/outcome:** **Permanently and unconditionally remove the baseline's live-write capability and LAN exposure on
+  this branch** — not gate it behind a runtime flag. The baseline is known-unsafe (INV-1/2/3/8 VIOLATED). After INC-00 the
+  legacy writer **cannot issue a row write at all**, and cannot be restored through configuration, environment variables,
+  CLI arguments, or feature flags. The **only** path to a live write, ever, is the new `VerifiedMissionWriter` after **G5**.
+- **Why here:** first control; leaving the baseline writer/API live (or flag-restorable) for the whole rebuild is the largest standing risk.
 - **Prerequisites:** none (first increment).
-- **Addresses:** the standing prohibition (README Global constraints; RELEASE_GATES) applied to the baseline; INV-1/2/3/8,
-  INV-11 (interim); F6, F8, F18.
-- **Baseline files modified/retired:** **structurally disable** the baseline live-write entrypoints and LAN exposure for
-  the duration of the rebuild — the `fill-dossier` / `fill-dossier-from-wexia` routes and `process_workflow` in `main.py`
-  are guarded to refuse to run (return a hard "disabled during migration" error), the Mode-Normal forced charge-mutuelle
-  path is made unreachable, the legacy API is **bound to loopback in code** (not `0.0.0.0`), and the
-  `Autoriser_Reseau_Local.bat` `profile=any` firewall rule is **removed now** (not deferred to INC-18/22).
-- **Target modules/files introduced:** a small `MIGRATION_MODE` guard in `core.config` (default ON during the rebuild)
-  read by the baseline entrypoints; `deploy/decommission_firewall.md`. Tests under `tests/baseline_containment/`.
+- **Addresses:** standing prohibition applied to the baseline; INV-1/2/3/8, INV-11 (interim); F6, F8, F18.
+- **Containment mechanism (no runtime boolean — correction #1):** the write-performing code paths are **deleted or
+  hard-`raise`d** (their bodies replaced by an unconditional `RuntimeError("baseline live-write permanently removed; use
+  the post-G5 VerifiedMissionWriter path")`), the fill-dossier routes are removed, the API bind is changed to loopback in
+  code, and the firewall rule is removed. There is **no** `MIGRATION_MODE` and no other switch. The baseline's read-only
+  surfaces (notification extraction, dashboard) may keep running until INC-22.
+- **Baseline execution-surface inventory that MUST be contained (at minimum):**
+  1. `run_dossier.py` (CLI form-fill entrypoint) — refuses at startup.
+  2. `menu.py` option 1 (and any launcher `.bat`/`.url` that invokes it, e.g. `DEMARRER_MCMA.bat`, `Ouvrir_MCMA_Employe.*`) — the fill action is removed.
+  3. `main.py` `process_workflow` and **every** form-filling API route (`POST /api/v1/fill-dossier`, `POST /api/v1/fill-dossier-from-wexia`) — routes removed.
+  4. Direct Mode Normal / Mode Conventionné mutation paths (`browser/mode_normal.py` `fill_mode_normal`, `browser/mode_conventionne.py` `fill_garage_conventionne`/`_edit_single_row_dynamic`) — write functions hard-`raise`.
+  5. Row-mutation callers (anything invoking `updateDevisDet` / `createRapportDefDet`, the col-7 checkmark clicks) — removed.
+  6. Forced charge-mutuelle writes (`browser/mode_normal.py:122-144`) — removed.
+  7. Non-loopback API binding (`main.py:287` `host="0.0.0.0"`) — changed to `127.0.0.1` in code.
+  8. `Autoriser_Reseau_Local.bat` `profile=any` firewall rule — removed now (`deploy/decommission_firewall.md`).
+- **Target modules/files introduced:** `tests/baseline_containment/`, `deploy/decommission_firewall.md`. No config flag.
 - **DB migration impact:** none.
-- **Dependency/config impact:** one config flag `MIGRATION_MODE` (ON by default until INC-22 cutover completes).
-- **Feature flags/adapters:** `MIGRATION_MODE` — while ON, the baseline cannot perform a live write or bind non-loopback.
-- **Out-of-scope:** the new stack (later increments). This increment only *contains* the baseline.
-- **Tests-first:**
-  - **`test_baseline_fill_dossier_refuses_while_migration_mode`** (the write entrypoints hard-fail).
-  - **`test_baseline_process_workflow_refuses_while_migration_mode`**.
-  - `test_baseline_api_binds_loopback_only_while_migration_mode`.
-  - `test_forced_charge_mutuelle_path_unreachable_while_migration_mode`.
-- **Initial failing-test expectation:** fail (the guard does not exist; baseline still writes / binds 0.0.0.0).
-- **Mock/fixtures:** none (guards are checked before any browser launch).
-- **Implementation steps:** add `MIGRATION_MODE` → guard the write entrypoints (fail-closed) → force loopback bind →
-  remove the all-profiles firewall rule → document decommission.
-- **Acceptance criteria:** with `MIGRATION_MODE` ON, no baseline live write is possible and the baseline API is not
-  LAN-exposed; the firewall rule is removed.
+- **Dependency/config impact:** none (no new flag).
+- **Feature flags/adapters:** **none by design** — containment is unconditional so it cannot be a footgun.
+- **Out-of-scope:** the new stack (later increments). INC-00 only *removes* baseline write capability.
+- **Tests-first (each proves refusal BEFORE any Playwright launch, and that no baseline controller can issue a row write):**
+  - **`test_run_dossier_refuses_at_startup_before_browser_launch`**.
+  - **`test_menu_option1_fill_action_removed`**.
+  - **`test_process_workflow_hard_raises`** and **`test_fill_dossier_routes_absent`** (both API routes 404/removed).
+  - **`test_mode_normal_fill_hard_raises_before_playwright`** and **`test_mode_conventionne_fill_hard_raises_before_playwright`**.
+  - **`test_no_baseline_controller_can_issue_row_write`** (static/behavioral: no reachable path posts `updateDevisDet`/`createRapportDefDet`).
+  - **`test_forced_charge_mutuelle_write_removed`**.
+  - **`test_api_binds_loopback_in_code`** (no `0.0.0.0` bind reachable).
+  - **`test_no_env_config_or_cli_can_re_enable_baseline_write`** (setting any env/arg/flag does not restore a writer).
+- **Initial failing-test expectation:** fail (baseline still writes / binds 0.0.0.0 / routes present).
+- **Mock/fixtures:** none (refusals occur before any browser launch).
+- **Implementation steps:** remove fill-dossier routes → hard-`raise` the Mode Normal/Conventionné write functions and the
+  charge-mutuelle path → make `run_dossier`/`menu` fill refuse at startup → change API bind to loopback → remove the
+  firewall rule → prove no reachable row-write path remains.
+- **Acceptance criteria:** no baseline live write is possible by any means (no flag restores it); the baseline API is not LAN-exposed; the firewall rule is gone.
 - **Safe offline verification:** `python -m pytest tests/baseline_containment -v`.
-- **Safety gates:** a **standing prohibition** — the baseline may not perform a live write for the entire rebuild; this is
-  part of every gate G0–G5.
-- **Expected git-diff scope:** small guards in `main.py`/`core/config.py`/baseline write path (the **only** baseline
-  production edits before INC-22, and they are *containment* edits that remove capability, never add it), `deploy/`, tests.
-- **Rollback:** `MIGRATION_MODE` OFF restores baseline behavior — but this is **not** done until INC-22 cutover, and never
-  to re-expose the unauth API. Firewall re-add is a deliberate operational step.
-- **Risks/failure behavior:** fail-closed — if the guard cannot be read, the baseline entrypoints refuse to run.
-- **Definition of Done:** containment tests green; baseline write + LAN exposure neutralized for the rebuild.
+- **Safety gates:** a **standing prohibition** enforced from day one and part of every gate G0–G5.
+- **Expected git-diff scope:** removals/hard-raises in the baseline write paths listed above + `main.py` bind + `deploy/` +
+  tests. This is the **sole** pre-INC-22 baseline production edit and it **only removes capability**.
+- **Rollback:** rollback returns to the **last safe read-only / contained version** and **never restores the unsafe
+  writer**. There is no configuration that re-enables baseline writes. (See `ROLLBACK_PLAN.md` INC-00 row.)
+- **Risks/failure behavior:** fail-closed and unconditional; nothing to misconfigure.
+- **Definition of Done:** containment tests green; baseline write capability permanently removed; LAN exposure gone.
 - **Approval boundary:** stop before INC-01.
 
-> **Note:** INC-00 is the sole exception to "no baseline production edits before INC-22" — it *removes* capability
-> (contains the baseline), never adds it, and is the safest possible first step. It is called out in README and RELEASE_GATES.
+> **Note:** INC-00 is the sole exception to "no baseline production edits before INC-22" — it *permanently removes*
+> capability (contains the baseline unconditionally), never adds it, and is the safest possible first step.
 
 ---
 
@@ -60,7 +69,7 @@ changing working behavior.
 - **Purpose/outcome:** No test process — including subprocesses and Chromium — can reach the production host. This is the
   precondition for every later increment that touches the browser.
 - **Why here:** ADR-0010 step 1; the master prompt requires unconditional production-egress blocking before browser work.
-- **Prerequisites:** none (first increment).
+- **Prerequisites:** **INC-00** (baseline write capability removed first).
 - **Addresses:** TEST_STRATEGY §1; the recovery "no production-domain blocking exists" gap (`TEST_EVIDENCE.md`); INV-10.
 - **Baseline files modified/retired:** none retired. Adds test-infra only.
 - **Target modules/files introduced:** `conftest.py` (repo root), `tests/_egress_guard.py` (socket guard + pytest plugin

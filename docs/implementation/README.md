@@ -6,9 +6,32 @@
 ## Authority & baseline
 - Branch: `refactor/solid-architecture`
 - **Production-code baseline:** `0290fe9df24c9e2f2b054ee4f8b14b8267f07b12` (production code is unchanged from baseline).
-- **Approved Phase 3 architecture revision:** `4a3483cb46fa479e4241f7c17e85c7c93c1bb791` (current HEAD).
+- **Approved Phase 3 architecture revision:** `4a3483cb46fa479e4241f7c17e85c7c93c1bb791` (the approved architecture set;
+  it is **not** the current HEAD — later commits add/refine this Phase 4 plan).
 - Sources of truth: `docs/recovery/*` (recovered system + business rules + safety invariants + known failures) and
   `docs/architecture/*` + `docs/architecture/adr/*` (approved target).
+
+## Package namespace (correction #4)
+All **new** modules live under the top-level package **`mcma/`** (`mcma/core`, `mcma/domain`, `mcma/mapping`,
+`mcma/planning`, `mcma/persistence`, `mcma/portal`, `mcma/execution`, `mcma/notifications`, `mcma/app`) to avoid
+collisions with the existing baseline `core/`, `browser/`, `mapper/`, `main.py`, `mock_server.py`. Wherever an increment
+writes a bare path like `domain/x.py` it denotes `mcma/domain/x.py`. Ownership/import rules and the temporary legacy
+allowlist are defined in INC-03; the allowlist is removed at INC-22.
+
+## Implementation choices (resolved — correction #6; not owner decisions)
+| Concern | Decision | Justification |
+|---|---|---|
+| Package/dependency manager + lock | **`uv`** with `pyproject.toml` + **`uv.lock`** (hashes, fully pinned) | modern-python default; reproducible, fast, hash-locked; single lockfile |
+| Import-boundary enforcement | **`import-linter`** contracts in `pyproject.toml` | declarative layered contracts; runs in CI; matches MODULE_BOUNDARIES |
+| Windows single-instance mutex | **`pywin32` `win32event.CreateMutex`** (named kernel mutex) | authoritative cross-process single-instance on Windows |
+| DPAPI | **`pywin32` `win32crypt.CryptProtectData`/`CryptUnprotectData`** with `CRYPTPROTECT_LOCAL_MACHINE` | the single chosen vault model (LocalMachine + NTFS ACL) |
+| SSE | **`sse-starlette` `EventSourceResponse`** | maintained ASGI SSE for FastAPI; supports `Last-Event-ID` |
+| Dashboard | **Hardened vanilla TS/JS with strict output-escaping + CSP, no build step** | single-office LAN, no build infra, minimal attack surface, CSP-clean/air-gap-friendly |
+| Structured logging | **stdlib `logging` + a JSON formatter + a redaction filter** (no new runtime dep) | no dependency; deterministic; redaction enforced by a filter |
+| Dependency pinning + Py 3.14 | **all deps pinned+hashed in `uv.lock`; a CI matrix job runs the suite on Python 3.14** | INC-03 acceptance verifies each dep (playwright, pydantic, fastapi, argon2-cffi, sse-starlette, pywin32) has a working 3.14 wheel; a dep lacking 3.14 support is escalated as an owner decision, not silently downgraded |
+
+These replace all prior "A or B" / "optional" / "where feasible" wording in the plan. Genuine **owner** decisions (not
+resolved here) are listed at the end of `REVIEW_FINDINGS.md`.
 
 ## How to use this plan
 1. Read `REBUILD_ROADMAP.md` for the increment list, execution order, dependency graph and critical path.
@@ -18,10 +41,15 @@
 5. `REVIEW_FINDINGS.md` records the post-plan reviews (contradiction, traceability, spec-to-code, sharp-edges,
    insecure-defaults, test-strategy, DB/migration, second-opinion) and their accepted/rejected/deferred outcomes.
 
-**Execution discipline (from the loaded skills):** every increment is **tests-first** (TDD Iron Law — no production
-code without a failing test first) and **bite-sized** (each step is one 2–5 min action: write failing test → watch it
-fail → minimal code → watch it pass → commit). Increments are **feature-flagged** where old and new behavior coexist,
-**fail-closed**, and **independently verifiable** offline after each one.
+**Execution discipline (from the loaded skills):** every increment is **tests-first** (TDD Iron Law — no production code
+without a failing test first). **The unit of work is one TDD micro-cycle per listed test** — write the failing test →
+run it → watch it fail for the right reason → minimal code → run → green → commit — which *is* the bite-sized (≈2–5 min)
+step; each increment's "tests-first" list enumerates those cycles in order. **Large increments are split into
+subincrements** (INC-10A/10B, INC-12A/12B, INC-13A/13B, INC-17A/17B, INC-19A/19B, INC-22A/22B — see their files) so each
+subincrement is a single reviewable, independently-testable deliverable. The literal numbered per-file/per-command task
+breakdown for a subincrement is produced at execution time by the `superpowers:subagent-driven-development` flow from the
+subincrement's test list; this plan is not claiming a pre-written 2–5 min bullet for every line. Increments are
+**feature-flagged** where old and new behavior coexist, **fail-closed**, and **independently verifiable** offline.
 
 ## Global constraints (apply to every increment)
 - **Live form filling is PROHIBITED** until every write-safety gate (INV-1..INV-4, INV-6..INV-8) is implemented and
@@ -32,8 +60,9 @@ fail → minimal code → watch it pass → commit). Increments are **feature-fl
 - **No test may contact the live portal** (`sinauto.mamda-mcma.ma`). INC-01 establishes unconditional egress blocking
   and must land before any browser-related test or code.
 - **Decimal** for all money; **fail-closed** for all mapping/identity/tax/mission ambiguity.
-- Python **3.14** (baseline interpreter); deps stay pinned to the approved set unless an increment explicitly adds one
-  with justification (`modern-python` tooling: `uv`/`ruff`/`ty` optional, non-breaking).
+- Python **3.14** (baseline interpreter); dependencies are managed with **`uv`** and fully pinned+hashed in **`uv.lock`**
+  (see §Implementation choices); a CI job runs the suite on Python 3.14 and INC-03 verifies each dependency has a working
+  3.14 wheel.
 - Windows single on-prem server, **one Uvicorn worker**; the OS single-instance mutex + one write-capable service
   process is the authoritative single-writer guarantee (the DB lease is coordination + loss detection only).
 - `part_type` means **origin only** (never glass family). Charge-mutuelle is **native-only** and never written.

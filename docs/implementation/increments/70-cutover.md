@@ -8,7 +8,7 @@
   defective baseline paths — only after parity is demonstrated.
 - **Why here:** obsolete paths (unauth API, forced charge-mutuelle, logs-as-DB, duplicated constants, fail-open
   interceptor, fail-open auth save, no-op menu preview) must not linger once replaced; but never removed before parity.
-- **Prerequisites:** INC-14, INC-17, INC-19, INC-20 (the replacements exist and are proven).
+- **Prerequisites:** INC-14, INC-17, INC-19, INC-20, **INC-21** (all replacements exist and are proven, incl. backup/at-rest before retiring baseline persistence paths).
 - **Addresses:** "preserve every working feature" + safe replacement; F6, F8, F12, F24, F26, F28, F30; retirement of
   `browser/safety_interceptor.py` (old), `browser/mode_normal.py` charge-mutuelle force, `main.py` unauth API + `process_workflow`, `core/logger.py`, `menu.py` preview, `auth_setup.py` fail-open save, duplicated constants.
 - **Baseline files modified/retired:** the above baseline files are removed/replaced **after** parity tests pass. This is
@@ -34,7 +34,14 @@
 - **Rollback:** restore the retired files from git (they remain in history); re-enable legacy flags. This is the
   highest-blast-radius increment — keep the retirement list explicit and revertible.
 - **Risks/failure behavior:** if parity is not fully proven for a feature, that feature's baseline path is **kept** (not deleted) and flagged for a follow-up increment.
-- **Definition of Done:** parity suite green; retirements landed; full suite green offline.
+- **Subincrement split (correction #7):**
+  - **INC-22A** — the **feature-parity suite** proving every preserved feature (new-vs-old equivalence or documented
+    improvement); no deletions yet. Gate: parity must be green before 22B.
+  - **INC-22B** — **retire** the baseline paths (delete the retired files, update references), **tighten the import
+    contract** (remove the legacy allowlist so the final ownership rule applies with no exceptions), flip read flags to
+    DB-backed permanently, and prove rollback (`test_rollback_flag_flip_returns_to_last_green`) — never restoring the
+    unsafe writer.
+- **Definition of Done:** parity suite green; retirements landed; import contract tightened; full suite green offline.
 - **Approval boundary:** stop before INC-23.
 
 ---

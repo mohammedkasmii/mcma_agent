@@ -16,7 +16,7 @@ Golden tests for current mapper/garage/notification-shape from sanitized fixture
 ## 3. Test categories → increment
 | Category | Where proven |
 |---|---|
-| Baseline live-write containment (baseline write/API disabled during rebuild) | INC-00 (`test_baseline_fill_dossier_refuses_while_migration_mode`, `test_baseline_api_binds_loopback_only_while_migration_mode`) |
+| Baseline live-write **permanent** containment (write capability removed; no flag restores it) | INC-00 (`test_run_dossier_refuses_at_startup_before_browser_launch`, `test_no_baseline_controller_can_issue_row_write`, `test_no_env_config_or_cli_can_re_enable_baseline_write`, `test_api_binds_loopback_in_code`) |
 | Production-egress impossibility (subprocess + Chromium; no-emission preflight; sentinel target) | INC-01 (`test_egress_preflight_confirms_os_denial_without_emitting`, `test_subprocess_cannot_reach_sentinel_host`, `test_headless_chromium_cannot_reach_sentinel_host`) |
 | Import/dependency contracts (pure modules, single owners) | INC-03 |
 | Domain property tests (money, three-origin, glass, labour, normalize, negative-TVA fail-closed) | INC-04 |

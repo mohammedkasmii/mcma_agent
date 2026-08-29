@@ -24,7 +24,13 @@
 - **DB migration impact:** uses claims/categories/category_presence/poll_runs/poll_run_categories/unmatched_notifications.
 - **Dependency/config impact:** none new.
 - **Feature flags/adapters:** a flag selects DB-backed vs legacy-JSON read for the dashboard; DB path proven before cutover (INC-22).
-- **Out-of-scope:** SSE (INC-15); dashboard rendering (INC-19).
+- **PII protection (correction #3 — chosen sequence B):** INC-14 is **fixture/mock-only for real claimant data**. Its
+  logic (extraction, category-scoped lifecycle, staging, poller) is developed and tested entirely against **sanitized/
+  synthetic** fixtures. **No production notification/session/claim PII may be persisted until the Production-Data-Readiness
+  gate (G-PDR) passes** (`RELEASE_GATES.md`), which requires INC-20 (PII-safe logging + screenshots) and INC-21 (DB outside
+  served dir + BitLocker/SQLCipher + strict NTFS ACL + encrypted backup) to be green. Enabling production ingestion is a
+  later flip gated on G-PDR, not part of INC-14.
+- **Out-of-scope:** SSE (INC-15); dashboard rendering (INC-19); **any persistence of real production PII** (deferred to the G-PDR flip).
 - **Tests-first:**
   - **`test_absence_increments_only_when_that_category_complete_and_valid`**; `test_partial_or_failed_category_does_not_touch_counter`; `test_other_category_failure_never_affects_this_category`.
   - `test_three_consecutive_complete_absences_resolve_on_portal`; `test_reappearance_resets_to_active`.
@@ -51,25 +57,36 @@
 
 ## INC-15 — Transactional outbox + state versions + SSE (global cursor, retention, resync)
 
-- **Purpose/outcome:** Emit outbox events atomically with each state change; expose SSE per authorized account keyed by
+- **Purpose/outcome:** Emit outbox events atomically with each state change; expose an SSE stream per account keyed by
   the **global `event_id`** cursor; bounded time/count retention; **snapshot + delta** recovery with forced full resync
-  when the cursor predates retention; periodic authorization revalidation.
-- **Why here:** live dashboard updates depend on it; it consumes persistence and feeds the API/dashboard.
+  when the cursor predates retention; **re-check an injected `Authorizer` on each event / periodically** (the *real*
+  authenticated authorizer and revocation are wired in INC-17 — correction #9).
+- **Why here:** live dashboard updates depend on it; it consumes persistence. **Auth does not yet exist** (INC-16/17 come
+  later), so INC-15 depends only on an **injected `Authorizer` interface**, avoiding a circular dependency.
 - **Prerequisites:** INC-10, INC-14.
 - **Addresses:** ADR-0009; DATA_MODEL §7/§8; API_CONTRACTS §5.
 - **Baseline files modified/retired:** none (baseline has no SSE).
-- **Target modules/files introduced:** `persistence/outbox.py`, `app/sse.py` (per-account stream, `Last-Event-ID`
-  replay, snapshot resync, authz revalidation, retention cleanup). Tests under `tests/app/sse/`.
+- **Injected interface (correction #9):**
+  ```text
+  # defined in mcma.app.sse, implemented for real in INC-17:
+  class Authorizer(Protocol):
+      def visible_accounts(self, principal) -> set[AccountId]: ...     # which accounts this principal may see now
+      def is_authorized(self, principal, account_id) -> bool: ...      # re-checked per event / periodically
+  ```
+  INC-15 tests inject a **stub `Authorizer`**; INC-15 never imports auth.
+- **Target modules/files introduced:** `mcma/persistence/outbox.py`, `mcma/app/sse.py` (per-account stream,
+  `Last-Event-ID` replay, snapshot resync, retention cleanup, `Authorizer`-driven filtering). Tests under `tests/app/sse/`.
 - **DB migration impact:** uses `event_outbox` (global autoincrement id), `account_state_version`.
-- **Dependency/config impact:** `sse-starlette` (or a hand-rolled `StreamingResponse`) — new dev/runtime dep, justified.
-- **Feature flags/adapters:** SSE endpoint gated behind auth (INC-16/17); until then tested at the module level.
+- **Dependency/config impact:** **`sse-starlette`** (`EventSourceResponse`) — resolved choice (README §Implementation choices).
+- **Feature flags/adapters:** SSE filtering uses the injected `Authorizer`; the endpoint is mounted behind real auth in INC-17.
 - **Out-of-scope:** the auth wrapping (INC-17) beyond a stubbed authorizer.
 - **Tests-first:**
   - **`test_outbox_event_written_in_same_transaction_as_state_change`**.
   - `test_sse_cursor_is_global_event_id`; `test_reconnect_replays_events_after_cursor_authorization_filtered`.
   - **`test_cursor_older_than_retention_forces_full_snapshot_resync`**.
   - `test_retention_bounded_by_time_and_count_not_by_idle_client_cursor`.
-  - `test_permission_revocation_drops_or_rebuilds_stream`.
+  - `test_stream_filters_by_injected_authorizer` (stub `Authorizer`; the *real* authenticated revocation test lives in
+    INC-17 — `test_sse_revocation_drops_stream_with_real_auth`).
 - **Initial failing-test expectation:** fail (modules absent).
 - **Mock/fixtures:** temp DB seeded with outbox events; a stub authorizer.
 - **Implementation steps:** outbox writer (same tx) → SSE publisher (per account) → reconnect replay + snapshot → retention cleanup → authz revalidation.

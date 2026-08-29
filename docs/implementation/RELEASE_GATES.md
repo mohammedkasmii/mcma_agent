@@ -10,6 +10,7 @@ fail-closed — absence of evidence blocks progression.
 | **G2** Write-safety core (no live writes) | INC-09 | Phase 3 | dry-run has no writer; final endpoints abort; unknown requests fail closed; identity + exact-IdRubrique fail closed; charge-mutuelle never written — all against the mock; live writes still disabled |
 | **G3** Durable orchestration | INC-13 | Phase 4 | deterministic crash-recovery; OS mutex + lease single-writer; vault fails closed on decrypt/binding failure |
 | **G4** Authenticated TLS API | INC-18 | Phase 6 | TLS-only (refuse without cert); per-account authorized API; server-derived audit |
+| **G-PDR** Production-data-readiness | INC-20 + INC-21 | **any persistence of real production PII** (notifications/sessions/claims) | DB outside served directories; BitLocker **or** SQLCipher condition satisfied; strict NTFS ACL verified; encrypted backup destination verified; PII-safe logging **and** screenshot behavior verified. No production PII is stored before this gate — INC-14 stays fixture/mock-only until it passes. |
 | **G5** Live-write gate | INC-23 | any live row write | confirmed row-op contracts from approved evidence; full safety suite green; write-enable gate satisfied; final endpoints still blocked; **explicit owner approval** before the supervised canary |
 
 ## Standing prohibitions (apply throughout, not just at a gate)

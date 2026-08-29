@@ -4,8 +4,11 @@ Every increment is reversible; blast radius is limited by design. Rollback is pe
 whole-branch as a last resort.
 
 ## Principles
-- **Additive-first:** INC-01..21 add new modules alongside the baseline; the baseline keeps running. Deleting baseline
-  code happens **only** at INC-22 (parity) and is fully recoverable from git history.
+- **Baseline write capability is removed first and permanently (INC-00):** rollback at any later point returns to the
+  last safe read-only/contained version and **never** re-enables the baseline writer. There is no configuration that
+  restores it; the only live-write path is the post-G5 `VerifiedMissionWriter`.
+- **Additive-first (after INC-00):** INC-01..21 add new modules alongside the (now write-contained) baseline read paths;
+  full baseline retirement happens at INC-22 and is recoverable from git history — but a rollback never reinstates the unsafe writer.
 - **Feature flags:** where old and new coexist (dashboard read source, notification store), a flag flips back instantly.
 - **Reversible-where-safe migrations:** schema migrations are compatibility-aware (expand/contract); not all are
   reversible, so the safety net is the tested **backup/restore** runbook (INC-21), not a guaranteed down-migration.
@@ -14,6 +17,7 @@ whole-branch as a last resort.
 ## Per-increment rollback (summary; each increment file has the authoritative entry)
 | Increment | Rollback |
 |---|---|
+| **INC-00** | **rollback returns to the last safe read-only / contained version and NEVER restores the unsafe baseline writer.** Baseline write capability is permanently removed (no flag/env/CLI restores it); the only live-write path is the post-G5 `VerifiedMissionWriter`. |
 | INC-01 | remove egress plugin/tests (additive) |
 | INC-02 | delete characterization tests/fixtures |
 | INC-03 | delete package skeleton + contract test |
