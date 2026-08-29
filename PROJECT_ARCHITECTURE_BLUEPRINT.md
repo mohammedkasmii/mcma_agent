@@ -1,140 +1,151 @@
 # 🏛️ PROJECT ARCHITECTURE SPECIFICATION & SYSTEM DESIGN BLUEPRINT
-**Project:** MCMA / MAMDA Auto Insurance RPA & Notification Operations Engine  
-**Target Environment:** Local Agency On-Premise Server (Wexia ERP Ecosystem)  
-**Version:** 2.0 Architectural Specification  
+**Project:** MCMA / MAMDA Auto Insurance RPA & Operations Hub  
+**Target Environment:** Single On-Premise Agency Server (Wexia ERP Ecosystem)  
+**Topology:** Single Office LAN (`http://192.168.1.X:8000`)  
+**Version:** 3.0 Enterprise Architecture Blueprint  
 **Date:** August 2026  
 
 ---
 
-## 1. Executive Summary & Project Context
+## 1. Executive Summary & System Overview
 
-The **MCMA / MAMDA Automation & Notification Agent** is an enterprise RPA (Robotic Process Automation) and operations hub built to automate insurance expertise workflows, track incoming notifications across multiple accounts, and populate expertise reports on the Moroccan insurance portal (`sinauto.mamda-mcma.ma`).
+The **MCMA / MAMDA Operations & Automation Hub** is an enterprise RPA engine and operations dashboard designed to monitor incoming claim notifications, track employee work items, and execute automated expertise report filings on the Moroccan insurance portal (`sinauto.mamda-mcma.ma`).
 
-The application is deployed on an **on-premise local server** within the agency network (alongside the agency's **Wexia ERP** instance). Multiple non-technical agency employees connect to this system via local network browsers to manage incoming claims, track actions, and execute automated filings.
+The application is deployed on a **single on-premise local server** in the main agency office (alongside the agency's **Wexia ERP** instance). All agency employees connect to this single server via their local browsers to manage incoming claim queues across all agency accounts.
 
 ---
 
-## 2. Business Scope & Multi-Tenant Multi-Account Requirements
+## 2. Multi-Account Scope (4 Portal Accounts)
 
-The system must seamlessly handle **4 distinct insurance portal accounts** representing 2 insurance entities across 2 geographical agencies:
+The system manages **4 separate portal account profiles** operating on the joint `sinauto.mamda-mcma.ma` portal:
 
-| Account ID | Entity | Agency City | Target Portal Base URL | Primary Workflow Scope |
+| Account ID | Entity | Portfolio / Region | Target Base URL | Primary Role |
 |:---|:---:|:---:|:---|:---|
-| **`mcma_oujda`** | MCMA | Oujda | `https://sinauto.mamda-mcma.ma/SinAuto_MCMA/` | Notifications + Expertise Filing |
-| **`mamda_oujda`** | MAMDA | Oujda | `https://sinauto.mamda-mcma.ma/SinAuto_MCMA/` | Notifications + Expertise Filing |
-| **`mcma_nador`** | MCMA | Nador | `https://sinauto.mamda-mcma.ma/SinAuto_MCMA/` | Notifications + Expertise Filing |
-| **`mamda_nador`** | MAMDA | Nador | `https://sinauto.mamda-mcma.ma/SinAuto_MCMA/` | Notifications + Expertise Filing |
+| **`mcma_oujda`** | MCMA | Oujda Dossiers | `https://sinauto.mamda-mcma.ma/SinAuto_MCMA/` | Notifications + Expertise Filing |
+| **`mamda_oujda`** | MAMDA | Oujda Dossiers | `https://sinauto.mamda-mcma.ma/SinAuto_MCMA/` | Notifications + Expertise Filing |
+| **`mcma_nador`** | MCMA | Nador Dossiers | `https://sinauto.mamda-mcma.ma/SinAuto_MCMA/` | Notifications + Expertise Filing |
+| **`mamda_nador`** | MAMDA | Nador Dossiers | `https://sinauto.mamda-mcma.ma/SinAuto_MCMA/` | Notifications + Expertise Filing |
 
-> **Key Portal Insight:** Both MCMA and MAMDA share the exact same underlying software platform and domain (`sinauto.mamda-mcma.ma`). The difference between entities and agencies lies strictly in the **authentication credentials**, **session cookies**, and **assigned claim databases**.
+> **Key Domain Reality:** MAMDA and MCMA share the exact same portal web application and DOM structure. The separation into 4 accounts is purely an **account-level login credential & portfolio routing distinction**.
 
 ---
 
-## 3. Core System Functional Modules
+## 3. High-Level Architecture Diagram
 
 ```
-┌───────────────────────────────────────────────────────────────────────────────────────┐
-│                           AGENCY LOCAL NETWORK (WIFI / ETHERNET)                       │
-│                                                                                       │
-│   Employee Laptop 1             Employee Laptop 2               Employee Mobile       │
-│   (http://192.168.1.X:8000)     (http://192.168.1.X:8000)     (http://192.168.1.X:8000)│
-└───────────▲─────────────────────────────▲──────────────────────────────▲──────────────┘
-            │                             │                              │
-            └─────────────────────────────┼──────────────────────────────┘
-                                          │ HTTP / WebSockets / SSE
-                                          ▼
-┌───────────────────────────────────────────────────────────────────────────────────────┐
-│                    LOCAL AGENCY SERVER (FastAPI Python Host Engine)                   │
-│                                                                                       │
-│  ┌────────────────────────┐  ┌────────────────────────┐  ┌─────────────────────────┐  │
-│  │ Module 1:              │  │ Module 2:              │  │ Module 3:               │  │
-│  │ Multi-Account          │  │ Employee Workflow &    │  │ Form Filling Agent      │  │
-│  │ Notification Extractor │  │ Action Tracking Engine │  │ (Wexia JSON -> Portal)  │  │
-│  └───────────┬────────────┘  └───────────┬────────────┘  └────────────┬────────────┘  │
-│              │                           │                            │               │
-│              └───────────────────────────┼────────────────────────────┘               │
-│                                          ▼                                            │
-│  ┌─────────────────────────────────────────────────────────────────────────────────┐  │
-│  │                         State Vault & Session Storage                           │  │
-│  │  - auth_sessions/*.json (4 Playwright Auth States)                              │  │
-│  │  - claim_registry.json (Accumulative Notification Store & History)              │  │
-│  │  - employee_actions.json (Action Statuses: TODO, IN_PROGRESS, DONE, WAITING)    │  │
-│  └───────────────────────────────────────┬─────────────────────────────────────────┘  │
-└──────────────────────────────────────────┼────────────────────────────────────────────┘
-                                           │ Encrypted Sessions / Playwright Chromium
-                                           ▼
-┌───────────────────────────────────────────────────────────────────────────────────────┐
-│                             REMOTE MAMDA / MCMA PORTAL                                │
-│                            (sinauto.mamda-mcma.ma)                                    │
-└───────────────────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────────────────┐
+│                               AGENCY OFFICE LOCAL NETWORK (LAN)                           │
+│                                                                                           │
+│     Employee PC 1                 Employee PC 2                 Employee Mobile           │
+│     (http://192.168.1.X:8000)     (http://192.168.1.X:8000)     (http://192.168.1.X:8000)   │
+└─────────────▲─────────────────────────────▲──────────────────────────────▲────────────────┘
+              │                             │                              │
+              └─────────────────────────────┼──────────────────────────────┘
+                                            │ REST APIs + SSE Stream (/api/v1/events/stream)
+                                            ▼
+┌───────────────────────────────────────────────────────────────────────────────────────────┐
+│                       SINGLE ON-PREMISE AGENCY SERVER (FastAPI Engine)                    │
+│                                                                                           │
+│  ┌─────────────────────────┐   ┌───────────────────────────┐   ┌───────────────────────┐  │
+│  │   Vite + React UI       │   │   Background Worker Task  │   │  Form Filling Agent   │  │
+│  │  (Compiled Static Dist) │   │   - Account Poller        │   │  (Wexia JSON -> Portal)│  │
+│  │  FastAPI Served at /    │   │   - Session Health Check  │   │  - Mode Normal        │  │
+│  │                         │   │   - Per-Account Locks     │   │  - Mode Conventionné  │  │
+│  └────────────┬────────────┘   └─────────────┬─────────────┘   └───────────┬───────────┘  │
+│               │                              │                             │              │
+│               └──────────────────────────────┼─────────────────────────────┘              │
+│                                              ▼                                            │
+│  ┌─────────────────────────────────────────────────────────────────────────────────────┐  │
+│  │                          SQLite Database (WAL Mode)                                 │  │
+│  │  Tables: accounts | portal_sessions | claims | employee_actions | audit_events      │  │
+│  └───────────────────────────────────────────┬─────────────────────────────────────────┘  │
+└──────────────────────────────────────────────┼────────────────────────────────────────────┘
+                                               │ Playwright Encrypted Sessions / Chromium
+                                               ▼
+┌───────────────────────────────────────────────────────────────────────────────────────────┐
+│                                REMOTE MAMDA / MCMA PORTAL                                 │
+│                               (sinauto.mamda-mcma.ma)                                     │
+└───────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Module 1: Multi-Account Notification & Alert Engine (Phase 1 Focus)
-- **Navbar Category Discovery**: Inspects `#listeAlertes` for active categories (`MISSIONS (FACTURES REÇUES)`, `DEVIS GARAGES TRAITÉS`, `RELANCES`, `RAPPORTS PRÉLIMINAIRES`, etc.).
-- **High-Speed Extractor**: Uses direct in-page asynchronous AJAX calls (`POST /getAlerte/CodeAlerte/{id}`) with full-dataset parameters (`length: -1`), extracting 80+ records across 8 categories in **<2 seconds** without reloading pages.
-- **Auto Keep-Alive Daemon**: Background poller that maintains active sessions 24/7.
+---
 
-### Module 2: Employee Action & Workflow Tracking Engine
-- **Lifecycle Tracking**: Employees mark claim notifications as:
-  - ⚪ `À Traiter` *(Default / Pending)*
-  - 🔵 `En Cours` *(Being handled by an employee)*
-  - 🟢 `Traité / Terminé` *(Completed — visually dimmed on table)*
-  - 🟡 `En Attente` *(Waiting for external accord/info)*
-- **Internal Remarks / Notes**: Employees attach custom notes (e.g. *"Facture saisie sur Wexia"*, *"Expert relancé"*).
-- **Multi-Employee Sync**: Action statuses and notes are synchronized across all connected agency browsers in real time.
+## 4. Key Architectural Decisions & Engineering Specifications
 
-### Module 3: Form Filling & Expertise Agent (Phase 2 Focus)
-- **Wexia Data Mapping**: Deterministic business mapper (`WexiaToDossierMapper`) translating raw Wexia JSON into MCMA contract format.
-- **Dual Repair Mode Engines**:
-  - **Mode Normal**: Header fields + `#tableRapportDet` line items with automatic tax & labor calculation.
-  - **Mode Conventionne**: Table 2 (`#DevisDetTableVal`) exact line-item matching against pre-existing garage line estimates.
-- **Safety Interceptor**: Route interceptor blocking network write methods during testing (`createDevisDet`, `deleteDevisDet`, `garageModifierValDevis`, `cloturerMission`, `enregistrerMission`, `validerDevis`).
+### 4.1 Database Layer: SQLite in WAL Mode
+- **Decision:** Replace flat JSON files (`claim_registry.json`) with an embedded **SQLite Database in WAL mode (`journal_mode=WAL`)**.
+- **Rationale:** Prevents file locking issues, race conditions, and corrupted JSON when 4 background pollers and multiple employees write simultaneously. Provides zero-setup ACID safety.
+- **Database Schema Core Tables:**
+  - `accounts`: `account_id`, `entity`, `portfolio`, `display_name`, `created_at`
+  - `portal_sessions`: `account_id`, `health_status`, `last_validated_at`, `encrypted_auth_state`
+  - `claims`: `id`, `reference`, `id_sinistre`, `account_id`, `category_code`, `date_survenance`, `societaire`, `police`, `matricule`, `nature`, `portal_status`, `portal_presence`, `first_seen_at`, `last_seen_at`, `consecutive_missing_polls`
+  - `employee_actions`: `reference`, `employee_status` (`TODO`, `IN_PROGRESS`, `DONE`, `WAITING`), `note`, `updated_by`, `updated_at`
+  - `audit_events`: `id`, `timestamp`, `event_type`, `user_or_worker`, `details`
 
 ---
 
-## 4. Architectural Challenges & Open Technical Questions for Discussion
-
-### Question 1: Standalone Frontend Architecture (Next.js / Vite vs. Served Dashboard)
-- **Current Setup**: Vanilla JS + Modern Glassmorphic Dark CSS served directly by FastAPI `StaticFiles` on port 8000.
-- **Architectural Choice**:
-  - *Option A*: Retain single-binary/single-process FastAPI serving static assets (zero build step on agency server).
-  - *Option B*: Build a separate Next.js / Vite React frontend application connected via REST API / WebSockets.
-
-### Question 2: Handling Disappeared / Resolved Alerts (Accumulative State Engine)
-- **Problem**: When a claim is processed on MCMA, MCMA deletes it from the alert queue (`#listeAlerte`). Overwriting the local store deletes past records and employee notes.
-- **Proposed Solution**: Implement an **Accumulative Claim Lifecycle Registry**:
-  - `ACTIVE`: Currently present on MCMA alert queue.
-  - `RESOLVED_ON_MCMA`: Removed by MCMA, but retained in agency local history.
-  - Toggle on UI: `[•] Active Queue` vs `[•] Full Agency History & Archive`.
-
-### Question 3: Real-Time Event Push Architecture
-- **Problem**: Multiple employees looking at the dashboard need to see status updates, new alerts, and colleague notes without manual page refreshes.
-- **Proposed Solution**:
-  - *Option A*: **SSE (Server-Sent Events)** streaming from FastAPI (`/api/v1/events/stream`).
-  - *Option B*: **WebSocket** full-duplex room server.
-  - *Option C*: Lightweight HTTP polling every 5 seconds.
-
-### Question 4: Multi-Account Session Vault & SMS OTP Authentication Flow
-- **Problem**: 4 separate accounts requiring SMS OTP authentication when session cookies expire.
-- **Proposed Solution**:
-  - Multi-session vault (`auth_sessions/mcma_oujda.json`, `auth_sessions/mamda_oujda.json`, etc.).
-  - Account Health Indicator bar on header (🟢 Active / 🔴 Expired).
-  - In-App `[Se Connecter]` button launching a Playwright window specifically for that account's login + SMS OTP.
+### 4.2 Dual Lifecycle State Machine (Portal Presence vs. Employee Work Status)
+- **Decision:** Strictly separate **Portal Presence** from **Employee Work Status**.
+- **Portal Presence States:**
+  - 🟢 `ACTIVE`: Present on MCMA/MAMDA alert queue.
+  - 🟡 `MISSING_PENDING_CONFIRMATION`: Disappeared in 1st or 2nd poll (guards against temporary network/session drops).
+  - ⚪ `RESOLVED_ON_PORTAL`: Absent for 3+ consecutive polls (moved to agency local archive).
+- **Employee Work Status:**
+  - ⚪ `TODO` *(Unprocessed)*
+  - 🔵 `IN_PROGRESS` *(Being handled)*
+  - 🟢 `DONE` *(Completed)*
+  - 🟡 `WAITING` *(Waiting for external info)*
+- **Benefit:** If MCMA removes an alert from its portal queue, the claim is archived locally **without losing employee notes, tags, or work history**.
 
 ---
 
-## 5. Current Implementation Baseline (Verified Capabilities)
-
-- ✅ **Backend Framework**: Python 3.14 + FastAPI + Playwright (Chromium).
-- ✅ **Automated Test Suite**: 19/19 passing unit tests (`pytest`).
-- ✅ **Notification Extractor**: High-speed AJAX extractor with pagination bypass (`length=-1`).
-- ✅ **Web Dashboard**: Dark mode responsive UI with live search, category filtering, KPI metrics, employee action pills, and note modal.
-- ✅ **1-Click Launchers**:
-  - `DEMARRER_MCMA.bat`: Single master launcher for server & browser.
-  - `MCMA_Dashboard_Employe.url`: Desktop shortcut for employee PCs.
-  - `Autoriser_Reseau_Local.bat`: Automated Windows Defender Firewall rule for port 8000.
+### 4.3 Real-Time Streaming: Server-Sent Events (SSE)
+- **Decision:** Use **SSE (`/api/v1/events/stream`)** for real-time server-to-browser notifications.
+- **Rationale:** SSE runs over standard HTTP, auto-reconnects natively in JavaScript (`new EventSource()`), requires zero complex broker setup (no Redis/Kafka), and pushes live updates (new alerts, colleague note changes, status updates) instantly to all connected employee screens.
 
 ---
 
-## 6. Prompt / Summary for Other LLMs & Architects
+### 4.4 Frontend Stack: Vite + React Compiled to Static `dist/`
+- **Decision:** Build the user dashboard with **Vite + React + Tailwind/Vanilla CSS**, compile into a single static `dist/` folder, and serve directly from FastAPI via `app.mount("/", StaticFiles(directory="dist", html=True))`.
+- **Rationale:** Avoids running a separate Node.js server or Next.js SSR process on the agency server while giving employees a modern, responsive React interface.
 
-> *"We are building an on-premise Operations Hub & RPA Agent for a Moroccan auto insurance agency (MCMA / MAMDA across Oujda and Nador offices). The system connects to `sinauto.mamda-mcma.ma` to monitor notification tables across 4 accounts and automate vehicle expertise form filling from Wexia ERP. We have a working Python FastAPI + Playwright backend with a real-time extraction engine (<2s for 80+ records via in-page AJAX) and a web dashboard. We need to evaluate the best architecture for: (1) Multi-account session vaulting for 4 accounts, (2) Real-time multi-employee UI updates (SSE vs WebSockets), (3) Accumulative claim history retention for alerts deleted by MCMA, and (4) Standalone Frontend (Next.js/React) vs Embedded Single-Server Architecture."*
+---
+
+### 4.5 Execution Architecture & Concurrency Control
+- **Decision:** Background job queue with **per-account execution locks (`asyncio.Lock`)**.
+- **Execution Flow:**
+  - Playwright automation runs asynchronously outside of direct HTTP requests.
+  - An `asyncio.Lock()` per `account_id` guarantees that the background notification poller and an employee execution task never attempt to navigate using the same Playwright context simultaneously.
+
+---
+
+### 4.6 Permanent Default-Deny Safety Policy
+- **Decision:** Network-level safety interception is a **permanent core system invariant** across all environments.
+- **Blocked Endpoints:**
+  - `#DEVISDET_Btn` (Final Devis Validation)
+  - `#Enregistrer` (Final Mission Save)
+  - `cloturerMission` / `validerDevis` / `garageModifierValDevis`
+- **Allowed Execution Modes:**
+  - `PLAN`: Read and compare DOM values.
+  - `PREVIEW`: Populate temporary DOM fields, zero write network requests.
+  - `DRAFT_WRITE`: Explicitly authorized row-level checkmarks only.
+  - `FINAL_VALIDATION`: **Never available to the agent** (strictly reserved for human experts).
+
+---
+
+## 5. Roadmap & Phased Execution Plan
+
+```
+  PHASE 1: Multi-Account Notification & Action Hub (Current Focus)
+  ├── 1. SQLite Database Schema Setup (WAL Mode)
+  ├── 2. Multi-Account Vault (4 Profile Sessions & Login Manager)
+  ├── 3. Sub-Second Extractor & Dual-Lifecycle State Machine
+  ├── 4. SSE Real-Time Stream & Vite + React Dashboard UI
+  └── 5. Employee Action & Notes Tracking Synchronization
+
+  PHASE 2: Automated Expertise Form Filling Agent (Next Phase)
+  ├── 1. Wexia ERP JSON Import & Deterministic Mapper
+  ├── 2. Mode Normal Engine (#tableRapportDet)
+  ├── 3. Mode Conventionné Engine (#DevisDetTableVal Table 2 Matching)
+  └── 4. Human Verification Pause & Safety Audit Logs
+```
