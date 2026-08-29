@@ -143,9 +143,75 @@ def test_af_unix_or_socketpair_allowed(tmp_path):
         srv.bind(path)
         srv.listen(1)
         cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        cli.connect(path)  # must NOT be blocked
+        cli.connect(path)  # must NOT be blocked (local IPC, not egress)
+
+        # Round-trip proves AF_UNIX communication actually works end-to-end.
+        conn, _ = srv.accept()
+        cli.send(b"ipc")
+        assert conn.recv(3) == b"ipc"
+        conn.close()
         cli.close()
         srv.close()
+
+
+def test_allow_unix_socket_does_not_permit_ip_bypass(tmp_path):
+    """Allowing AF_UNIX (local IPC) must not open any IP-network path:
+    immediately after successful AF_UNIX/socketpair use, external TCP, UDP,
+    and DNS remain blocked and IP loopback remains allowed."""
+    # Exercise the AF_UNIX allowance first.
+    a, b = socket.socketpair()
+    a.send(b"x")
+    assert b.recv(1) == b"x"
+    a.close()
+    b.close()
+    if hasattr(socket, "AF_UNIX") and os.name != "nt":
+        path = str(tmp_path / "bypass.sock")
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(1)
+        cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        cli.connect(path)
+        cli.close()
+        srv.close()
+
+    # External TCP still blocked.
+    with pytest.raises(BLOCKED):
+        socket.create_connection((EXTERNAL_V4, 80), timeout=2)
+
+    # External UDP still blocked.
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        with pytest.raises(EgressBlockedError):
+            s.sendto(b"x", (EXTERNAL_V4, 53))
+    finally:
+        s.close()
+
+    # External DNS still blocked before the resolver.
+    with pytest.raises(EgressBlockedError):
+        socket.getaddrinfo(EXTERNAL_NAME, 80)
+
+    # IPv4 loopback still allowed (real listener round-trip).
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+
+    def _accept():
+        try:
+            conn, _ = listener.accept()
+            conn.close()
+        except OSError:
+            pass
+
+    t = threading.Thread(target=_accept, daemon=True)
+    t.start()
+    c = socket.create_connection(("127.0.0.1", port), timeout=5)
+    c.close()
+    t.join(timeout=5)
+    listener.close()
+
+    # IPv6 loopback still permitted by policy (both guard layers).
+    assert egress_guard.check_address_allowed(("::1", port)) is True
 
 
 def test_malformed_or_unknown_address_forms_fail_closed():
