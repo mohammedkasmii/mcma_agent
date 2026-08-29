@@ -23,7 +23,7 @@ import asyncio
 import argparse
 from core.features import FORM_FILLING_ENABLED, FORM_FILLING_DISABLED_MESSAGE
 from mapper import WexiaToDossierMapper
-from main import process_workflow
+from workflows.fill_dossier import process_workflow
 
 INPUT_DOSSIER_DIR = "input_dossier"
 INPUT_DOCS_DIR = "input_documents"

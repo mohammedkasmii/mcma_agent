@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 import core.features as features
 import main
+import workflows.fill_dossier as fill_dossier
 from browser.safety_interceptor import MUTATING_ENDPOINTS, BLOCKED_SENTINEL_KEY
 
 
@@ -69,10 +70,29 @@ def test_features_endpoint():
     assert body["features"]["form_filling"] is False
 
 
-def test_notification_endpoints_still_work():
+def test_operations_hub_unaffected_by_the_flag():
     """Disabling form filling must not affect the notification hub."""
-    assert client.get("/api/v1/notification-actions").status_code == 200
-    assert client.get("/api/v1/cached-notifications").status_code == 200
+    assert client.get("/api/v1/state").status_code == 200
+    assert client.get("/api/v1/accounts").status_code == 200
+
+
+def test_legacy_json_endpoints_are_gone():
+    """
+    These wrote to logs/*.json — a second store that silently diverged from
+    SQLite after the migration. /notification-actions in particular did an
+    unguarded read-modify-write, the exact race Phase 1 removed. They must not
+    come back: a stale browser tab hitting one would lose an employee's work.
+    """
+    # POSTs come back 405 rather than 404 because StaticFiles is mounted at "/"
+    # and answers unmatched paths. Either way the route is gone and no write
+    # can land.
+    gone = {404, 405}
+    for path in ("/api/v1/notification-actions", "/api/v1/cached-notifications",
+                 "/api/v1/notifications"):
+        assert client.get(path).status_code in gone, f"{path} is still reachable"
+    assert client.post("/api/v1/auth/launch-login").status_code in gone
+    assert client.post("/api/v1/notification-actions",
+                       json={"reference": "R-1", "status": "DONE"}).status_code in gone
 
 
 # ---------------------------------------------------------------------------
@@ -82,10 +102,11 @@ def test_notification_endpoints_still_work():
 def test_process_workflow_refuses_before_touching_a_browser():
     """
     process_workflow is the single choke point every caller passes through,
-    including run_dossier.py which imports it directly.
+    including run_dossier.py which imports it directly. It now lives in
+    workflows/, not in the API layer.
     """
     with pytest.raises(features.FeatureDisabledError):
-        asyncio.run(main.process_workflow({"matricule": "12345-A-7"}))
+        asyncio.run(fill_dossier.process_workflow({"matricule": "12345-A-7"}))
 
 
 # ---------------------------------------------------------------------------

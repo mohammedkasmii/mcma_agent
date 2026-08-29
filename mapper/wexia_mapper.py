@@ -19,110 +19,33 @@ from typing import Optional, Dict, Any, List, Tuple
 
 
 # ---------------------------------------------------------------------------
-# Complete MCMA Rubrique Catalog
+# Domain constants and numeric helpers come from core/ - ONE definition each.
+#
+# This module used to redefine RUBRIQUE_CATALOG, the part-origin alias sets, the
+# system matrix, and to_decimal / quantize_money / format_money / normalize_text.
+# Adding a rubric to core/constants.py left this copy silently disagreeing,
+# which is a real correctness risk in the module that computes money
+# (BLUEPRINT SS14).
 # ---------------------------------------------------------------------------
-RUBRIQUE_CATALOG: Dict[str, str] = {
-    "1":  "FOURNITURES CARROSSERIE (ORIGINES)",
-    "2":  "FOURNITURES CARROSSERIE (ADAPTABLES)",
-    "3":  "TOTAL PIECES OCCASIONS / RECUPERABLES",
-    "4":  "FOURNITURES MECANIQUE (ORIGINES)",
-    "5":  "FOURNITURES MECANIQUE (ADAPTABLES)",
-    "6":  "FOURNITURES MECANIQUE (RECUPERABLES)",
-    "7":  "MAIN D'OEUVRE CARROSSERIE",
-    "8":  "MAIN D'OEUVRE MECANIQUE",
-    "9":  "MONTANT TOTAL",
-    "10": "PEINTURE (ORIGINES)",
-    "11": "PEINTURE (ADAPTABLES)",
-    "12": "MAIN D'OEUVRE PEINTURE",
-    "13": "ELECTRIQUE (D'ORIGINE)",
-    "14": "ELECTRIQUE (ADAPTABLES)",
-    "15": "ELECTRIQUE (RECUPERABLES)",
-    "16": "PEINTURES ET INGREDIENTS",
-    "17": "PASSAGE AU MARBRE",
-    "18": "PARALLELISME ET EQUILIBRAGE",
-    "19": "REPARATION VITRE",
-    "20": "REMPLACEMENT VITRE",
-    "21": "REPARATION PARE-BRISE",
-    "22": "REMPLACEMENT PARE-BRISE",
-    "23": "REPARATION LUNETTE ARRIERE",
-    "24": "REMPLACEMENT LUNETTE ARRIERE",
-    "25": "COLLE",
-    "26": "KIT COLLE PARE-BRISE ET LUNETTE ARRIERE",
-    "27": "KIT COLLE VITRE",
-    "28": "MAIN D'OEUVRE ELECTRIQUE",
-}
-
-# Part origin aliases
-PART_ORIGIN_ORIGINAL = {"original", "origine", "oem", "neuf", "neuve", "new"}
-PART_ORIGIN_ADAPTABLE = {"adaptable", "equivalent", "aftermarket"}
-PART_ORIGIN_RECOVERED = {"recuperation", "recuperable", "occasion", "used"}
-
-# System families to MCMA rubrique ID mapping: (system, origin_type) -> rubrique_id
-SYSTEM_RUBRIQUE_MATRIX: Dict[Tuple[str, str], str] = {
-    ("carrosserie", "original"):    "1",
-    ("carrosserie", "adaptable"):   "2",
-    ("carrosserie", "recovered"):   "3",
-    ("mecanique",   "original"):    "4",
-    ("mecanique",   "adaptable"):   "5",
-    ("mecanique",   "recovered"):   "6",
-    ("peinture",    "original"):    "10",
-    ("peinture",    "adaptable"):   "11",
-    ("peinture",    "recovered"):   "16",
-    ("electrique",  "original"):    "13",
-    ("electrique",  "adaptable"):   "14",
-    ("electrique",  "recovered"):   "15",
-}
-
-DEFAULT_TVA_RATE = Decimal("0.20")
-CENT = Decimal("0.01")
+from core.constants import (
+    CENT,
+    DEFAULT_TVA_RATE,
+    PART_ORIGIN_ADAPTABLE,
+    PART_ORIGIN_ORIGINAL,
+    PART_ORIGIN_RECOVERED,
+    RUBRIQUE_CATALOG,
+    SYSTEM_RUBRIQUE_MATRIX,
+)
+from core.utils import (
+    format_money,
+    normalize_registration,
+    normalize_text,
+    quantize_money,
+    to_decimal,
+)
+from core.utils import extract_search_matricule as extract_search_matricule_num
 
 
-# ---------------------------------------------------------------------------
-# Utility Functions
-# ---------------------------------------------------------------------------
-def normalize_text(text: Optional[str]) -> str:
-    """Normalizes text by removing accents, punctuation, and extra whitespace."""
-    if not text:
-        return ""
-    # Normalize unicode characters (remove accents)
-    nfkd = unicodedata.normalize('NFKD', str(text))
-    ascii_text = "".join([c for c in nfkd if not unicodedata.combining(c)])
-    # Convert to lowercase and strip special chars
-    cleaned = re.sub(r"[^a-zA-Z0-9\s]", " ", ascii_text).lower()
-    return " ".join(cleaned.split())
-
-def normalize_registration(reg: Optional[str]) -> str:
-    """Normalizes vehicle registration for strict equality checks."""
-    if not reg:
-        return ""
-    nfkd = unicodedata.normalize('NFKD', str(reg))
-    ascii_text = "".join([c for c in nfkd if not unicodedata.combining(c)])
-    return re.sub(r"[^a-zA-Z0-9]", "", ascii_text).upper()
-
-def extract_search_matricule_num(reg: Optional[str]) -> str:
-    """Extracts first numeric group from registration (e.g. '36165-B-50' -> '36165')."""
-    if not reg:
-        return ""
-    m = re.search(r"\d+", str(reg))
-    return m.group(0) if m else ""
-
-def to_decimal(val: Any) -> Decimal:
-    """Safely converts input value to Decimal."""
-    if val is None or val == "":
-        return Decimal("0.00")
-    try:
-        return Decimal(str(val))
-    except Exception:
-        return Decimal("0.00")
-
-def quantize_money(val: Decimal) -> Decimal:
-    """Rounds to 2 decimal places using standard ROUND_HALF_UP."""
-    return val.quantize(CENT, rounding=ROUND_HALF_UP)
-
-def format_money(val: Any) -> str:
-    """Formats Decimal value to 2 decimal string (e.g. '10749.99')."""
-    dec = to_decimal(val)
-    return f"{quantize_money(dec):.2f}"
 
 def format_date_dmy(date_str: Optional[str]) -> Optional[str]:
     """Formats ISO date string (YYYY-MM-DD) into MCMA format DD/MM/YYYY."""

@@ -1,32 +1,32 @@
 """
 portal/extractor.py — Category-Scoped Alert Extraction
 =======================================================
-Wraps the proven extraction logic in browser/notifications.py with the
-discriminated result type required by PROJECT_ARCHITECTURE_BLUEPRINT.md §8.2.
+Turns raw rows from portal/fetch.py into the discriminated per-category result
+required by PROJECT_ARCHITECTURE_BLUEPRINT.md §8.2.
 
-The defect this exists to fix:
+The defect this exists to prevent:
 
-    browser/notifications.py returns a bare [] when a category fails both retry
-    attempts, and records it with count: 0. A FAILED category and a genuinely
-    EMPTY one are byte-identical in the output. If the lifecycle reconciler
-    treats a failed category as successful-and-empty, every claim in it is
-    counted missing and archived after three ticks.
+    The original extractor returned a bare [] when a category failed both retry
+    attempts, recording it as count: 0. A FAILED category and a genuinely EMPTY
+    one were byte-identical. Treating a failed category as successful-and-empty
+    counts every claim in it as missing and archives the lot after three ticks.
 
-So every category now reports SUCCESS / EMPTY / FAILED, and only SUCCESS or
-EMPTY may drive lifecycle reconciliation.
+fetch.py now raises rather than returning []; this module classifies each
+category as SUCCESS / EMPTY / FAILED, and only the first two may drive lifecycle
+reconciliation.
 
 Transport note (§4.1): this still drives Playwright, because the httpx spike has
 not been run. Unlike the old API path it opens ONE browser context per poll cycle
 rather than one per HTTP request, which removes the "five employees, five
-Chromiums" problem. Swapping in httpx later means replacing _fetch_category only.
+Chromiums" problem. Swapping in httpx later means replacing portal/fetch.py only.
 """
 
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from browser.notifications import _fetch_category_rows
 from browser.mission_navigator import check_session_validity
+from portal.fetch import fetch_category_rows
 
 SUCCESS = "SUCCESS"
 EMPTY = "EMPTY"
@@ -130,7 +130,7 @@ async def _fetch_category(page, code: str, name: str, url: str) -> CategoryResul
     there was nothing in it.
     """
     try:
-        rows = await _fetch_category_rows(page, code_alerte=code, title=name, category_url=url)
+        rows = await fetch_category_rows(page, code_alerte=code, title=name, category_url=url)
     except Exception as e:
         return CategoryResult(code=code, name=name, outcome=FAILED, error=str(e)[:300])
 

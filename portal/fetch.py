@@ -1,27 +1,33 @@
 """
-browser/notifications.py — High-Speed & Resilient MCMA Notifications Extractor
-==============================================================================
-Fetches all active alert categories from the top navbar (#listeAlertes)
-and extracts complete datatable records for each category.
+portal/fetch.py — Alert Row Extraction
+=======================================
+Pulls every row of one alert category out of the portal.
 
-Architecture:
-  - Strategy 1 (Primary): Direct in-page asynchronous AJAX fetch (sub-second per category, zero reloads).
-  - Strategy 2 (Fallback): DOM navigation with auto-retry and connection resilience.
-  - Crash-Proof: Errors in individual categories are isolated and logged without aborting the run.
+Two strategies, in order:
+  1. In-page AJAX POST to getAlerte/CodeAlerte/{code} with length=-1 — sub-second,
+     no page reload, returns the full dataset in one call.
+  2. DOM navigation fallback with DataTables "Tout" and one retry.
+
+This lives in portal/ rather than browser/ because it is portal knowledge — the
+endpoint shape, the field names, the status codes — not browser mechanics.
+browser/ keeps only Playwright plumbing (DOM helpers, form filling, safety
+interception), which is what BLUEPRINT SS14's layering requires.
+
+Raises on failure rather than returning []. An empty list must mean "the portal
+answered and there was nothing there"; anything else is a FAILED category, and
+conflating the two archives live claims (SS8.2).
 """
 
-import os
-import sys
-import re
-import json
 import asyncio
-from datetime import datetime
-from typing import Dict, Any, List, Optional
-from core.config import DASHBOARD_URL, BASE_URL
-from browser.mission_navigator import check_session_validity
+import re
+from typing import Any, Dict, List
 
 
-async def _fetch_category_rows(page, code_alerte: str, title: str, category_url: str) -> List[Dict[str, Any]]:
+class CategoryFetchError(RuntimeError):
+    """Raised when a category could not be read. Never conflate with 'empty'."""
+
+
+async def fetch_category_rows(page, code_alerte: str, title: str, category_url: str) -> List[Dict[str, Any]]:
     """
     Extracts all rows for an alert category.
     Strategy 1: Direct in-page AJAX POST to /getAlerte/CodeAlerte/{code_alerte} (instant, sub-second).
@@ -105,6 +111,7 @@ async def _fetch_category_rows(page, code_alerte: str, title: str, category_url:
     # -------------------------------------------------------------------------
     # Strategy 2: DOM Navigation Fallback with Select "Tout" (-1) and Retries
     # -------------------------------------------------------------------------
+    last_error: Any = None
     for attempt in range(2):
         try:
             await page.goto(category_url, timeout=20000, wait_until="domcontentloaded")
@@ -163,106 +170,17 @@ async def _fetch_category_rows(page, code_alerte: str, title: str, category_url:
             }""")
             return rows_data
         except Exception as err:
+            last_error = err
             if attempt == 0:
                 await asyncio.sleep(1.5)
-            else:
-                print(f"    [!] Note: Could not load table for '{title}': {err}")
-                return []
 
-    return []
-
-
-async def fetch_all_notifications(page, headless: bool = True) -> Dict[str, Any]:
-    """
-    Main entry point to fetch all notification categories and their datatables.
-    """
-    print(f"[*] Navigating to MCMA dashboard to check notifications...")
-    await page.goto(DASHBOARD_URL, wait_until="domcontentloaded")
-    await page.wait_for_timeout(1500)
-
-    # 1. Verify session
-    if not await check_session_validity(page):
-        raise Exception("MCMA session expired. Please run 'python auth_setup.py' to renew your session.")
-
-    # 2. Trigger notification fetch in navbar
-    await page.evaluate("""() => {
-        if (typeof actualierAlertes === 'function') {
-            actualierAlertes();
-        } else {
-            const el = document.querySelector('#listeAlertes');
-            if (el && window.jQuery) {
-                window.jQuery(el).load('/SinAuto_MCMA/expertise/notification/alerte');
-            }
-        }
-    }""")
-    await page.wait_for_timeout(2000)
-
-    # 3. Discover all alert category links from #listeAlertes
-    categories_info = await page.evaluate(r"""() => {
-        const results = [];
-        const links = document.querySelectorAll('#listeAlertes a[href*="notification/alerte/"], #listeAlertes a[href*="notification/notification/alerte/"]');
-        links.forEach(a => {
-            const text = a.textContent.trim();
-            const href = a.href;
-            const badge = a.querySelector('.badge')?.textContent?.trim() || '';
-            const match = href.match(/alerte\/([A-Za-z0-9\-]+)/i);
-            const codeAlerte = match ? match[1] : '';
-            
-            let cleanTitle = text;
-            if (badge) {
-                cleanTitle = cleanTitle.replace(badge, '').trim();
-            }
-            cleanTitle = cleanTitle.replace(/\s+/g, ' ').trim();
-
-            if (href && !results.some(r => r.codeAlerte === codeAlerte)) {
-                results.push({
-                    title: cleanTitle || 'ALERTE',
-                    count: badge || '0',
-                    codeAlerte: codeAlerte,
-                    href: href,
-                });
-            }
-        });
-        return results;
-    }""")
-
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    result: Dict[str, Any] = {
-        "timestamp": ts,
-        "total_categories": len(categories_info),
-        "total_alerts": 0,
-        "categories": [],
-    }
-
-    if not categories_info:
-        print("    [i] No active notification categories found on the navbar.")
-        return result
-
-    print(f"    [+] Found {len(categories_info)} alert category(ies). Extracting table rows for each...\n")
-
-    for cat in categories_info:
-        title = cat["title"]
-        code_alerte = cat["codeAlerte"]
-        url = cat["href"]
-        print(f"[*] Extracting category: '{title}' (Code: {code_alerte})...")
-
-        rows_data = await _fetch_category_rows(page, code_alerte=code_alerte, title=title, category_url=url)
-
-        cat_summary = {
-            "category_name": title,
-            "code_alerte": code_alerte,
-            "count": len(rows_data),
-            "items": rows_data,
-        }
-
-        result["categories"].append(cat_summary)
-        result["total_alerts"] += len(rows_data)
-
-        print(f"    [✓] Extracted {len(rows_data)} item(s) for '{title}'.")
-        for idx, row in enumerate(rows_data[:3], 1):
-            print(f"        {idx}. Ref: {row['reference']} | Plate: {row['matricule']} | Insured: {row['societaire']} | Status: {row['statut']}")
-        if len(rows_data) > 3:
-            print(f"        ... and {len(rows_data) - 3} more items.")
-        print()
-
-    return result
+    # Both strategies exhausted. RAISE - never return [].
+    #
+    # This is the root of the SS8.2 defect: the previous implementation returned
+    # a bare [] here, making a failed category indistinguishable from a genuinely
+    # empty one. The caller then counted every claim in that category as missing
+    # and archived the lot after three polls.
+    raise CategoryFetchError(
+        f"Extraction impossible pour la categorie '{title}' "
+        f"(code {code_alerte}) : {last_error}"
+    )
