@@ -21,6 +21,13 @@ from core.config import (
     TEMP_DIR,
     LOGS_DIR,
 )
+from core.features import (
+    FORM_FILLING_ENABLED,
+    FORM_FILLING_DISABLED_MESSAGE,
+    FeatureDisabledError,
+    feature_status,
+    require_form_filling,
+)
 from core.logger import StructuredLogger
 from mapper.wexia_mapper import WexiaToDossierMapper
 from browser.safety_interceptor import install_safety_policy
@@ -61,7 +68,18 @@ class NotificationActionUpdate(BaseModel):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "ok", "service": "mcma-automation-agent", "version": "2.0.0"}
+    return {
+        "status": "ok",
+        "service": "mcma-automation-agent",
+        "version": "2.0.0",
+        "features": feature_status(),
+    }
+
+
+@app.get("/api/v1/features")
+async def api_features():
+    """Reports which optional subsystems are active, so the UI can hide disabled ones."""
+    return {"status": "success", "features": feature_status()}
 
 
 @app.post("/api/v1/auth/launch-login")
@@ -155,24 +173,52 @@ async def api_get_notifications(headless: bool = True):
 
 @app.post("/api/v1/fill-dossier")
 async def api_fill_dossier(req: FillDossierRequest):
-    """Fills a dossier using pre-mapped MCMA payload contract."""
+    """
+    Fills a dossier using pre-mapped MCMA payload contract.
+    DISABLED: gated behind the FORM_FILLING feature flag (see core/features.py).
+    """
+    if not FORM_FILLING_ENABLED:
+        raise HTTPException(status_code=503, detail=FORM_FILLING_DISABLED_MESSAGE)
     try:
         result = await process_workflow(req.payload)
         return {"status": "success", "result": result}
+    except FeatureDisabledError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/v1/fill-dossier-from-wexia")
 async def api_fill_dossier_from_wexia(req: WexiaDossierRequest):
-    """Translates raw Wexia JSON and executes MCMA filling."""
+    """
+    Translates raw Wexia JSON and executes MCMA filling.
+    DISABLED: gated behind the FORM_FILLING feature flag (see core/features.py).
+    """
+    if not FORM_FILLING_ENABLED:
+        raise HTTPException(status_code=503, detail=FORM_FILLING_DISABLED_MESSAGE)
     try:
         mapper = WexiaToDossierMapper()
         payload = mapper.map(req.wexia_payload, explicit_chiffrage_id=req.explicit_chiffrage_id)
         result = await process_workflow(payload)
         return {"status": "success", "result": result, "mapped_payload": payload}
+    except FeatureDisabledError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/map-wexia-dossier")
+async def api_map_wexia_dossier(req: WexiaDossierRequest):
+    """
+    Translates raw Wexia JSON into the MCMA payload contract WITHOUT touching a browser.
+    Remains available while form filling is disabled: it is a pure, offline transformation.
+    """
+    try:
+        mapper = WexiaToDossierMapper()
+        payload = mapper.map(req.wexia_payload, explicit_chiffrage_id=req.explicit_chiffrage_id)
+        return {"status": "success", "mapped_payload": payload}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 async def process_workflow(data: dict) -> dict:
@@ -184,7 +230,13 @@ async def process_workflow(data: dict) -> dict:
       4. Fills header text fields, select options, and checkboxes.
       5. Routes to Mode Normal or Garage Conventionné engine.
       6. Pauses browser for human visual review (zero final submissions).
+
+    Innermost guard for the FORM_FILLING feature flag. Every caller — the HTTP API,
+    run_dossier.py, and any future entry point — passes through here, so a disabled
+    feature cannot reach a browser regardless of how it was invoked.
     """
+    require_form_filling()
+
     os.makedirs(TEMP_DIR, exist_ok=True)
 
     if not os.path.exists(AUTH_STATE_FILE):

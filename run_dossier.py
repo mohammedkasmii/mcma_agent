@@ -21,6 +21,7 @@ import glob
 import json
 import asyncio
 import argparse
+from core.features import FORM_FILLING_ENABLED, FORM_FILLING_DISABLED_MESSAGE
 from mapper import WexiaToDossierMapper
 from main import process_workflow
 
@@ -95,6 +96,19 @@ async def main():
     parser.add_argument("--matricule", "--immatriculation", dest="matricule", help="Override vehicle license plate / immatriculation search key")
     
     args = parser.parse_args()
+
+    # Feature gate: the form filling agent is disabled by default (see core/features.py).
+    if not FORM_FILLING_ENABLED:
+        print("\n" + "=" * 70)
+        print("  [X] MODULE DESACTIVE — Remplissage automatique des formulaires")
+        print("=" * 70)
+        print(f"  {FORM_FILLING_DISABLED_MESSAGE}")
+        print()
+        print("  Pour les developpeurs — activer temporairement :")
+        print("      PowerShell : $env:MCMA_ENABLE_FORM_FILLING = \"1\"; python run_dossier.py")
+        print("      cmd        : set MCMA_ENABLE_FORM_FILLING=1 && python run_dossier.py")
+        print("=" * 70 + "\n")
+        sys.exit(2)
 
     # Determine JSON file
     json_path = args.json or find_default_json()

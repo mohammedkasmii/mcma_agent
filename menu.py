@@ -45,7 +45,7 @@ def main_menu():
         clear()
         print_header()
         print("\n  [MENU OPTIONS]:\n")
-        print("  1. 🚀 Run Dossier Automation (Fills MCMA form & uploads PDFs)")
+        print("  1. 🚫 Run Dossier Automation  [DESACTIVE - voir core/features.py]")
         print("  2. 🔑 One-Time Login (Setup session & save SMS/OTP code)")
         print("  3. 🔍 Test JSON Mapping (Preview mapped fields without opening browser)")
         print("  4. 📁 View Files in Input Folders (JSON & PDFs)")

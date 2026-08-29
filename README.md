@@ -4,6 +4,30 @@ Complete browser automation agent for filling vehicle insurance expertise dossie
 
 ---
 
+## ⚠️ Module de remplissage automatique — DÉSACTIVÉ
+
+Le **centre de notifications** (`python main.py` → http://localhost:8000) est la fonctionnalité active et prise en charge.
+
+Le **module de remplissage automatique des formulaires** (Mode Normal / Mode Conventionné) est présent dans le code mais **désactivé**. Il n'est pas encore autorisé à agir sur le portail MCMA/MAMDA. Concrètement :
+
+| Point d'entrée | Comportement |
+| :--- | :--- |
+| `POST /api/v1/fill-dossier` | `503` + message explicatif |
+| `POST /api/v1/fill-dossier-from-wexia` | `503` + message explicatif |
+| `python run_dossier.py` | Refuse et quitte (code 2) |
+| `menu.py` option 1 | Marquée `[DESACTIVE]` |
+| `POST /api/v1/map-wexia-dossier` | ✅ **reste disponible** — traduction Wexia → MCMA, hors ligne, sans navigateur |
+
+Le drapeau est défini à un seul endroit : [`core/features.py`](core/features.py). Pour le déverrouiller (développeurs uniquement) :
+
+```powershell
+$env:MCMA_ENABLE_FORM_FILLING = "1"; python main.py
+```
+
+Voir `PROJECT_ARCHITECTURE_BLUEPRINT.md` §11 et §15 pour les conditions de réactivation.
+
+---
+
 ## 📁 Project Structure & Input Folders
 
 ```

@@ -8,13 +8,24 @@ import os
 
 # =============================================================================
 # ⚠️  SAFETY / TEST MODE
+#
+# NOTE: The form filling agent this flag governs is DISABLED entirely. See
+#       core/features.py (FORM_FILLING_ENABLED) — that flag takes precedence and
+#       is the one to change. TEST_MODE only matters once form filling is unlocked.
+#
 # When True:
-#   - Network interception blocks all mutating POST endpoints (garageModifierValDevis, etc.)
+#   - Network interception blocks the mutating POST endpoints listed in
+#     browser/safety_interceptor.py — final validation, closure, row-level writes,
+#     and GED writes. Blocked calls fail closed (HTTP 403 + "__mcma_blocked").
 #   - #Enregistrer and #DEVISDET_Btn buttons are STRICTLY NEVER CLICKED
 #   - GED document upload is disabled
 #   - The browser pauses on-screen for human visual review
 # When False (Production mode):
 #   - Live saving and form submissions are enabled
+#
+# History: this comment previously claimed "all mutating POST endpoints" were
+# blocked. That was inaccurate — row-level writes (createRapportDefDet,
+# updateDevisDet) were not intercepted. Fixed; see BLUEPRINT §11.0.
 # =============================================================================
 TEST_MODE: bool = True
 
