@@ -7,8 +7,8 @@
 
 ## 1. Workflow registry
 `WorkflowRegistry`: `name → { plan_builder, required_capabilities, allowed_row_ops }`. A plan builder is a **pure**
-function `(typed input) -> ExecutionPlan`. The registry declares which row-op contracts a workflow may use; the writer
-enforces that set (nothing outside it can be issued).
+function `(typed input) -> ProposedPlan` (pure data — `DOMAIN_MODEL.md` §6). The registry declares which row-op contracts
+a workflow may use; the writer enforces that set (nothing outside it can be issued).
 
 ## 2. Two job kinds, two terminal paths (no upgrade)
 A DRY_RUN can never become a write. An EXECUTE job is **separately authorized**, references the approved DRY_RUN
@@ -55,10 +55,11 @@ stateDiagram-v2
 **`READY_FOR_HUMAN_REVIEW` is the TERMINAL automation state** (correction #2). The automation job never transitions to a
 "human-completed" status. `FINALIZED_BY_HUMAN` is modelled **outside** the automation job — see §6.
 
-**Plans are capability-neutral (correction #3):** PLANNING produces a `ProposedPlan` with **no** `mode`/`read_only`.
-EXECUTE authorization forms an `ApprovedPlanReference` and, only after re-deriving steps from the retained input
-(`DATA_MODEL.md` §4a) and matching `plan_hash`/`input_hash`, an `ExecutablePlan` bound to a `VerifiedMissionWriter`
-(`DOMAIN_MODEL.md` §6). The `mode` (DRY_RUN|EXECUTE) lives on `AutomationJob`; no field inside a plan can unlock writes.
+**Plans are pure data; pairing happens in execution (corrections #1/#3):** PLANNING produces a `ProposedPlan` (pure data,
+no `mode`/`read_only`). EXECUTE authorization forms an `ApprovedPlanReference` and, only after re-deriving steps from the
+retained input (`DATA_MODEL.md` §4a) and matching `plan_hash`/`input_hash`, an `ExecutablePlanData` (still pure data). The
+`execution` module then pairs it with a live writer as `AuthorizedExecution` (`MODULE_BOUNDARIES.md` §4) — `domain` never
+references a portal capability. The `mode` (DRY_RUN|EXECUTE) lives on `AutomationJob`; no field inside a plan can unlock writes.
 
 ## 3. Lease lifetime (decision #5)
 - **PLANNING is pure and holds no lease** (no portal, no session).
@@ -99,11 +100,23 @@ any navigation/redraw**, so a stale page cannot cause a write against the wrong 
   comparison or a completed verification — **never** file existence, a `finally` block, or an unconditional print. A
   readiness label is set only after the corresponding check passes; a failed check yields a failure state, not "ready".
 
-## 7. Atomic transitions, versions, crash recovery
-- Each transition writes the job row + its outbox event in **one transaction**; `state_version` = the account's
-  monotonic version at that transition.
-- **Restart reconciliation** (before serving): expire stale leases; `{PLANNING,PLANNED}` and
-  `{ACQUIRING_ACCOUNT_LOCK,IDENTITY_VERIFYING}` → `ABORTED_ON_RESTART`; `{WRITING,VERIFYING}` →
-  `INTERRUPTED_NEEDS_HUMAN_REVIEW` with a diff report and **never** auto-resumed; terminal/READY states kept.
+## 7. Durable enqueue, atomic transitions, crash recovery (correction #5)
+- **Atomic enqueue:** job creation writes `automation_jobs` (status `QUEUED`) + encrypted `job_inputs` +
+  `account_state_version` bump + `event_outbox` event in **one transaction** — all-or-nothing (no input-less or
+  half-created job). Valid statuses are constrained by a CHECK (`DATA_MODEL.md` §4).
+- **Atomic transitions:** each transition writes the job row + its outbox event in **one transaction**; `state_version`
+  = the account's monotonic version at that transition.
+- **Restart reconciliation** (before serving), by status:
+  - `QUEUED` **with a valid, unexpired `job_inputs`** → **resume safely** (re-enqueue for the runner; planning is pure so
+    re-planning is deterministic). `QUEUED` **without** valid input → **fail closed** (`ERROR`, reason `MISSING_JOB_INPUT`);
+    never executed on a guessed input.
+  - `{PLANNING, PLANNED}` (pure, no portal, no lease) → safe to re-plan from the retained input, or mark
+    `ABORTED_ON_RESTART` for operator resubmit — chosen deterministically because planning has **no external side
+    effects** and the input is content-hash-verified; either way no portal state was touched.
+  - `{ACQUIRING_ACCOUNT_LOCK, IDENTITY_VERIFYING}` (no writes yet) → `ABORTED_ON_RESTART`; release the lease.
+  - `{WRITING, VERIFYING}` (writes possibly partial) → `INTERRUPTED_NEEDS_HUMAN_REVIEW` with a diff report; **never
+    automatically resumed or replayed.**
+  - terminal / `READY_FOR_HUMAN_REVIEW` / `DRY_RUN_VERIFIED` → kept (lease already released).
+  - stale `account_leases` (`expires_at < now`) → released first.
 - **Idempotency:** `(account_id, idempotency_key)` returns the existing job (incl. failed — not silently re-run); a real
   retry needs a new key + explicit authorization.

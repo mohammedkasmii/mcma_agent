@@ -36,15 +36,16 @@ desktop **onboarding tool** ↔ vault/DB (separate process). Each boundary is en
 | T10 | PII exfiltration via logs/screenshots/outbox/plan snapshot | No PII in logs/outbox/screenshots/plan_snapshot; redaction; access-controlled staging | INV-10 |
 | T11 | XSS in dashboard from portal/imported data (F22) | Output encoding / safe rendering (no unescaped `innerHTML`); CSP where feasible | INV-10 |
 | T12 | Raw error/text disclosure to clients (F19/F20) | Typed non-sensitive errors; correlation ids; truthful status (no 200-wrapping-failure) | INV-10/INV-11 |
-| T13 | Two writers on one account (process race) | DB `account_leases` + fencing token before every write; >1 worker unsupported | write-safety |
+| T13 | Two writers on one account (process/worker race) | **OS single-instance mutex + exactly one write-capable service process (authoritative)**; DB `account_leases` + heartbeat provide coordination and loss detection only (SinAuto does **not** validate fencing tokens, so the DB token is **not** external fencing); >1 worker unsupported/refused at startup | write-safety |
 | T14 | Stale SSE authorization; missed events on reconnect | Global `event_id` cursor; bounded retention; forced resync; periodic authz revalidation | — |
 | T15 | DPAPI decrypt failure / plaintext session on disk | **Single model:** DPAPI LocalMachine + service-account-only NTFS ACL; onboarding tool never writes the vault or plaintext — authenticated single-use account-bound handoff to the service; fail-closed on decrypt/binding failure | INV-10 |
 | T16 | Data loss / corruption on restart or crash | WAL; atomic outbox; restart reconciliation; online-backup API; tested restore | — |
 | T17 | At-rest DB theft | BitLocker + NTFS ACL + encrypted backups + DB outside served dir; SQLCipher fallback if those can't be guaranteed | INV-10 |
 | T18 | LAN caller claims the first admin account (correction #9) | Bootstrap is local-only (loopback/console), single-use, expiring; disabled once an admin exists | INV-11 |
 | T19 | Cross-account dossier exposure via a global permission (correction #9) | `user_account_access` scoping enforced on notifications/jobs/sessions/SSE; unauthorized `account_id` denied | INV-11 |
-| T20 | Two writers on one account across processes (correction #5) | OS single-instance mutex (authoritative); DB lease + heartbeat as internal guard; SinAuto does not validate fencing tokens | write-safety |
 | T21 | Wrong rubrique row written (F16) | Exact `IdRubrique`, exactly-one match; substring/first-row/positional fallback prohibited; zero/multiple fail closed | INV-6 |
+| T24 | Direct EXECUTE bypassing dry-run (correction #3) | No `mode` param; EXECUTE only via `/jobs/{dry_run_job_id}/executions` requiring a `DRY_RUN_VERIFIED` parent (same account+workflow), server-derived authorizer, matching input_hash/plan_hash, unexpired input | INV-1/INV-11 |
+| T25 | Cross-account presence row (correction #4) | Composite FK `(account_id, claim_pk)` → `claims`; repository test proves mismatched pair insertion fails | write-safety |
 | T22 | False "READY/Verified/Prêt" (F12) | Readiness reflects a real check, never file existence or a finally block | INV-5 |
 | T23 | Async job input lost/tampered across restart (correction #4) | Encrypted `job_inputs` (content_hash, ownership, expiry, DPAPI); recompute+match before execute/resume; missing/expired → needs-review | INV-10 |
 

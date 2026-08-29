@@ -18,9 +18,11 @@ profiles in one office, not deployments.
   it performs an **authenticated, single-use, account-bound local handoff** to the service, which validates the
   account/session evidence, encrypts (LocalMachine) and **atomically** stores it. Decryption or account-binding failure
   → **fail closed**.
-- **Session lifecycle:** creation (onboarding tool, in-memory) → handoff → encrypt+store (service) → decryption (only
-  `portal`, at open) → **rotation/revocation** → **atomic replacement** (temp + `os.replace`) → **exclusion** from
-  logs/Git(glob)/screenshots/backups.
+- **Session lifecycle:** creation (onboarding tool, **in-memory only**) → authenticated single-use account-bound handoff
+  → validate+encrypt+store (**service**, after **acquiring the account lease** so onboarding can't overwrite a session in
+  use — correction #6) → decryption (only `portal`, at open) → **rotation/revocation** → **atomic replacement** (temp +
+  `os.replace`) → **exclusion** from logs/Git(glob)/screenshots/backups. `POST /sessions/login` issues a one-time local
+  onboarding token; the service never launches a visible desktop browser.
 - **Per-account leases:** `account_leases(account_id PK, owner_instance_id, owner_job_id, fencing_token, acquired_at,
   heartbeat_at, expires_at)`. `execution` acquires the lease via `persistence` and passes a `LeaseHandle` to `portal`
   (which never reacquires it or imports sqlite). **Fencing caveat (correction #5):** SinAuto does not validate any fencing
@@ -29,5 +31,10 @@ profiles in one office, not deployments.
   routing and closes the write context. Session refresh and notification polling obey the same lease rules.
 
 ## Consequences
-- (+) Credentials protected; correct multi-account isolation; cross-process single-writer with fencing.
-- (−) Operational care around DPAPI scope and the onboarding tool's Windows identity (documented in the deploy runbook).
+- (+) Credentials protected; correct multi-account isolation.
+- **Single-writer guarantee (correction #7):** the authoritative guarantee is an **OS single-instance mutex plus exactly
+  one write-capable service process** — **not** database fencing. SinAuto does not validate any fencing token, so the DB
+  lease is **coordination and loss detection** only (it lets our own code detect that it no longer owns the account and
+  stop), never true external fencing.
+- (−) Operational care around DPAPI LocalMachine scope, the service account's NTFS ACL, and the single-instance mutex
+  (documented in the deploy runbook).

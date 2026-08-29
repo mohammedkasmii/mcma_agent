@@ -11,7 +11,7 @@
 | `core` | config, clock, errors, `Money`(Decimal), base types | — | anything project-specific |
 | `domain` | entities, value objects, normalization contracts (glass/labour/origin), mapping RULES, plan types. Pure, deterministic, **no I/O** | `core` | Playwright, sqlite3, FastAPI, network |
 | `mapping` | Wexia typed input → domain (normalization boundary) | `domain`,`core` | Playwright, sqlite3, FastAPI |
-| `planning` | workflow registry + deterministic plan builders → `ExecutionPlan` | `domain`,`core` | Playwright, sqlite3, FastAPI |
+| `planning` | workflow registry + deterministic plan builders → `ProposedPlan` (pure data) | `domain`,`core` | Playwright, sqlite3, FastAPI |
 | `persistence` | SQLite WAL repositories, outbox, migrations. **Sole `sqlite3` owner** | `domain`,`core` | Playwright, FastAPI |
 | `portal` | Playwright gateway: capabilities, context interception, session vault, identity gate, read/diff/verify ops. **Sole Playwright owner** | `domain`,`core` | **sqlite3, `persistence`**, FastAPI |
 | `execution` | job runner, per-account lease use, applies a plan via `portal`, writes audit/outbox via `persistence` | `planning`,`portal`,`persistence`,`mapping`,`domain`,`core` | FastAPI |
@@ -67,6 +67,17 @@ resulting **`LeaseHandle`** into `portal`'s capability constructors. `portal` **
 and **does not reacquire** the lock — this removes the previous self-deadlock (writer acquiring a lease then opening a
 reader that reacquires it). Row-write capability may be held only by the single service process (OS single-instance
 mutex, `SAFETY_MODEL.md` §5).
+
+**Plan/writer pairing lives in `execution` (correction #1):** `domain` defines only pure plan **data**
+(`ProposedPlan`, `ApprovedPlanReference`, `ExecutablePlanData`) and never references a portal capability. The type that
+pairs plan data with a live writer belongs here:
+```text
+# execution module (may depend on domain AND portal):
+AuthorizedExecution { plan: ExecutablePlanData (domain), writer: VerifiedMissionWriter (portal) }
+```
+Only `execution` may construct an `AuthorizedExecution`, and only after the execution-authorization checks
+(`API_CONTRACTS.md` §Jobs, `WORKFLOW_STATE_MODEL.md`). This keeps `domain` pure while confining the write pairing to the
+one module allowed to depend on both sides.
 
 ## 5. Configuration
 All environment/host/subnet/TLS/DPAPI/retention settings load through `core.config` as typed settings with

@@ -30,15 +30,18 @@ Fixes `SAFETY_INVARIANTS.md` INV-11. Not implemented yet.
 - **Audit actor is the authenticated user**, never a client-supplied name.
 
 ## 3. Authorization — permissions & roles (footgun A12)
-Permission enum: `notifications:read`, `notifications:update`, `jobs:submit`, `jobs:view`, `sessions:manage`,
-`accounts:manage`, `users:manage`. Default role→permission map (roles are configurable bundles):
+Permission enum: `notifications:read`, `notifications:update`, `jobs:plan`, `jobs:execute`, `jobs:view`,
+`sessions:manage`, `accounts:manage`, `users:manage`. **`jobs:plan` and `jobs:execute` are separate** (correction #3):
+holding plan does not grant execute. Default role→permission map (roles are configurable bundles):
 | Role | Permissions |
 |---|---|
 | viewer | notifications:read, jobs:view |
 | clerk | + notifications:update |
-| operator | + jobs:submit |
+| planner | + jobs:plan |
+| operator | + jobs:execute |
 | admin | + sessions:manage, accounts:manage, users:manage |
-Each endpoint checks a specific permission server-side. **A viewer receives no mutation rights.**
+Each endpoint checks a specific permission server-side. **A viewer receives no mutation rights**, and **planning a
+dry-run (`jobs:plan`) never implies authority to execute (`jobs:execute`)**.
 
 **Per-account authorization (correction #9):** a permission grants nothing until it is **scoped to the accounts the user
 may access** (`user_account_access`, `DATA_MODEL.md` §2). Every account-scoped endpoint — `notifications`, `jobs`,
@@ -59,17 +62,29 @@ by `automation_jobs`, `claims`, `audit_events` are never destroyed.
 | GET | `/api/v1/cached-notifications` | notifications:read | from DB, no browser |
 | POST | `/api/v1/notification-actions` | notifications:update | actor server-derived; optimistic version |
 | GET/POST/DELETE | `/api/v1/accounts` | accounts:manage | account registry |
-| POST | `/api/v1/sessions/login` | sessions:manage | triggers the desktop onboarding tool flow (decision #6) |
+| POST | `/api/v1/sessions/login` | sessions:manage | creates a **one-time local onboarding request/token** (decision #6, correction #6) — does **not** launch a browser server-side |
 | GET | `/api/v1/sessions/status` | sessions:manage | session validity per account |
-| POST | `/api/v1/jobs` | jobs:submit | async; body `{account_id, workflow, mode, input, idempotency_key}` → `job_id` |
-| GET | `/api/v1/jobs/{id}` | jobs:view | job status, reason_code, readiness/diff report |
+| POST | `/api/v1/jobs/dry-runs` | jobs:plan (+account) | create a **DRY_RUN** job; body `{account_id, workflow, input, idempotency_key}` → `job_id` |
+| POST | `/api/v1/jobs/{dry_run_job_id}/executions` | jobs:execute (+account) | create an **EXECUTE** job from an approved DRY_RUN (validations below) |
+| GET | `/api/v1/jobs/{id}` | jobs:view (+account) | job status, reason_code, readiness/diff report |
 | GET | `/api/v1/events/stream` | notifications:read (+ per-account authz) | SSE (decision #6, §5) |
 | GET | `/api/v1/health` | — | liveness only |
 | GET | `/api/v1/ready` | — | real readiness (DB, migrations, session vault reachable) |
 
-- **Async jobs:** `POST /jobs` enqueues; the runner executes under the per-account lease. There is **no** endpoint that
-  performs a final portal save — the agent never invokes Enregistrer/Valider/Clôturer/GED (decision #8). A job's terminal
-  automation result is `READY_FOR_HUMAN_REVIEW` with a readiness/diff report.
+- **Direct EXECUTE is structurally impossible (correction #3).** There is **no** `mode` parameter a caller can set:
+  a DRY_RUN is created at `POST /jobs/dry-runs`; an EXECUTE can **only** be created at
+  `POST /jobs/{dry_run_job_id}/executions`, which:
+  - derives `authorized_by_user_id` from the **authenticated server session** (never a client-provided identity);
+  - requires the parent to be a **DRY_RUN in `DRY_RUN_VERIFIED`** state (rejects `NEEDS_REVIEW`/`IDENTITY_FAILED` parents);
+  - requires the **same account and workflow** as the parent;
+  - **revalidates the caller's per-account authorization** (`user_account_access`) at execute time;
+  - requires **matching `input_hash` and `plan_hash`** against the parent's approved snapshot;
+  - requires the parent's **retained `job_inputs` to be present and unexpired**;
+  - creates an **independent EXECUTE job** (new `job_id`, `parent_job_id` = the DRY_RUN), enqueued durably (§DATA_MODEL §4/§4a).
+  Any failed check → fail closed (no EXECUTE job created).
+- **Async jobs:** creation enqueues durably; the runner executes under the per-account lease. There is **no** endpoint
+  that performs a final portal save — the agent never invokes Enregistrer/Valider/Clôturer/GED (decision #8). A job's
+  terminal automation result is `READY_FOR_HUMAN_REVIEW` with a readiness/diff report.
 - **Configurable LAN exposure:** bind host/port + optional allowed-subnet from typed config. The subnet check is
   **defense-in-depth only**; an absent/empty/invalid subnet config **does not disable authentication** (footgun A10).
 

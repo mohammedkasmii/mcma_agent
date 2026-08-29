@@ -7,18 +7,22 @@ extended. This strategy is the Phase 4/5 target; nothing here changes tests in t
 
 ## 1. Unconditional production-domain blocking (highest priority; correction #8 — defense in depth)
 A single session-scoped fixture is **insufficient**: collection-time imports and subprocesses/Chromium can run before or
-outside it. The block is therefore layered:
-1. **Before test collection:** the guard is installed at interpreter start, not in a fixture — via a `conftest.py` at the
-   repo root imported before collection **and** a `sitecustomize.py` / `PYTHONSTARTUP`-style hook (or a pytest plugin
-   registered in `pyproject`/`pytest.ini` entry points) so any import-time network attempt is already blocked.
-2. **OS/CI-level outbound blocking:** the CI job (and the documented local run) **blocks all outbound network** except an
-   explicit `mock_server` loopback allowance, covering **Python, Chromium, and any subprocess** (e.g., firewall rule /
-   network-namespace / container with no egress). This catches what an in-process Python guard cannot (a spawned browser).
-3. **pytest socket blocking as defense-in-depth:** `pytest-socket` (or equivalent) disables sockets by default, allowing
+outside it. The block is layered, and **OS/CI egress denial is the authoritative control** — the Python-level guards are
+defense-in-depth only (correction #7):
+1. **Authoritative — OS/CI-level outbound blocking:** the CI job (and the documented local run) **blocks all outbound
+   network** except an explicit `mock_server` loopback allowance, covering **Python, Chromium, and any subprocess** (e.g.,
+   a firewall rule / network namespace / a container with no egress). This is the guarantee: it catches what an in-process
+   Python guard cannot (a spawned browser, a C-extension socket, a subprocess).
+2. **Defense-in-depth — guard before test collection:** a `conftest.py` at the repo root (and/or a pytest plugin
+   registered via `pyproject`/`pytest.ini` entry points) installs a socket guard before collection so import-time network
+   attempts fail early with a clear message. **`PYTHONSTARTUP` and `sitecustomize` are NOT relied upon as a security
+   mechanism** — they are not guaranteed for non-interactive/embedded Python and can be bypassed; at most they are a
+   convenience for local runs.
+3. **Defense-in-depth — pytest socket blocking:** `pytest-socket` (or equivalent) disables sockets by default, allowing
    only loopback.
 4. **Explicit proof test:** a dedicated test **spawns a subprocess and launches a headless Chromium** and asserts **each
-   cannot reach the production host** (`sinauto.mamda-mcma.ma`) — proving the block covers subprocesses and the browser,
-   not just the test process.
+   cannot reach the production host** (`sinauto.mamda-mcma.ma`) — proving the OS/CI block covers subprocesses and the
+   browser, not just the test process.
 Tests drive only `mock_server`/fixtures; any real-portal connection fails loudly. This is the first migration step
 (`ARCHITECTURE.md` §6).
 
@@ -33,8 +37,19 @@ Tests drive only `mock_server`/fixtures; any real-portal connection fails loudly
   NOT NULL idSinistre), staging of unmatched notifications, **category-scoped** three-poll transitions using
   `poll_run_categories` (a category increments only when **that category** completed under a valid session; a failed
   category never affects another — correction #1), outbox atomicity (transition + event in one transaction), account-lease
-  acquire/heartbeat/expire, **`job_inputs`** round-trip (content_hash match, expiry, missing-input → needs-review), and
+  acquire/heartbeat/expire, **`job_inputs`** round-trip (content_hash match, expiry, missing-input → fail closed), and
   `observed_finalizations` never mutating `automation_jobs`.
+  - **Cross-account integrity (correction #4):** inserting a `category_presence` row that pairs an `account_id` with
+    another account's `claim_pk` **fails** (composite FK); `parent_job_id` must reference a `DRY_RUN_VERIFIED` DRY_RUN of
+    the **same account+workflow** (repository invariant test).
+  - **Durable enqueue & restart (correction #5):** the atomic enqueue commits `automation_jobs`(QUEUED)+`job_inputs`+
+    state-version+outbox together or not at all; **crash-point tests** between enqueue / planning / execution assert:
+    `QUEUED` with valid input resumes, `QUEUED` without valid input fails closed, `WRITING`/`VERIFYING` are never
+    auto-resumed; the status CHECK rejects an unknown status.
+- **API authorization tests (correction #3):** there is **no** `mode` field; a DRY_RUN is created only at `/jobs/dry-runs`
+  and an EXECUTE only at `/jobs/{dry_run_job_id}/executions`; the executions endpoint rejects a non-`DRY_RUN_VERIFIED`
+  parent, a different account/workflow, a `NEEDS_REVIEW`/`IDENTITY_FAILED` parent, mismatched `input_hash`/`plan_hash`, an
+  expired input, and any client-supplied `authorized_by`; `jobs:plan` does not grant `jobs:execute`.
 - **Safety tests** (the component whose failure is most consequential): context-level **default-deny** aborts unknown
   requests (GET not auto-safe); **final endpoints abort** (never fake-200); **dry-run constructs no writer**; write
   allowlist enforced; **charge-mutuelle fields never appear** in any allowlist or plan; route-handler exceptions abort;

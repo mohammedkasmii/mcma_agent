@@ -113,3 +113,14 @@ classification, human finalization). All are reflected in the documents cited ab
 | 7 | F12 truthful readiness; F16 exact-IdRubrique row selection | WORKFLOW_STATE_MODEL §6, SAFETY_MODEL §4a, ADR-0004 | 0004 | F12/F16 safety tests | CN |
 | 8 | Egress protection before collection + OS/CI + subprocess/browser proof | TEST_STRATEGY §1 | 0010 | subprocess+Chromium cannot reach prod host | CN |
 | 9 | Secure local-only admin bootstrap; per-account authz; archive-not-delete | API_CONTRACTS §2/§3, DATA_MODEL §2, THREAT_MODEL T18/T19 | 0008 | bootstrap loopback-only; cross-account denial | CN |
+
+## 6. Final consistency round (dependency purity & structural safety) — where applied
+| # | Correction | Documents | ADR | Planned test | Baseline |
+|---|---|---|---|---|---|
+| C1 | Pure domain: plan types are data; `AuthorizedExecution` (plan+writer) lives in `execution`; domain never references portal | DOMAIN_MODEL §6, MODULE_BOUNDARIES §1/§4, WORKFLOW_STATE_MODEL §1/§2 | 0002/0003 | import contract (domain imports no portal) | NI |
+| C2 | Stale `ExecutionPlan` removed; builders return `ProposedPlan` | DOMAIN_MODEL, MODULE_BOUNDARIES, WORKFLOW_STATE_MODEL, ADR-0002 | 0002 | grep/no stale type | NI |
+| C3 | Direct EXECUTE impossible: `/jobs/dry-runs` + `/jobs/{id}/executions`; `jobs:plan`≠`jobs:execute`; no `mode` field | API_CONTRACTS §3/§4, DOMAIN_MODEL §2, DATA_MODEL §4, ADR-0008, THREAT_MODEL T24, TEST_STRATEGY | 0008 | executions-endpoint validations; no-mode | CN |
+| C4 | Cross-account FK integrity (`UNIQUE(account_id,claim_pk)` + composite FK); `parent_job_id` same account+workflow | DATA_MODEL §3/§4, THREAT_MODEL T25, TEST_STRATEGY | 0006 | mismatched-pair insert fails | NI |
+| C5 | Durable atomic enqueue; `QUEUED` state; status CHECK; restart rules | DATA_MODEL §4, WORKFLOW_STATE_MODEL §7, TEST_STRATEGY | 0005/0010 | crash-point tests | NI |
+| C6 | Login produces in-memory material; service acquires lease before session replacement; `/sessions/login` one-time token, no server browser | SAFETY_MODEL §1/§7, API_CONTRACTS §4, ADR-0007 | 0007 | no-plaintext; lease-before-replace | NI |
+| C7 | Security language: OS mutex is the single-writer guarantee, DB token is not external fencing; consolidated threats; PYTHONSTARTUP not a security control | THREAT_MODEL T13, ADR-0007, TEST_STRATEGY §1 | 0007/0010 | egress OS/CI authoritative | CN |

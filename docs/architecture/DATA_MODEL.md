@@ -54,15 +54,18 @@ CREATE TABLE claims (
   portal_claim_id TEXT NOT NULL,              -- idSinistre, REQUIRED before insertion (decision #10)
   reference TEXT, insured TEXT, police TEXT, matricule_norm TEXT,
   first_seen_version INTEGER NOT NULL, last_seen_version INTEGER NOT NULL,
-  UNIQUE (account_id, portal_claim_id));       -- stable identity = account_id + idSinistre, never category
+  UNIQUE (account_id, portal_claim_id),        -- stable identity = account_id + idSinistre, never category
+  UNIQUE (account_id, claim_pk));               -- composite target for cross-account integrity (correction #4)
   -- NOTE: presence_status / consecutive_absence_count / last_complete_poll_version were MOVED to category_presence.
 
 CREATE TABLE categories (code_alerte TEXT PRIMARY KEY, label TEXT NOT NULL);
 
--- Per-category lifecycle: one row per (account_id, claim_pk, category_code)
+-- Per-category lifecycle: one row per (account_id, claim_pk, category_code).
+-- Correction #4: a SINGLE composite FK ties account_id+claim_pk to ONE claim row — no two independent FKs that could
+-- pair an account with another account's claim.
 CREATE TABLE category_presence (
-  account_id     TEXT NOT NULL REFERENCES accounts(account_id),
-  claim_pk       TEXT NOT NULL REFERENCES claims(claim_pk),
+  account_id     TEXT NOT NULL,
+  claim_pk       TEXT NOT NULL,
   category_code  TEXT NOT NULL REFERENCES categories(code_alerte),
   present        INTEGER NOT NULL,
   presence_status TEXT NOT NULL DEFAULT 'ACTIVE'
@@ -71,7 +74,8 @@ CREATE TABLE category_presence (
   last_complete_poll_version INTEGER,          -- version of the last COMPLETE, valid-session poll of THIS category
   since_version  INTEGER NOT NULL,
   last_seen_poll_run_id TEXT,
-  PRIMARY KEY (account_id, claim_pk, category_code));
+  PRIMARY KEY (account_id, claim_pk, category_code),
+  FOREIGN KEY (account_id, claim_pk) REFERENCES claims(account_id, claim_pk));  -- correction #4: one pair, one claim
 
 CREATE TABLE poll_runs (
   poll_run_id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(account_id),
@@ -125,18 +129,34 @@ CREATE TABLE automation_jobs (
   authorized_by_user_id TEXT REFERENCES users(user_id),
   parent_job_id TEXT REFERENCES automation_jobs(job_id),
   workflow_name TEXT NOT NULL,
-  mode TEXT NOT NULL CHECK (mode IN ('DRY_RUN','EXECUTE')),
-  status TEXT NOT NULL,
+  mode TEXT NOT NULL CHECK (mode IN ('DRY_RUN','EXECUTE')),  -- SET BY THE ENDPOINT, never a client field (correction #3)
+  status TEXT NOT NULL CHECK (status IN (                    -- valid-status contract (correction #5)
+     'QUEUED','PLANNING','NEEDS_REVIEW','PLANNED',
+     'READ_ONLY_IDENTITY_CHECK','DRY_RUN_VERIFIED','IDENTITY_FAILED',
+     'ACQUIRING_ACCOUNT_LOCK','IDENTITY_VERIFYING','IDENTITY_VERIFIED',
+     'WRITING','VERIFYING','WRITE_ABORTED','READY_FOR_HUMAN_REVIEW',
+     'INTERRUPTED_NEEDS_HUMAN_REVIEW','ABORTED_ON_RESTART','ERROR')),
   input_hash TEXT NOT NULL, plan_hash TEXT,
   plan_snapshot TEXT,                          -- safe/non-secret; access-controlled, no PII (footgun A9)
   idempotency_key TEXT NOT NULL,
-  reason_code TEXT,
+  reason_code TEXT,                            -- e.g. INPUT_CHANGED, INVALID_TAX_ALLOCATION, AMBIGUOUS_GLASS, ...
   created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
   state_version INTEGER NOT NULL,
   UNIQUE (account_id, idempotency_key));
 ```
-Every job transition writes this row **and** an `event_outbox` row in **one transaction**. Crash recovery:
-`WORKFLOW_STATE_MODEL.md` §7.
+`mode` is chosen by the endpoint (`/jobs/dry-runs` → DRY_RUN, `/jobs/{id}/executions` → EXECUTE), never accepted from the
+client (correction #3). Every job **transition** writes this row **and** an `event_outbox` row in **one transaction**.
+
+**Durable enqueue (correction #5):** job **creation** is a single atomic transaction that writes **all** of:
+`automation_jobs` (status `QUEUED`) + encrypted `job_inputs` (§4a) + an `account_state_version` bump + an `event_outbox`
+event. If any part fails, **none** is committed (no half-created job, no input-less job). `QUEUED` is durable queued work
+picked up by the runner. Crash recovery: `WORKFLOW_STATE_MODEL.md` §7.
+
+**Repository/application invariants (corrections #3/#4):**
+- `parent_job_id` (EXECUTE → DRY_RUN) must reference a DRY_RUN in `DRY_RUN_VERIFIED` state **of the same `account_id`
+  and `workflow_name`**; enforced by a repository check (SQLite FKs cannot express "same account+workflow"), with tests.
+- Cross-account integrity for `category_presence` is enforced by the composite FK above; a repository test proves that
+  inserting a presence row pairing an `account_id` with another account's `claim_pk` **fails** (`TEST_STRATEGY.md`).
 
 ### 4a. Durable job input (correction #4 — a hash alone cannot execute or recover a job)
 `automation_jobs.input_hash` is an integrity check, **not** the input. The actual typed input is retained encrypted so

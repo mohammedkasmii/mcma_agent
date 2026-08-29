@@ -15,9 +15,15 @@ F18/F19/F20). INV-11 is violated.
   `LocalUserAuthProvider`: local users, **Argon2id**, **no default credentials** (forced admin bootstrap). **Secure
   server-side sessions** (opaque cookie, `HttpOnly`/`SameSite=Strict`/`Secure`, idle+absolute expiry). **CSRF** on
   state-changing requests. **Audit actor = authenticated user** (server-derived).
-- **Authorization** by a **Permission enum** (`notifications:read/update`, `jobs:submit/view`, `sessions:manage`,
-  `accounts:manage`, `users:manage`) mapped to configurable roles; **a viewer gets no mutation rights**;
-  notification-view is separate from automation permission.
+- **Authorization** by a **Permission enum** (`notifications:read/update`, `jobs:plan`, `jobs:execute`, `jobs:view`,
+  `sessions:manage`, `accounts:manage`, `users:manage`) mapped to configurable roles; **a viewer gets no mutation
+  rights**; notification-view is separate from automation permission; **`jobs:plan` (dry-run) is separate from
+  `jobs:execute`** (correction #3).
+- **Direct EXECUTE is structurally impossible (correction #3):** no `mode` parameter exists. DRY_RUN is created at
+  `POST /jobs/dry-runs`; EXECUTE only at `POST /jobs/{dry_run_job_id}/executions`, which derives `authorized_by_user_id`
+  from the session, requires a `DRY_RUN_VERIFIED` parent of the same account+workflow, revalidates per-account authz,
+  matches `input_hash`/`plan_hash`, requires unexpired retained input, rejects `NEEDS_REVIEW`/`IDENTITY_FAILED` parents,
+  and creates an independent EXECUTE job (`API_CONTRACTS.md` §4).
 - **Per-account authorization (correction #9):** permissions are scoped by `user_account_access`; every account-scoped
   endpoint (notifications, jobs, sessions, SSE) checks both the permission and account membership. A global `jobs:view`
   alone never exposes another account's dossiers.

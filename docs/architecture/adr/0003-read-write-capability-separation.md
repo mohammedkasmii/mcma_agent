@@ -18,11 +18,13 @@ The `portal` module constructs three narrow capabilities and nothing else hands 
   generic request; charge-mutuelle not writable; row selection by exact `IdRubrique` (ADR-0004). Identity re-verified
   before the first write and after navigation (TOCTOU).
 
-**Capability-neutral plans (correction #3):** a plan has no `mode`/`read_only`. Planning yields a `ProposedPlan`; only
-execution authorization forms an `ApprovedPlanReference` and then an `ExecutablePlan` bound to a writer
-(`DOMAIN_MODEL.md` §6). No boolean inside a plan can unlock writes. Dry-run has **no code path** to a writer →
-write-incapable by construction. Row lifecycle: read-before-write → diff-before-write → fenced write → verify-after-write
-→ atomic {transition+audit+outbox}.
+**Pure plans; pairing in execution (corrections #1/#3):** a plan is pure data with no `mode`/`read_only` and no
+capability. Planning yields a `ProposedPlan`; execution authorization forms an `ApprovedPlanReference` then pure
+`ExecutablePlanData` (`DOMAIN_MODEL.md` §6). The type that pairs plan data with a live `VerifiedMissionWriter` is
+`AuthorizedExecution`, defined in the **`execution`** module (which may depend on both `domain` and `portal`); `domain`
+never imports or references `portal`, Playwright, `BrowserContext` or a capability. No boolean inside a plan can unlock
+writes. Dry-run has **no code path** to a writer → write-incapable by construction. Row lifecycle: read-before-write →
+diff-before-write → fenced write → verify-after-write → atomic {transition+audit+outbox}.
 
 ## Consequences
 - (+) INV-1, INV-2 enforced structurally; the write surface is explicit and minimal (pit of success).

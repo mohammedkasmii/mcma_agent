@@ -16,7 +16,7 @@ Authoritative business rules: `docs/recovery/BUSINESS_RULES.md` (§B). This docu
 - `LabourFamily` = {TOLERIE_CARROSSERIE, MECANIQUE, PEINTURE, ELECTRIQUE, MARBRE, PARALLELISME_EQUILIBRAGE}
 - `GlassComponent` = {VITRE, PARE_BRISE, LUNETTE_ARRIERE}
 - `GlassOperation` = {REPARATION, REMPLACEMENT}
-- `Permission` = {notifications:read, notifications:update, jobs:submit, jobs:view, sessions:manage, accounts:manage, users:manage} (used by `app`; kept as an enum, never stringly-typed — footgun A12)
+- `Permission` = {notifications:read, notifications:update, jobs:plan, jobs:execute, jobs:view, sessions:manage, accounts:manage, users:manage} (used by `app`; `jobs:plan` and `jobs:execute` are distinct — correction #3; kept as an enum, never stringly-typed — footgun A12)
 
 ## 3. Normalization contracts
 A single shared normalizer (strip accents, lowercase, collapse punctuation/hyphens/whitespace) feeds all matchers.
@@ -53,10 +53,11 @@ The old unrestricted `"mo"` substring is removed.
 - **Charge mutuelle:** portal-native calculation is authoritative in both modes; the domain never produces a write for
   `MontantChargeSocietaire`/`MontantChargeMutuelle`, and the plan cannot contain one (see §6).
 
-## 6. Plan types — capability-neutral (correction #3: no mode/read_only in a plan)
-The deterministic plan carries **no** `mode` and **no** `read_only` boolean. A plan cannot enable writes; **only
-execution authorization plus a `VerifiedMissionWriter` can cause a write.** Three separate structural types express the
-lifecycle so nothing inside a plan can unlock writing:
+## 6. Plan types — pure, capability-neutral immutable data (corrections #1, #2, #3)
+The deterministic plan is **pure immutable data**. It carries **no** `mode`, **no** `read_only`, and **no live
+capability**. `domain` never imports or references `portal`, Playwright, `BrowserContext`, or a write capability. A plan
+cannot enable writes; a write can be caused **only** by execution authorization in the `execution` module (which owns the
+pairing of plan data with the live writer — see below and `MODULE_BOUNDARIES.md`).
 ```text
 ProposedPlan {                     # pure output of planning; capability-neutral; can never write
   expected_identity: ExpectedIdentity
@@ -64,15 +65,14 @@ ProposedPlan {                     # pure output of planning; capability-neutral
   needs_review: [NeedsReview]      # non-empty ⇒ NON-WRITEABLE
   provenance: {input_hash, plan_hash, builder_version}
 }
-ApprovedPlanReference {            # a reference to a ProposedPlan a human/authorization approved
+ApprovedPlanReference {            # a reference to a ProposedPlan that authorization approved
   parent_job_id: JobId
   input_hash: str
   plan_hash: str
 }
-ExecutablePlan {                   # produced ONLY by execution authorization, bound to a live writer
+ExecutablePlanData {               # pure data: an approved plan re-derived from retained input; STILL no capability
   approved: ApprovedPlanReference
   steps: [RowOp]                   # re-derived from the retained input; must match plan_hash
-  writer: VerifiedMissionWriter    # the sole write surface (SAFETY_MODEL §1)
 }
 RowOp { rubrique_id: RubriqueId, ht: Money, tva: Money, vetuste: Money, source_pointers: [str] }
 ExpectedIdentity {                 # correction #4: registration is MANDATORY
@@ -82,9 +82,10 @@ ExpectedIdentity {                 # correction #4: registration is MANDATORY
 }
 ```
 - `ProposedPlan` is what a DRY_RUN produces and verifies; it is **capability-neutral** and has no path to a write.
-- An `ExecutablePlan` exists only after execution authorization re-derives the steps from the retained input
-  (`DATA_MODEL.md` §4a) and confirms `plan_hash`/`input_hash` against the `ApprovedPlanReference` — then binds them to a
-  `VerifiedMissionWriter`. The writer, not the plan, holds the (narrow, explicit) write ability.
+- `ExecutablePlanData` is still **pure data** — it holds no writer and cannot write. The pairing of plan data with a
+  live writer (`AuthorizedExecution`) is defined in the **`execution`** module — which may depend on both `domain` and
+  `portal` — **not** in `domain`. See `MODULE_BOUNDARIES.md` §4 and `SAFETY_MODEL.md` §1 for that type; `domain` does not
+  name or import any portal capability.
 - `RowOp` has **no field** for charge-mutuelle — structurally impossible to write it.
 - **Determinism:** a plan builder is a pure function of typed input; steps are stably ordered (rubrique_id, then first
   source pointer); no wall-clock/randomness/set-iteration affects output. Same input → identical steps and `plan_hash`

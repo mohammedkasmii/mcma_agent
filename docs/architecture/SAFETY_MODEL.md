@@ -14,7 +14,9 @@ receives a general write handle.**
 ### LoginCapability — `portal.open_login_session(account_id)`
 Desktop onboarding tool only (headed, decision #6). Route policy allows **only** confirmed auth/session contracts
 (login, OTP submit, session validate); **denies all mission-row endpoints and all final endpoints**. Exposes
-`perform_manual_login()` → writes an encrypted, account-bound session (§7). No mission access.
+`perform_manual_login()` → produces **in-memory** session material and hands it to the service (correction #6). **It does
+not write the vault and never writes plaintext session state to disk** — the **service** validates, encrypts (DPAPI
+LocalMachine) and atomically stores it (§7). No mission access.
 
 ### ReadCapability — `portal.open_reader(lease_handle)`
 Receives a `LeaseHandle` (acquired by `execution` via `persistence`, correction #5); `portal` does not acquire the lock
@@ -106,11 +108,15 @@ Playwright storage state is a bearer credential. The **single chosen model** is:
 > alternative.
 
 - **Onboarding handoff (correction #6):** the desktop onboarding tool **must not write into the vault directory** and
-  **must never write plaintext session state to disk**. After the human OTP login (headed, `LoginCapability`), the tool
-  performs an **authenticated, single-use, account-bound local handoff** of the freshly captured session to the service
-  (e.g., a loopback-only, one-time-token, `account_id`-scoped call). **The service** validates the account/session
+  **must never write plaintext session state to disk**. `POST /sessions/login` creates a **one-time local onboarding
+  request/token**; the Windows **service does not launch a visible desktop browser** — the human runs the desktop tool in
+  their own session. After the OTP login (headed, `LoginCapability`), the tool performs an **authenticated, single-use,
+  account-bound local handoff** of the in-memory session to the service. **The service** validates the account/session
   evidence, **encrypts** (DPAPI LocalMachine) and **atomically stores** it. The tool holds the session only in memory and
   discards it after handoff.
+- **Lease before replacement (correction #6):** before the service replaces/stores a session for an account, it
+  **acquires that account's lease** (`DATA_MODEL.md` §5), so onboarding cannot overwrite a session while a poll or
+  execution is using it. Session refresh follows the same rule.
 - **Creation of identity binding:** the session is bound to an `account_id` from the `accounts` registry (never a filename).
 - **Decryption:** only the **service** (`portal`) decrypts, at open time; **decryption failure or account-binding
   mismatch → fail closed** (no read/write proceeds).
