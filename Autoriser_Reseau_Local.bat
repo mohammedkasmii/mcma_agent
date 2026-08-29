@@ -1,34 +1,23 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title "MCMA - Configuration Pare-feu Reseau Local"
+title "MCMA - Acces reseau local supprime (INC-00)"
 color 0E
 
 echo ======================================================================
-echo    MCMA Sinistres - Autorisation du Port 8000 sur le Reseau Local
+echo    MCMA Sinistres - Acces Reseau Local SUPPRIME (confinement INC-00)
 echo ======================================================================
 echo.
-echo Ce script configure le Pare-feu Windows Defender pour autoriser
-echo les autres ordinateurs de l'agence a acceder au Tableau de Bord.
+echo Ce script n'ouvre plus aucun port et n'ajoute plus aucune regle de
+echo pare-feu. L'exposition du tableau de bord sur le reseau local a ete
+echo definitivement supprimee pendant la reconstruction : le serveur
+echo n'ecoute plus que sur http://localhost:8000 (127.0.0.1).
 echo.
-
-:: Open port 8000 in Windows Firewall
-netsh advfirewall firewall show rule name="MCMA Dashboard (Port 8000)" >nul 2>&1
-if %errorlevel% equ 0 (
-    echo [OK] La regle de pare-feu existe deja pour le port 8000.
-) else (
-    echo [*] Ajout de la regle pare-feu pour le port 8000...
-    netsh advfirewall firewall add rule name="MCMA Dashboard (Port 8000)" dir=in action=allow protocol=TCP localport=8000 profile=any
-    if %errorlevel% equ 0 (
-        echo [OK] Port 8000 autorise avec succes !
-    ) else (
-        echo [!] Veuillez executer ce script en tant qu'Administrateur (Clic-droit - Executer en tant qu'administrateur).
-    )
-)
-
+echo Pour SUPPRIMER l'ancienne regle de pare-feu de cette machine, un
+echo administrateur doit suivre le runbook :
 echo.
-echo ======================================================================
-echo  Configuration terminee. Vous pouvez maintenant lancer l'application !
+echo     deploy\decommission_firewall.md
+echo.
 echo ======================================================================
 echo.
 pause

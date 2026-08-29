@@ -1,6 +1,26 @@
 # 🚗 MCMA / MAMDA Dossier Automation Agent
 
-Complete browser automation agent for filling vehicle insurance expertise dossiers and uploading documents to the **MCMA / MAMDA SinAuto** portal (`sinauto.mamda-mcma.ma`).
+> ## ⛔ INC-00 — Baseline form filling is PERMANENTLY DISABLED
+>
+> During the rebuild, the baseline live form-filling capability has been
+> **permanently disabled** and structurally removed from this branch:
+>
+> - `run_dossier.py` refuses at startup and never launches a browser.
+> - The API routes `/api/v1/fill-dossier` and `/api/v1/fill-dossier-from-wexia`
+>   have been **removed**.
+> - The Mode Normal / Garage Conventionné writers hard-raise unconditionally.
+> - The API binds to `127.0.0.1` only; LAN launchers/shortcuts and the
+>   firewall-rule script have been removed (see `deploy/decommission_firewall.md`).
+>
+> No environment variable, configuration value, CLI argument, or feature flag
+> restores it. The only future live-write path is the post-G5
+> `VerifiedMissionWriter`. The instructions below that reference form filling
+> are retained **for historical context only** and are marked disabled.
+>
+> Still available: one-time login/session capture (`auth_setup.py`), session
+> keeping, read-only notification extraction, and the local dashboard.
+
+Complete browser automation agent for filling vehicle insurance expertise dossiers and uploading documents to the **MCMA / MAMDA SinAuto** portal (`sinauto.mamda-mcma.ma`). *(Form filling: disabled at INC-00 — see notice above.)*
 
 ---
 
@@ -70,9 +90,9 @@ python auth_setup.py
 
 ---
 
-## 🚀 How to Run
+## 🚀 How to Run — ⛔ DISABLED at INC-00 (historical context only)
 
-### Method 1: Zero-Config Run (Simplest)
+### Method 1: Zero-Config Run (Simplest) — ⛔ DISABLED
 
 Just drop your files in the two folders:
 1. Put your JSON file inside `input_dossier/`
@@ -84,7 +104,7 @@ python run_dossier.py
 
 ---
 
-### Method 2: Custom Paths via CLI
+### Method 2: Custom Paths via CLI — ⛔ DISABLED
 
 ```powershell
 python run_dossier.py --json "input_dossier/custom_dossier.json" `
@@ -93,7 +113,7 @@ python run_dossier.py --json "input_dossier/custom_dossier.json" `
                       --rapport "input_documents/rapport_expertise.pdf"
 ```
 
-### Method 2: Via Web API (FastAPI)
+### Method 2: Via Web API (FastAPI) — ⛔ DISABLED (routes removed)
 
 1. Start the API server:
    ```powershell
@@ -109,7 +129,7 @@ python run_dossier.py --json "input_dossier/custom_dossier.json" `
 
 ---
 
-## 🔄 Exact Automation Workflow
+## 🔄 Exact Automation Workflow — ⛔ DISABLED at INC-00 (historical context only)
 
 ```
 [Dossier JSON + 3 PDFs]

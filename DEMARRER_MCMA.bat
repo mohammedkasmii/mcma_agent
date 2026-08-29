@@ -1,9 +1,9 @@
 @echo off
 cd /d "%~dp0"
-title MCMA Sinistres - Lanceur
+title MCMA Sinistres - Tableau de Bord Local (lecture seule)
 
 echo ======================================================================
-echo    MCMA SINISTRES - TABLEAU DE BORD ET AUTOMATISATION
+echo    MCMA SINISTRES - TABLEAU DE BORD LOCAL (LECTURE SEULE)
 echo ======================================================================
 echo.
 

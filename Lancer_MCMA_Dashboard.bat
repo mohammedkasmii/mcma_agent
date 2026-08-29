@@ -1,11 +1,11 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title "MCMA - Centre de Notifications et Suivi des Actions"
+title "MCMA - Centre de Notifications et Suivi des Actions (local)"
 color 0B
 
 echo ======================================================================
-echo    MCMA Sinistres - Tableau de Bord des Notifications
+echo    MCMA Sinistres - Tableau de Bord des Notifications (local)
 echo ======================================================================
 echo.
 
@@ -18,19 +18,8 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-:: Find local IP address
-set LOCAL_IP=
-for /f "tokens=4" %%a in ('route print ^| find " 0.0.0.0 "') do (
-    set LOCAL_IP=%%a
-    goto :ip_found
-)
-:ip_found
-
-echo [*] Liens d'acces au Tableau de Bord :
-echo     - Sur ce PC             : http://localhost:8000
-if defined LOCAL_IP (
-echo     - Pour vos collegues    : http://%LOCAL_IP%:8000
-)
+echo [*] Acces au Tableau de Bord (sur ce PC uniquement) :
+echo     - http://localhost:8000
 echo.
 echo [*] Demarrage du serveur...
 echo.

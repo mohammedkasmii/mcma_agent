@@ -1,5 +1,12 @@
 @echo off
-title "Ouverture du Tableau de Bord MCMA"
-echo [*] Ouverture du Tableau de Bord MCMA Sinistres...
-start http://192.168.1.17:8000
+title "Tableau de Bord MCMA - Acces temporairement desactive"
+echo ======================================================================
+echo    Acces employe au Tableau de Bord MCMA : DESACTIVE temporairement
+echo ======================================================================
+echo.
+echo L'acces au tableau de bord depuis les autres postes du reseau local a
+echo ete supprime pendant la reconstruction (confinement INC-00).
+echo Le tableau de bord n'est disponible que sur le PC serveur lui-meme.
+echo.
+pause
 exit

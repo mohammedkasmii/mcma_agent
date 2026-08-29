@@ -3,6 +3,11 @@ import os
 import sys
 from playwright.async_api import async_playwright
 
+_INC00_CONTAINMENT_MSG = (
+    "Baseline live-write capability was permanently removed at INC-00; "
+    "the only live-write path is the post-G5 VerifiedMissionWriter."
+)
+
 async def manual_login():
     async with async_playwright() as p:
         # Launch a visible browser window
@@ -61,11 +66,14 @@ async def manual_login():
         # Save session storage state (cookies, local storage)
         auth_file = "mcma_auth_state.json"
         await context.storage_state(path=auth_file)
-        
+
         if os.path.exists(auth_file) and os.path.getsize(auth_file) > 10:
             print("\n" + "=" * 65)
             print(f"  [✓] SUCCESS! Verified session saved to '{auth_file}'")
-            print("  You can now run 'python run_dossier.py' to automate dossiers.")
+            print("  NOTE: Baseline dossier filling is disabled during the rebuild:")
+            print("  " + _INC00_CONTAINMENT_MSG)
+            print("  Read-only notification functionality remains available")
+            print("  (dashboard via main.py, extraction via get_notifications.py).")
             print("=" * 65 + "\n")
         else:
             print(f"[X] Error: Could not save session state to {auth_file}.")
@@ -73,4 +81,4 @@ async def manual_login():
         await browser.close()
 
 if __name__ == "__main__":
-    asyncio.run(manual_login())
+    asyncio.run(manual_login())

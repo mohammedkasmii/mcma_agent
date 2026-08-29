@@ -13,6 +13,11 @@ import sys
 import glob
 import subprocess
 
+_INC00_CONTAINMENT_MSG = (
+    "Baseline live-write capability was permanently removed at INC-00; "
+    "the only live-write path is the post-G5 VerifiedMissionWriter."
+)
+
 def clear():
     os.system('cls' if os.name == 'nt' else 'clear')
 
@@ -45,7 +50,7 @@ def main_menu():
         clear()
         print_header()
         print("\n  [MENU OPTIONS]:\n")
-        print("  1. 🚀 Run Dossier Automation (Fills MCMA form & uploads PDFs)")
+        print("  1. ⛔ Remplissage de dossier DESACTIVE (confinement permanent INC-00)")
         print("  2. 🔑 One-Time Login (Setup session & save SMS/OTP code)")
         print("  3. 🔍 Test JSON Mapping (Preview mapped fields without opening browser)")
         print("  4. 📁 View Files in Input Folders (JSON & PDFs)")
@@ -58,8 +63,8 @@ def main_menu():
         
         if choice == "1":
             clear()
-            print("[*] Launching Dossier Automation...\n")
-            subprocess.run([sys.executable, "run_dossier.py"])
+            print("  [X] Option definitivement desactivee (confinement INC-00) :")
+            print("  " + _INC00_CONTAINMENT_MSG)
             input("\nPress Enter to return to menu...")
             
         elif choice == "2":
