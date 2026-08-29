@@ -305,7 +305,8 @@ python -m tools.session_keeper --check
 
 ## 8. Étape 6 — Première extraction des alertes
 
-Double-cliquez sur **`Extraire_Notifications_MCMA.bat`**.
+Cette etape est **facultative** : le poller automatique s'en charge des le demarrage.
+Pour verifier tout de suite que l'extraction fonctionne :
 
 Ou :
 
@@ -514,7 +515,7 @@ Ensuite, plus rien à faire : le système se synchronise **tout seul toutes les 
 cd C:\mcma_agent
 
 python -m tools.session_keeper --check     # état de la session MCMA
-python -m pytest -q                  # intégrité du code (attendu : 32 passed)
+python -m pytest -q                  # intégrité du code (attendu : 57 passed)
 ipconfig                             # adresse IP du serveur
 curl http://localhost:8000/health    # le serveur répond-il ?
 ```
@@ -522,7 +523,9 @@ curl http://localhost:8000/health    # le serveur répond-il ?
 `/health` doit renvoyer :
 
 ```json
-{"status":"ok","service":"mcma-automation-agent","version":"2.0.0","features":{"form_filling":false}}
+{"status":"ok","service":"mcma-operations-hub","version":"3.0.0",
+ "features":{"form_filling":false},
+ "window":{"open":true,"opens_at":"07:45","closes_at":"18:00","timezone":"Africa/Casablanca"}}
 ```
 
 `"form_filling": false` confirme que le module de remplissage automatique est bien désactivé.
@@ -538,7 +541,6 @@ Le code du remplissage automatique des rapports d'expertise est présent mais **
 | `POST /api/v1/fill-dossier` | Refus HTTP 503 |
 | `POST /api/v1/fill-dossier-from-wexia` | Refus HTTP 503 |
 | `python -m tools.run_dossier` | Refuse et quitte |
-| ~~`menu.py`~~ (supprimé) | Marquée `[DESACTIVE]` |
 
 **Ne tentez pas de l'activer à l'agence.** Sa réactivation exige des travaux préalables décrits dans `docs/PROJECT_ARCHITECTURE_BLUEPRINT.md` §11 : politique de sécurité à deux niveaux, vérification de l'écriture qui échoue en cas de doute, et rapport de contrôle avant validation humaine.
 
@@ -557,25 +559,29 @@ Le code du remplissage automatique des rapports d'expertise est présent mais **
 ║                                                                  ║
 ║  Dossier du projet : C:\mcma_agent                               ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  CHAQUE MATIN                                                    ║
+║  CHAQUE MATIN  (2 minutes)                                       ║
 ║   1. Ouvrir le tableau de bord                                   ║
-║   2. Cliquer « Actualiser MCMA »                                 ║
-║   3. Si erreur -> « Reconnecter » + code SMS                     ║
+║   2. Regarder les 4 cartes de comptes en haut                    ║
+║   3. Toute carte non verte -> « Reconnecter » + code SMS         ║
+║                                                                  ║
+║   Ensuite : synchronisation automatique toutes les 5 min         ║
+║             jusqu'a 18h00. Rien d'autre a faire.                 ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  FICHIERS À DOUBLE-CLIC (sur le PC serveur)                      ║
-║   Se_Connecter_MCMA.bat ......... connexion + code SMS           ║
-║   Extraire_Notifications_MCMA.bat  extraction des alertes        ║
-║   DEMARRER_MCMA.bat ............. démarrer le serveur            ║
+║  A DOUBLE-CLIC (sur le PC serveur)                               ║
+║   DEMARRER_MCMA.bat .................. demarrer le serveur       ║
+║   scripts\Se_Connecter_MCMA.bat ....... connexion de secours     ║
+║   scripts\Sauvegarde_MCMA.bat ......... sauvegarde manuelle      ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  RÈGLES IMPORTANTES                                              ║
-║   • Ne pas fermer la fenêtre noire du serveur                    ║
-║   • Une seule personne actualise à la fois                       ║
-║   • Téléphone SMS disponible le matin                            ║
-║   • Portail MCMA fermé après 18h00                               ║
+║  REGLES IMPORTANTES                                              ║
+║   - Ne pas fermer la fenetre noire du serveur                    ║
+║   - Laisser la session Windows ouverte                           ║
+║   - Telephone SMS disponible le matin                            ║
+║   - Portail MCMA ferme apres 18h00                               ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  EN CAS DE BLOCAGE                                               ║
 ║   cd C:\mcma_agent                                               ║
-║   python -m tools.session_keeper --check                               ║
+║   python -m tools.session_keeper --check                         ║
+║   curl http://localhost:8000/health                              ║
 ╚══════════════════════════════════════════════════════════════════╝
 ```
 
@@ -588,7 +594,7 @@ Cochez au fur et à mesure :
 - [ ] Python 3.10+ installé, `Add to PATH` coché
 - [ ] Code copié dans `C:\mcma_agent`
 - [ ] `scripts/setup_new_pc.bat` exécuté sans erreur
-- [ ] `python -m pytest -q` → `32 passed`
+- [ ] `python -m pytest -q` → `57 passed`
 - [ ] Adresse IP du serveur fixée : `______________________`
 - [ ] Règle pare-feu créée avec `remoteip=` du sous-réseau de l'agence
 - [ ] Première connexion MCMA réussie (`mcma_auth_state.json` créé)
