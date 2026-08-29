@@ -57,10 +57,12 @@ echo ================================================================
 echo                   SETUP COMPLETE & READY!
 echo ================================================================
 echo.
-echo Next steps:
-echo   1. Run 'python auth_setup.py' once to log in and save your session.
-echo   2. Drop your dossier.json into 'input_dossier\'
-echo   3. Drop your 3 PDFs into 'input_documents\'
-echo   4. Run 'python run_dossier.py' to automate!
+echo Prochaines etapes (voir GUIDE_INSTALLATION_AGENCE.md) :
+echo   1. Se_Connecter_MCMA.bat        -- connexion MCMA + code SMS (OTP)
+echo   2. Extraire_Notifications_MCMA.bat -- premiere extraction des alertes
+echo   3. DEMARRER_MCMA.bat            -- lancer le tableau de bord
+echo.
+echo NOTE : le module de remplissage automatique des formulaires
+echo        (run_dossier.py) est DESACTIVE. Voir core\features.py.
 echo.
 pause
