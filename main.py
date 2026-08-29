@@ -8,6 +8,8 @@ Coordinates navigation, form filling, mode routing (Normal vs Conventionné), an
 import os
 import sys
 import json
+import asyncio
+import contextlib
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +23,11 @@ from core.config import (
     TEMP_DIR,
     LOGS_DIR,
 )
+from core.accounts import ACCOUNTS, ACCOUNT_IDS, resolve_auth_state_path
+from core.window import WINDOW
+from db.repository import Repository
+from portal import auth as portal_auth
+from portal.poller import poller_loop, poll_one_account, poll_all_accounts, account_lock
 from core.features import (
     FORM_FILLING_ENABLED,
     FORM_FILLING_DISABLED_MESSAGE,
@@ -46,12 +53,71 @@ if hasattr(sys.stdout, "reconfigure"):
 app = FastAPI(
     title="MCMA RPA Automation Agent",
     description="Automated filing of expertise reports, garage devis, and notifications on MCMA portal.",
-    version="2.0.0",
+    version="3.0.0",
 )
+
+# ---------------------------------------------------------------------------
+# Shared state: one repository and one background poller per process.
+# ---------------------------------------------------------------------------
+repo: Optional[Repository] = None
+_poller_task: Optional[asyncio.Task] = None
+_poller_stop: Optional[asyncio.Event] = None
+
+
+def get_repo() -> Repository:
+    """Lazily opens the database. Also used by tests to force initialisation."""
+    global repo
+    if repo is None:
+        repo = Repository()
+        for acc in ACCOUNTS:
+            repo.upsert_account(
+                account_id=acc["account_id"],
+                entity=acc["entity"],
+                portfolio=acc["portfolio"],
+                display_name=acc["display_name"],
+                base_url=acc["base_url"],
+            )
+    return repo
+
+
+@contextlib.asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Starts the background poller on boot and stops it cleanly on shutdown."""
+    global _poller_task, _poller_stop
+    get_repo()
+    poller_disabled = os.environ.get(
+        "MCMA_DISABLE_POLLER", ""
+    ).strip().lower() in {"1", "true", "yes"}
+    if poller_disabled:
+        print("[i] Poller désactivé (MCMA_DISABLE_POLLER).")
+    else:
+        _poller_stop = asyncio.Event()
+        _poller_task = asyncio.create_task(poller_loop(get_repo(), _poller_stop))
+
+    yield
+
+    if _poller_stop is not None:
+        _poller_stop.set()
+    if _poller_task is not None:
+        _poller_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await _poller_task
+    if repo is not None:
+        repo.close()
+
+
+app.router.lifespan_context = lifespan
 
 
 class FillDossierRequest(BaseModel):
     payload: Dict[str, Any]
+
+
+class EmployeeActionUpdate(BaseModel):
+    claim_id: int
+    status: str
+    note: Optional[str] = ""
+    updated_by: Optional[str] = None
 
 
 class WexiaDossierRequest(BaseModel):
@@ -80,6 +146,125 @@ async def health_check():
 async def api_features():
     """Reports which optional subsystems are active, so the UI can hide disabled ones."""
     return {"status": "success", "features": feature_status()}
+
+
+# ===========================================================================
+# Operations Hub — multi-account state, accounts, login, refresh
+# ===========================================================================
+
+
+@app.get("/api/v1/state")
+async def api_state(since: int = 0):
+    """
+    Delta feed polled by the dashboard every 15 seconds (§9.1).
+
+    Returns only rows whose changed_version exceeds `since`, so the payload stays
+    small no matter how many claims exist. `version` is monotonic and must be
+    echoed back on the next call.
+    """
+    r = get_repo()
+    state = r.get_state(since=since)
+    state["window"] = WINDOW.status()
+    state["counts"] = r.counts()
+    state["features"] = feature_status()
+    state["status"] = "success"
+    return state
+
+
+@app.get("/api/v1/accounts")
+async def api_accounts():
+    """The four account cards: identity, session health, and last successful poll."""
+    r = get_repo()
+    accounts = r.list_accounts(only_enabled=False)
+    for acc in accounts:
+        acc["has_session"] = bool(resolve_auth_state_path(acc["account_id"]))
+        acc["login_in_flight"] = portal_auth.is_login_in_flight(acc["account_id"])
+    return {
+        "status": "success",
+        "accounts": accounts,
+        "window": WINDOW.status(),
+        "warn_sessions": WINDOW.should_warn_sessions(),
+    }
+
+
+@app.post("/api/v1/accounts/{account_id}/login")
+async def api_account_login(account_id: str):
+    """
+    Opens a visible login window ON THE SERVER for one account (§6).
+
+    Refuses outside the operating window with a clear message, so nobody
+    concludes the system is broken when the portal is simply closed.
+    """
+    if account_id not in ACCOUNT_IDS:
+        raise HTTPException(status_code=404, detail=f"Compte inconnu : {account_id}")
+    r = get_repo()
+    try:
+        result = await portal_auth.interactive_login(account_id)
+    except portal_auth.LoginRefused as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    if result["success"]:
+        r.set_session_health(account_id, "HEALTHY", validated=True)
+        r.audit("ACCOUNT_LOGIN", actor="employee", account_id=account_id)
+    else:
+        r.set_session_health(account_id, "EXPIRED", error=result["message"])
+    return {"status": "success" if result["success"] else "failed", **result}
+
+
+@app.post("/api/v1/accounts/{account_id}/validate")
+async def api_account_validate(account_id: str):
+    """Headless session check — used by the start-of-shift validation."""
+    if account_id not in ACCOUNT_IDS:
+        raise HTTPException(status_code=404, detail=f"Compte inconnu : {account_id}")
+    r = get_repo()
+    result = await portal_auth.validate_session(account_id)
+    r.set_session_health(
+        account_id, result["health"],
+        error=None if result["valid"] else result["message"],
+        validated=result["valid"],
+    )
+    return {"status": "success", **result}
+
+
+@app.post("/api/v1/refresh")
+async def api_refresh(account_id: Optional[str] = None):
+    """
+    Manual refresh, on top of the automatic 5-minute poll.
+
+    Unlike the old on-demand endpoint this reuses the poller's per-account lock,
+    so repeated clicks queue behind each other instead of spawning a browser
+    per click.
+    """
+    r = get_repo()
+    if not WINDOW.is_open():
+        raise HTTPException(status_code=409, detail=WINDOW.status().get(
+            "message", "Portail fermé."))
+    if account_id:
+        if account_id not in ACCOUNT_IDS:
+            raise HTTPException(status_code=404, detail=f"Compte inconnu : {account_id}")
+        results = [await poll_one_account(r, account_id)]
+    else:
+        results = await poll_all_accounts(r)
+    return {"status": "success", "results": results, "version": r.get_state()["version"]}
+
+
+@app.post("/api/v1/employee-actions")
+async def api_set_employee_action(action: EmployeeActionUpdate):
+    """Sets a claim's work status and note, attributed to the employee's name."""
+    if action.status not in ("TODO", "IN_PROGRESS", "DONE", "WAITING"):
+        raise HTTPException(status_code=400, detail=f"Statut invalide : {action.status}")
+    r = get_repo()
+    result = r.set_employee_action(
+        claim_id=action.claim_id,
+        status=action.status,
+        note=action.note or "",
+        updated_by=action.updated_by,
+    )
+    r.audit("EMPLOYEE_ACTION", actor=action.updated_by or "inconnu",
+            claim_id=action.claim_id, details={"status": action.status})
+    return {"status": "success", **result}
 
 
 @app.post("/api/v1/auth/launch-login")

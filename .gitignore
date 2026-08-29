@@ -45,3 +45,11 @@ input_documents/*
 .pytest_cache/
 .coverage
 htmlcov/
+
+# SQLite database, backups, and per-account sessions (never commit)
+data/
+backups/
+sessions/
+*.db
+*.db-wal
+*.db-shm

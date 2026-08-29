@@ -4,6 +4,39 @@ Complete browser automation agent for filling vehicle insurance expertise dossie
 
 ---
 
+## 🔔 Centre de Notifications (Phase 1 — opérationnel)
+
+Hub multi-comptes qui surveille les alertes des 4 profils portail et suit le travail des employés.
+
+```powershell
+python -m db.migrate     # une seule fois : cree la base et importe l'existant
+python main.py           # demarre le serveur + le poller automatique
+```
+
+| Capacité | Détail |
+| :--- | :--- |
+| **4 comptes** | MCMA/MAMDA × Oujda/Nador, session et carte d'état par compte |
+| **Poller automatique** | Toutes les 5 min, **uniquement 07h45–18h00** (`Africa/Casablanca`) |
+| **SQLite (WAL)** | `data/mcma.db` — fin des pertes d'écriture concurrentes |
+| **Cycle de vie double** | Présence portail vs statut employé, séparés : une alerte archivée **garde ses notes** |
+| **Flux delta** | `GET /api/v1/state?since=<version>`, interrogé toutes les 15 s |
+| **Attribution** | Nom de l'employé enregistré sur chaque changement |
+
+### Endpoints principaux
+
+| Endpoint | Rôle |
+| :--- | :--- |
+| `GET /api/v1/state?since=` | Flux delta des sinistres + fenêtre + comptes |
+| `GET /api/v1/accounts` | Les 4 cartes : santé de session, dernière synchro |
+| `POST /api/v1/accounts/{id}/login` | Ouvre la fenêtre OTP **sur le PC serveur** |
+| `POST /api/v1/accounts/{id}/validate` | Vérification headless de la session |
+| `POST /api/v1/refresh` | Synchronisation manuelle (verrou par compte) |
+| `POST /api/v1/employee-actions` | Statut + note + auteur |
+
+📘 **Installation à l'agence : voir [`GUIDE_INSTALLATION_AGENCE.md`](GUIDE_INSTALLATION_AGENCE.md).**
+
+---
+
 ## ⚠️ Module de remplissage automatique — DÉSACTIVÉ
 
 Le **centre de notifications** (`python main.py` → http://localhost:8000) est la fonctionnalité active et prise en charge.

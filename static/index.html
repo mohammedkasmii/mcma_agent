@@ -46,22 +46,34 @@
                 </button>
                 <input type="file" id="fileInput" accept=".json" style="display: none;">
                 
-                <button class="btn btn-secondary" id="btnReauth" title="Renouveler la session MCMA (Login + SMS OTP)">
+                <button class="btn btn-secondary" id="btnWhoAmI" title="Changer d'utilisateur">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                        <circle cx="12" cy="7" r="4"></circle>
                     </svg>
-                    <span>Connexion MCMA</span>
+                    <span id="whoAmILabel">Identifiez-vous</span>
                 </button>
 
-                <button class="btn btn-primary" id="btnRefreshLive" title="Actualiser en direct depuis MCMA">
+                <button class="btn btn-primary" id="btnRefreshLive" title="Actualiser maintenant (l'actualisation est automatique toutes les 5 min)">
                     <svg class="refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
                     </svg>
-                    <span>Actualiser MCMA</span>
+                    <span>Actualiser</span>
                 </button>
             </div>
         </header>
+
+        <!-- Operating window banner (shown when the portal is closed) -->
+        <div class="window-banner" id="windowBanner" style="display:none;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+            </svg>
+            <span id="windowBannerText"></span>
+        </div>
+
+        <!-- Account cards: one per portal profile -->
+        <section class="account-grid" id="accountGrid"></section>
 
         <!-- KPI Metric Cards -->
         <section class="metrics-grid">

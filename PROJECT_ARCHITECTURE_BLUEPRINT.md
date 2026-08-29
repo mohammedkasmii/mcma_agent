@@ -658,8 +658,20 @@ written; the `config.py` docstring claiming all mutating endpoints were blocked 
    phantom `createDevisDet`. A phantom pattern in the list manufactures false confidence.
 2. ✅ Blocked responses now fail closed — HTTP 403 with `__mcma_blocked` (§11.3) instead of
    HTTP 200 `{"state":"success"}`.
-3. ⬜ **Audit the affected missions.** Runs recorded in `logs/workflow_*.json` and `logs/gc_*.json`
-   may have left orphan rubrique rows that a human must review and remove on the portal.
+3. ✅ **Audit complete.** All run logs (`logs/workflow_*.json`, `logs/gc_*.json`,
+   `temp/test_logs/*.json`) were scanned for row-write activity. **Exactly one run wrote rows:**
+
+   | Run log | Mode | Dossier | Writes |
+   |:---|:---|:---|:---|
+   | `logs/gc_20260826_150721.json` | Conventionné | `MCM26-08-26.WEX6747` | 4 × `updateDevisDet` HTTP 200 — rubriques 1, 16, 7, 12 |
+
+   These were **in-place edits of four pre-existing Table 2 rows**, not row creations: HT, Taxe and
+   Vétusté values were overwritten. `#DEVISDET_Btn` was untouched, so the devis was never validated
+   and the values remain editable. If this run targeted the live portal rather than
+   `mock_server.py`, an expert should re-check those four amounts on dossier `MCM26-08-26.WEX6747`.
+
+   **Mode Normal never fired a single write** in any recorded run — so the accidental
+   `createRapportDefDet` gap, while real, was never exercised. No orphan rows exist.
 4. ⬜ **When re-enabling Conventionné:** `_edit_single_row_dynamic` awaits a real `updateDevisDet`
    response and will now receive the 403 sentinel in `PREVIEW`. It must treat that as a blocked
    write and report `SIMULATED`, not as a failure and not as a success (§11.3, §11.6).
@@ -904,16 +916,17 @@ engine came first; the operations hub is the newer effort.
 
 ```
 PHASE 0 — Prerequisite spikes and hygiene
-├── 0. Close the Mode Normal interception gap + audit (§11.0)  🔴 BLOCKING ⬜
-├── 1. httpx-vs-Playwright transport spike (§4.1)                       ⬜
-└── 2. Remove real PII from static/app.js and history (§13)             ⬜
+├── 0. Close the Mode Normal interception gap + audit (§11.0)           ✅
+├── 1. httpx-vs-Playwright transport spike (§4.1)                       ⬜  (poller runs on Playwright meanwhile)
+└── 2. Remove real PII from static/app.js (§13)                         🟡  (working tree ✅, history ⬜)
 
-PHASE 1 — Multi-Account Notification & Action Hub  (CURRENT FOCUS)
-├── 1. SQLite schema + WAL + changed_version + JSON migration           ⬜
-├── 2. Multi-account model, per-account login button, session health    ⬜  (🟡 single-account seed)
-├── 3. Scheduled in-window poller + category-scoped state machine (§8)  🟡  (extractor ✅, but see §8.2)
-├── 4. Dashboard: account tabs, 15s delta polling, attribution, CSRF    🟡  (dashboard ✅)
-└── 5. Task Scheduler deployment, nightly backup, health surfacing      ⬜
+PHASE 1 — Multi-Account Notification & Action Hub  (DELIVERED)
+├── 1. SQLite schema + WAL + changed_version + JSON migration           ✅  db/, python -m db.migrate
+├── 2. Multi-account model, per-account login button, session health    ✅  core/accounts.py, portal/auth.py
+├── 3. Scheduled in-window poller + category-scoped state machine (§8)  ✅  portal/poller.py, portal/extractor.py
+├── 4. Dashboard: account cards, 15s delta polling, name attribution    ✅  static/, GET /api/v1/state
+└── 5. Task Scheduler deployment, nightly backup, health surfacing      ✅  Installer_Demarrage_Auto.bat,
+                                                                            Sauvegarde_MCMA.bat
 
 PHASE 2 — Automated Expertise Form Filling Agent
 ├── 1. Wexia ERP JSON import & deterministic mapper                     ✅  (12 unit tests)

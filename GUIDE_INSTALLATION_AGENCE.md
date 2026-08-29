@@ -13,24 +13,28 @@ Lisez cette section en premier. Elle évite les mauvaises surprises.
 
 ### ✅ Ce qui fonctionne aujourd'hui
 
-- Extraction de **toutes les alertes** du portail MCMA/MAMDA (toutes catégories, toutes les lignes).
-- **Tableau de bord web** consultable par tous les employés de l'agence depuis leur propre PC ou téléphone.
-- **Suivi du travail** : chaque alerte peut être marquée `À Traiter` / `En Cours` / `Traité` / `En Attente`, avec une note libre.
-- **Recherche instantanée** par référence, immatriculation, sociétaire, police.
-- **Lien direct** vers le dossier concerné sur le portail MCMA.
-- **Renouvellement de session** en 1 clic depuis le tableau de bord.
+- **4 comptes portail** (MCMA/MAMDA × Oujda/Nador), chacun avec sa propre session et sa carte d'état.
+- **Actualisation automatique toutes les 5 minutes**, uniquement entre **07h45 et 18h00**. Plus besoin de cliquer.
+- **Base de données SQLite** : les statuts et notes sont partagés en temps réel entre tous les employés, sans perte de modification.
+- **Tableau de bord web** consultable depuis n'importe quel PC ou téléphone de l'agence, actualisé toutes les 15 secondes.
+- **Suivi du travail** : `À Traiter` / `En Cours` / `Traité` / `En Attente`, avec note libre et **nom de l'employé** enregistré.
+- **Archivage intelligent** : une alerte retirée du portail est archivée localement **sans perdre les notes**.
+- **Recherche instantanée** par référence, immatriculation, sociétaire, police ou note.
+- **Reconnexion en 1 clic** par compte, avec code SMS.
+- **Démarrage automatique** à l'ouverture de session Windows, avec relance en cas de panne.
+- **Sauvegarde quotidienne** de la base de données.
 
-### ⚠️ Ce qui n'est PAS encore en place
+### ⚠️ Limites connues
 
-| Limite actuelle | Conséquence pratique |
+| Limite | Conséquence pratique |
 | :--- | :--- |
-| **Un seul compte portail à la fois** | Le système gère la session d'**un** compte MCMA/MAMDA. Le multi-comptes (4 profils) est prévu mais non développé. |
-| **Pas d'actualisation automatique** | Les alertes ne se rafraîchissent pas toutes seules. Un employé doit cliquer **« Actualiser MCMA »**. |
-| **Notes stockées dans un fichier JSON** | Si deux employés modifient un statut **exactement à la même seconde**, une des deux modifications peut être perdue. Rare, mais réel. La base SQLite corrigera ce point. |
-| **Module de remplissage automatique DÉSACTIVÉ** | Le remplissage des rapports d'expertise (Mode Normal / Conventionné) est présent dans le code mais **volontairement désactivé**. Il n'agira pas sur le portail. |
-| **Session expire** | Il faut se reconnecter (code SMS) régulièrement, en général chaque matin. |
+| **Le portail ferme à 18h00** | Aucune connexion possible après 18h. Une session perdue en fin de journée n'est récupérable que le lendemain matin. Le système en tient compte : il n'interroge pas le portail hors horaires et **n'archive rien** pendant ce temps. |
+| **Chaque compte a son propre code SMS** | Il faut reconnecter chaque compte individuellement, en général une fois par matin. |
+| **Module de remplissage automatique DÉSACTIVÉ** | Le remplissage des rapports d'expertise (Mode Normal / Conventionné) est présent dans le code mais **volontairement désactivé**. Il n'agira jamais sur le portail. |
+| **Pas de mot de passe sur le tableau de bord** | Toute personne sur le réseau de l'agence peut l'ouvrir. C'est pourquoi le pare-feu est **restreint au sous-réseau de l'agence** (étape 4) : le Wi-Fi invité est exclu. |
+| **Un seul PC serveur** | S'il est éteint, le tableau de bord est inaccessible. Les données restent intactes. |
 
-> 👉 Ces limites sont documentées et planifiées dans `PROJECT_ARCHITECTURE_BLUEPRINT.md`. Le système est **utilisable en production dès aujourd'hui** avec ces réserves.
+> 👉 Détails et feuille de route dans `PROJECT_ARCHITECTURE_BLUEPRINT.md`.
 
 ---
 
@@ -67,18 +71,11 @@ Lisez cette section en premier. Elle évite les mauvaises surprises.
 
 ### 2.1 Ne rendez JAMAIS le dépôt GitHub public
 
-Le fichier `static/app.js` contient encore des **données réelles** (noms de sociétaires, immatriculations, numéros de police) codées en dur comme jeu de démonstration. Elles sont aussi présentes dans **l'historique Git**.
+Les données réelles ont été retirées de `static/app.js` (remplacées par des noms fictifs : `ALAOUI Mohamed` / `12345-A-7`). **Mais elles restent présentes dans l'historique Git**, dans les commits antérieurs.
 
-Rendre le dépôt public — même après avoir supprimé ces données — les exposerait publiquement.
+Rendre le dépôt public exposerait donc toujours les noms de sociétaires, immatriculations et numéros de police d'origine.
 
 **Le transfert du code se fait hors ligne (étape 1). Le dépôt reste privé.**
-
-Si vous voulez malgré tout nettoyer avant transfert :
-
-```powershell
-# Remplacez le bloc SAMPLE_NOTIFICATIONS de static/app.js par des données fictives
-# (style : ALAOUI Mohamed / 12345-A-7 / DTA-2024-098765)
-```
 
 ### 2.2 Vérifiez que tout passe
 
@@ -87,7 +84,7 @@ cd C:\Users\hp\Desktop\mcma_agent
 python -m pytest -q
 ```
 
-Résultat attendu : `32 passed`.
+Résultat attendu : `56 passed`.
 
 ### 2.3 Préparez le paquet de transfert
 
@@ -181,7 +178,7 @@ cd C:\mcma_agent
 python -m pytest -q
 ```
 
-Résultat attendu : `32 passed`.
+Résultat attendu : `56 passed`.
 
 ---
 
@@ -239,6 +236,33 @@ Vérification :
 ```powershell
 netsh advfirewall firewall show rule name="MCMA Dashboard (Port 8000)"
 ```
+
+---
+
+## 6bis. Étape 4bis — Créer la base de données et importer l'existant
+
+À faire **une seule fois**, avant le premier démarrage.
+
+```powershell
+cd C:\mcma_agent
+python -m db.migrate
+```
+
+Ce que fait cette commande :
+
+1. Crée `data\mcma.db` (SQLite) et les 4 profils de comptes.
+2. Importe les alertes déjà extraites depuis `logs\mcma_notifications.json`, si le fichier existe.
+3. **Réapplique tous les statuts et notes** déjà saisis par les employés depuis `logs\notification_actions.json`.
+
+Pour voir ce qui serait fait sans rien écrire :
+
+```powershell
+python -m db.migrate --dry-run
+```
+
+> ℹ️ Les actions qui ne correspondent à aucune alerte connue sont **signalées, jamais supprimées**. Elles se rattacheront automatiquement si l'alerte réapparaît lors d'une synchronisation ultérieure.
+
+La commande est **rejouable sans risque** : elle ne crée pas de doublons.
 
 ---
 
@@ -392,7 +416,10 @@ Le système a besoin d'une **session Windows ouverte** (pas d'un service Windows
 
 ### 11.2 Créer la tâche planifiée
 
-Ouvrez le **Planificateur de tâches** (`taskschd.msc`) → *Créer une tâche…*
+**Méthode rapide** — clic droit sur **`Installer_Demarrage_Auto.bat`** → *Exécuter en tant qu'administrateur*.
+Le script crée la tâche et affiche les deux réglages restants à cocher à la main.
+
+**Méthode manuelle** — Planificateur de tâches (`taskschd.msc`) → *Créer une tâche…*
 
 | Onglet | Réglage |
 | :--- | :--- |
@@ -437,23 +464,32 @@ Planifiez-le dans le Planificateur de tâches, **tous les jours à 18h15**, et c
 
 ### Le matin (~08h00) — 2 minutes
 
-1. Vérifier que le tableau de bord répond : `http://192.168.1.17:8000`.
-2. Cliquer sur **« Actualiser MCMA »**.
-3. Si un message d'erreur ou de session expirée apparaît :
-   - Cliquer sur **« Reconnecter »** (ou lancer `Se_Connecter_MCMA.bat` sur le serveur),
-   - saisir identifiant, mot de passe et **code SMS**,
-   - cliquer de nouveau sur **« Actualiser MCMA »**.
+1. Ouvrir le tableau de bord : `http://192.168.1.17:8000`.
+2. Regarder les **4 cartes de comptes** en haut de la page :
+   - 🟢 **Session active** → rien à faire.
+   - ⚪ **Jamais connecté** / 🔴 **Session expirée** → cliquer **« Reconnecter »** sur cette carte.
+3. Une fenêtre de navigateur s'ouvre **sur le PC serveur**. Saisir identifiant, mot de passe et **code SMS**.
+4. Répéter pour chaque carte non verte.
+
+Ensuite, plus rien à faire : le système se synchronise **tout seul toutes les 5 minutes** jusqu'à 18h00.
 
 📱 **Le téléphone qui reçoit les SMS doit être présent le matin.** Le portail MCMA n'accepte plus de connexion après 18h00 : une session perdue en fin de journée ne pourra être rétablie que le lendemain matin.
 
 ### Pendant la journée
 
 - Les employés traitent les alertes et mettent à jour statuts et notes.
-- Actualiser toutes les 30 à 60 minutes, **par une seule personne à la fois**.
+- Le tableau de bord se rafraîchit tout seul **toutes les 15 secondes** : le travail d'un collègue apparaît chez les autres sans rien faire.
+- Le bouton **« Actualiser »** reste disponible pour forcer une synchronisation immédiate, mais n'est plus nécessaire.
+
+### Vers 17h00
+
+- Si une carte de compte passe au rouge, **reconnectez-la maintenant**, pendant que la personne avec le téléphone est encore là.
 
 ### Le soir (18h00)
 
-- Rien à faire. Laisser le PC allumé et la session ouverte.
+- Rien à faire. Laisser le PC allumé et la session Windows ouverte.
+- Le portail ferme : le système arrête d'interroger et n'archive rien pendant la nuit.
+- La sauvegarde s'exécute à 18h15 si vous l'avez planifiée (§12).
 
 ---
 

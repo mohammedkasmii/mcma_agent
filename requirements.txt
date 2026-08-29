@@ -6,3 +6,4 @@ pydantic
 requests
 httpx
 pytest
+tzdata
