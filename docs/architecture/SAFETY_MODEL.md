@@ -16,17 +16,27 @@ Desktop onboarding tool only (headed, decision #6). Route policy allows **only**
 (login, OTP submit, session validate); **denies all mission-row endpoints and all final endpoints**. Exposes
 `perform_manual_login()` → writes an encrypted, account-bound session (§7). No mission access.
 
-### ReadCapability — `portal.open_reader(account_id)`
-Requires the DB lease + asyncio lock. Deny-by-default; allows **only** confirmed read contracts. Exposes
-`search(identifiers) → [candidate]`, `open(candidate)`, `scrape(fields)`, `read_rows()`. **No write method; never
-upgradable to a writer.** Dry-run uses only this (INV-1 satisfied structurally).
+### ReadCapability — `portal.open_reader(lease_handle)`
+Receives a `LeaseHandle` (acquired by `execution` via `persistence`, correction #5); `portal` does not acquire the lock
+itself. Deny-by-default; allows **only** confirmed read contracts. Exposes `search(identifiers) → [candidate]`,
+`open(candidate)`, `scrape(fields)`, `read_rows()`. **No write method; never upgradable to a writer.** Dry-run uses only
+this (INV-1 satisfied structurally).
 
-### VerifiedMissionWriter — `portal.open_verified_writer(account_id, expected_identity)`
-Internally: acquire lease+lock → open a reader → `search(expected_identity)` requiring **exactly one** candidate (else
-fail closed) → open it → compare **every** supplied identifier (two-tier, §4) → **only on full agreement** construct the
-write context and return the writer. Exposes **explicit ops only**: `read_row`, `write_row(rubrique, ht, tva, vetuste)`,
-`verify_row`, `trigger_native_recalc()`. **No generic `request()`; no charge-mutuelle field is writable.** Re-verifies
-identity before the first write and after any navigation/redraw (TOCTOU).
+### VerifiedMissionWriter — `portal.open_verified_writer(lease_handle, expected_identity)`
+**Lease ownership (correction #5):** `execution` acquires the account lease **through `persistence`** and passes the
+resulting `LeaseHandle` in. `portal` **does not acquire (or reacquire) the lock** and **does not import
+sqlite/persistence** — this eliminates the earlier deadlock where the writer acquired the lease and then opened a
+separate reader that acquired it again (a non-reentrant lock).
+
+Internally, using **one BrowserContext** (the same context the writer will use — no second reader context):
+1. `search(expected_identity)` requiring **exactly one** candidate (else fail closed);
+2. open that candidate **in this context**;
+3. **fully re-verify** identity (two-tier, §4) against the opened mission **in this same context**;
+4. **only on full agreement** attach the write route policy to this context and return the writer.
+Exposes **explicit ops only**: `read_row`, `write_row(rubrique, ht, tva, vetuste)`, `verify_row`,
+`trigger_native_recalc()`. **No generic `request()`; no charge-mutuelle field is writable.** Identity is re-verified
+before the first write and after any navigation/redraw (TOCTOU). Dry-run does **not** call this — it uses a
+`ReadCapability` opened under the same `LeaseHandle`, with no write route ever attached.
 
 ## 2. Dry-run is write-incapable by construction (INV-1)
 A DRY_RUN job is handed a `ReadCapability` and there is **no code path** from it to a writer. "Dry-run" is not a boolean
@@ -52,18 +62,34 @@ tabs and iframes are covered (fixes F9). A request is allowed **only** if it mat
 - **Write-enable gate (footgun A5):** enabling any live write requires (a) **confirmed row-op contract records** for
   that workflow **and** (b) **passing safety tests** — not a single boolean (avoids repeating the `TEST_MODE` cliff).
 
-## 4. Mission identity gate (INV-2, B.5)
+## 4. Mission identity gate (INV-2, B.5, correction #4)
 Two tiers, both required, compared on normalized values:
-- **Tier 1 (primary):** exact `InsurerReference` OR exact `IdSinistre`.
-- **Tier 2 (independent cross-check):** normalized `RegistrationPlate`.
-Rules: search returns **exactly one** candidate (zero/multiple → fail closed); a plate **alone** is insufficient; an
-empty/None expected primary identifier or registration → **fail closed** (no match-by-absence, footgun A4); after
-opening, **all** supplied identifiers must agree; missing/contradictory → `IdentityMismatch` (fail closed).
+- **Tier 1 (primary):** exact `InsurerReference` **and/or** exact `IdSinistre` — at least one must be supplied.
+- **Tier 2 (mandatory cross-check):** normalized `RegistrationPlate` — **required, not optional** (`ExpectedIdentity`,
+  `DOMAIN_MODEL.md` §6). A job/plan whose input lacks a registration plate is non-executable (fail closed).
+Rules: search returns **exactly one** candidate (zero/multiple → fail closed); a plate **alone** is insufficient (a
+primary identifier is also required); an empty/None expected primary identifier **or** a missing registration →
+**fail closed** (no match-by-absence, footgun A4); after opening, **all** supplied identifiers must agree;
+missing/contradictory → `IdentityMismatch` (fail closed).
 
-## 5. Lease fencing (decision #5, INV write-safety)
-The per-account lease carries a `fencing_token`. The writer re-reads and validates the token **immediately before every
-portal write**; if the lease expired or was replaced (another `owner_instance_id`/`owner_job_id`), the write is
-**aborted** → `WRITE_ABORTED`. This prevents two holders writing after a lease hand-off. Schema: `DATA_MODEL.md` §account_leases.
+## 4a. Rubrique-row selection contract (INV-6 write-safety, correction #7 / F16)
+When a row operation targets a portal rubrique row, selection is by **exact `IdRubrique`** and must match **exactly one**
+row. **Prohibited:** label substring matching, first-row selection, bidirectional substring matching, and any positional
+fallback. **Zero or multiple** matching rows → **fail closed** (`WRITE_ABORTED`, no write). This replaces the current
+label-text/first-row/bidirectional-substring matcher (`docs/recovery/KNOWN_FAILURES.md` F16). Reviewed row-op contracts
+(§3) carry the `IdRubrique` as the row key; the writer verifies the opened row's id equals the intended id before writing
+and again on read-back.
+
+## 5. Lease ownership, fencing & single-writer (decision #5, correction #5)
+- **Ownership:** `execution` acquires the lease **through `persistence`** and holds a `LeaseHandle`, passed to `portal`.
+  `portal` never acquires/reacquires the lock and never imports sqlite/persistence (no self-deadlock).
+- **Heartbeat-loss response:** the writer validates the handle/`fencing_token` **immediately before every portal write**
+  and while writing; on lost heartbeat or replaced ownership (`owner_instance_id`/`owner_job_id` changed) it
+  **immediately aborts routing, closes the write BrowserContext, and blocks any further requests** → `WRITE_ABORTED`.
+- **Fencing caveat (do not overstate):** the fencing token is an **internal** guard — **SinAuto does not validate any
+  fencing token**, so it cannot make the portal reject a stale write. The authoritative single-writer guarantee is an
+  **OS single-instance mutex**: **only one service process runs, and only that single service process may hold row-write
+  capability.** The interactive login tool never holds row-write capability. Schema: `DATA_MODEL.md` §5.
 
 ## 6. Fail-closed mapping, money, charge-mutuelle (INV-6, INV-7, INV-8)
 - Any `NeedsReview` line ⇒ the plan is non-writeable; the writer refuses it.
@@ -72,21 +98,26 @@ portal write**; if the lease expired or was replaced (another `owner_instance_id
   `RowOp` has no field for them; execution calls only `trigger_native_recalc()`. A safety test asserts these fields
   never appear in any allowlist or plan.
 
-## 7. Session vault + DPAPI (decision #4/#9)
-Playwright storage state is a bearer credential and is protected as follows:
-- **DPAPI model (explicit, decision #4):** the interactive onboarding tool and the Windows service **either**
-  (a) run under the **same dedicated Windows identity** using **DPAPI CurrentUser** scope, **or**
-  (b) use **DPAPI LocalMachine** scope combined with **strict NTFS ACLs** granting decrypt access to the **service
-  account only**. One of these is chosen at deploy time and documented; the scope is never left ambiguous.
-- **Creation:** the login tool produces the storage state and encrypts it with the chosen DPAPI scope, bound to an
-  `account_id` (identity from the `accounts` registry, never a filename).
-- **Transfer:** the encrypted blob is stored via `persistence` (or a vault dir) referenced by `portal_sessions.storage_ref`.
-- **Decryption:** only `portal` decrypts, at open time; **decryption failure or account-binding mismatch → fail closed**
-  (no read/write proceeds).
+## 7. Session vault + DPAPI (decision #4/#9, correction #6 — one model, no alternatives)
+Playwright storage state is a bearer credential. The **single chosen model** is:
+
+> **DPAPI LocalMachine + service-account-only NTFS ACL.** The session ciphertext is DPAPI-`LocalMachine` encrypted and
+> stored in a vault directory whose NTFS ACL grants access to the **service account only**. There is no CurrentUser
+> alternative.
+
+- **Onboarding handoff (correction #6):** the desktop onboarding tool **must not write into the vault directory** and
+  **must never write plaintext session state to disk**. After the human OTP login (headed, `LoginCapability`), the tool
+  performs an **authenticated, single-use, account-bound local handoff** of the freshly captured session to the service
+  (e.g., a loopback-only, one-time-token, `account_id`-scoped call). **The service** validates the account/session
+  evidence, **encrypts** (DPAPI LocalMachine) and **atomically stores** it. The tool holds the session only in memory and
+  discards it after handoff.
+- **Creation of identity binding:** the session is bound to an `account_id` from the `accounts` registry (never a filename).
+- **Decryption:** only the **service** (`portal`) decrypts, at open time; **decryption failure or account-binding
+  mismatch → fail closed** (no read/write proceeds).
 - **Rotation/revocation:** a session can be marked revoked (forces re-login); rotated material replaces the old atomically.
-- **Atomic replacement:** write temp + `os.replace` so a session is never half-written.
+- **Atomic replacement:** write temp + `os.replace` so a session is never half-written; plaintext never touches disk.
 - **Backup exclusion:** session material is excluded from ordinary backups, logs, screenshots and Git (glob, not the
-  exact name). At-rest DB protection is separate (`DATA_MODEL.md`).
+  exact name). At-rest DB protection is separate (`DATA_MODEL.md` §9).
 - **Write jobs require positive identity** (§4); "where evidence permits" is acceptable only for read/notification context.
 
 ## 8. Invariant coverage

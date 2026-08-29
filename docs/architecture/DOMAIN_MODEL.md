@@ -53,23 +53,45 @@ The old unrestricted `"mo"` substring is removed.
 - **Charge mutuelle:** portal-native calculation is authoritative in both modes; the domain never produces a write for
   `MontantChargeSocietaire`/`MontantChargeMutuelle`, and the plan cannot contain one (see §6).
 
-## 6. Plan types (deterministic)
+## 6. Plan types — capability-neutral (correction #3: no mode/read_only in a plan)
+The deterministic plan carries **no** `mode` and **no** `read_only` boolean. A plan cannot enable writes; **only
+execution authorization plus a `VerifiedMissionWriter` can cause a write.** Three separate structural types express the
+lifecycle so nothing inside a plan can unlock writing:
 ```text
-ExecutionPlan {
-  claim_ref: InsurerReference | IdSinistre
-  mode: DRY_RUN | EXECUTE
-  read_only: bool
-  steps: [RowOp]                 # ordered, stable
-  needs_review: [NeedsReview]    # non-empty ⇒ plan is NON-WRITEABLE
-  provenance: {input_hash, builder_version}
+ProposedPlan {                     # pure output of planning; capability-neutral; can never write
+  expected_identity: ExpectedIdentity
+  steps: [RowOp]                   # ordered, stable
+  needs_review: [NeedsReview]      # non-empty ⇒ NON-WRITEABLE
+  provenance: {input_hash, plan_hash, builder_version}
+}
+ApprovedPlanReference {            # a reference to a ProposedPlan a human/authorization approved
+  parent_job_id: JobId
+  input_hash: str
+  plan_hash: str
+}
+ExecutablePlan {                   # produced ONLY by execution authorization, bound to a live writer
+  approved: ApprovedPlanReference
+  steps: [RowOp]                   # re-derived from the retained input; must match plan_hash
+  writer: VerifiedMissionWriter    # the sole write surface (SAFETY_MODEL §1)
 }
 RowOp { rubrique_id: RubriqueId, ht: Money, tva: Money, vetuste: Money, source_pointers: [str] }
+ExpectedIdentity {                 # correction #4: registration is MANDATORY
+  insurer_reference: InsurerReference | None   # at least one of reference / id_sinistre required
+  id_sinistre: IdSinistre | None
+  registration: RegistrationPlate              # MANDATORY, normalized — a plan without it is non-executable
+}
 ```
-- `RowOp` has **no field** for charge-mutuelle — it is structurally impossible to write it.
+- `ProposedPlan` is what a DRY_RUN produces and verifies; it is **capability-neutral** and has no path to a write.
+- An `ExecutablePlan` exists only after execution authorization re-derives the steps from the retained input
+  (`DATA_MODEL.md` §4a) and confirms `plan_hash`/`input_hash` against the `ApprovedPlanReference` — then binds them to a
+  `VerifiedMissionWriter`. The writer, not the plan, holds the (narrow, explicit) write ability.
+- `RowOp` has **no field** for charge-mutuelle — structurally impossible to write it.
 - **Determinism:** a plan builder is a pure function of typed input; steps are stably ordered (rubrique_id, then first
-  source pointer); no wall-clock, randomness, or set-iteration order affects output. Same input → identical plan and
-  identical `plan_hash` (property-tested, `TEST_STRATEGY.md`).
-- Any `NeedsReview` present ⇒ the writer refuses the plan (fail closed).
+  source pointer); no wall-clock/randomness/set-iteration affects output. Same input → identical steps and `plan_hash`
+  (property-tested, `TEST_STRATEGY.md`).
+- Any `NeedsReview` present ⇒ non-writeable (no `ExecutablePlan` can be formed).
+- **ExpectedIdentity** requires a **mandatory normalized registration plate** plus at least one of insurer reference /
+  idSinistre; the identity gate (`SAFETY_MODEL.md` §4) enforces all supplied identifiers agree and a plate alone is insufficient.
 
 ## 7. Entities (persistence-facing shapes are in `DATA_MODEL.md`)
 `Account`, `PortalSession`, `Claim` (identity = `AccountId` + `IdSinistre`), `CategoryPresence`, `PollRun`,

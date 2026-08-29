@@ -31,34 +31,63 @@ CREATE TABLE users (
 
 CREATE TABLE role_permissions (role TEXT NOT NULL, permission TEXT NOT NULL, PRIMARY KEY(role, permission));
 -- permission values are the Permission enum (DOMAIN_MODEL §2); a viewer has no mutation permission.
-```
 
-## 3. Claims, presence, polls (decisions #8, #10)
+-- Per-account authorization (correction #9): a permission grants nothing until scoped to the accounts
+-- the user may see/act on. Enforced for notifications, jobs, sessions and SSE.
+CREATE TABLE user_account_access (
+  user_id    TEXT NOT NULL REFERENCES users(user_id),
+  account_id TEXT NOT NULL REFERENCES accounts(account_id),
+  granted_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, account_id));
+```
+**Account lifecycle (correction #9):** account "deletion" normally **deactivates/archives** (`accounts.active=0`); records
+referenced by `automation_jobs`, `claims`, `audit_events` are **never destroyed**. Hard deletion is an admin-only,
+out-of-band operation guarded against referential loss.
+
+## 3. Claims, presence, polls (decisions #8, #10; **correction #1: presence is category-scoped**)
+The claim is pure identity — it carries **no** presence lifecycle. The lifecycle lives on `category_presence`,
+**independently per `(account_id, claim_pk, category_code)`**.
 ```sql
 CREATE TABLE claims (
   claim_pk TEXT PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES accounts(account_id),
   portal_claim_id TEXT NOT NULL,              -- idSinistre, REQUIRED before insertion (decision #10)
   reference TEXT, insured TEXT, police TEXT, matricule_norm TEXT,
+  first_seen_version INTEGER NOT NULL, last_seen_version INTEGER NOT NULL,
+  UNIQUE (account_id, portal_claim_id));       -- stable identity = account_id + idSinistre, never category
+  -- NOTE: presence_status / consecutive_absence_count / last_complete_poll_version were MOVED to category_presence.
+
+CREATE TABLE categories (code_alerte TEXT PRIMARY KEY, label TEXT NOT NULL);
+
+-- Per-category lifecycle: one row per (account_id, claim_pk, category_code)
+CREATE TABLE category_presence (
+  account_id     TEXT NOT NULL REFERENCES accounts(account_id),
+  claim_pk       TEXT NOT NULL REFERENCES claims(claim_pk),
+  category_code  TEXT NOT NULL REFERENCES categories(code_alerte),
+  present        INTEGER NOT NULL,
   presence_status TEXT NOT NULL DEFAULT 'ACTIVE'
     CHECK (presence_status IN ('ACTIVE','MISSING_PENDING_CONFIRMATION','RESOLVED_ON_PORTAL')),
   consecutive_absence_count INTEGER NOT NULL DEFAULT 0,
-  last_complete_poll_version INTEGER,
-  first_seen_version INTEGER NOT NULL, last_seen_version INTEGER NOT NULL,
-  UNIQUE (account_id, portal_claim_id));       -- stable identity = account_id + idSinistre, never category
-
-CREATE TABLE categories (code_alerte TEXT PRIMARY KEY, label TEXT NOT NULL);
-CREATE TABLE category_presence (
-  claim_pk TEXT NOT NULL REFERENCES claims(claim_pk),
-  category_code TEXT NOT NULL REFERENCES categories(code_alerte),
-  present INTEGER NOT NULL, since_version INTEGER NOT NULL, last_seen_poll_run_id TEXT,
-  PRIMARY KEY (claim_pk, category_code));
+  last_complete_poll_version INTEGER,          -- version of the last COMPLETE, valid-session poll of THIS category
+  since_version  INTEGER NOT NULL,
+  last_seen_poll_run_id TEXT,
+  PRIMARY KEY (account_id, claim_pk, category_code));
 
 CREATE TABLE poll_runs (
   poll_run_id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(account_id),
   started_at TEXT NOT NULL, completed_at TEXT,
   status TEXT NOT NULL CHECK (status IN ('COMPLETE','PARTIAL','FAILED')),
-  session_valid INTEGER NOT NULL);
+  session_valid INTEGER NOT NULL);             -- run-level session validity
+
+-- Per-category completeness of a poll run (correction #1): a poll can complete some categories and fail others
+CREATE TABLE poll_run_categories (
+  poll_run_id   TEXT NOT NULL REFERENCES poll_runs(poll_run_id),
+  category_code TEXT NOT NULL REFERENCES categories(code_alerte),
+  status        TEXT NOT NULL CHECK (status IN ('COMPLETE','PARTIAL','FAILED')),
+  session_valid INTEGER NOT NULL,              -- session validity observed for THIS category fetch
+  completed_at  TEXT,
+  rows_seen     INTEGER,                        -- completeness evidence (full-dataset fetch succeeded)
+  PRIMARY KEY (poll_run_id, category_code));
 
 -- staging for notifications lacking idSinistre (decision #10) — NEVER inserted into claims
 CREATE TABLE unmatched_notifications (
@@ -66,10 +95,26 @@ CREATE TABLE unmatched_notifications (
   reference TEXT, raw_payload TEXT NOT NULL,    -- PII-bearing; access-controlled, excluded from logs
   seen_at TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0);
 ```
-**Three-poll lifecycle (decision #8):** only a `poll_runs` row with `status='COMPLETE' AND session_valid=1` may change
-presence. First absence in such a poll: ACTIVE→MISSING_PENDING_CONFIRMATION, `consecutive_absence_count=1`. Three
-consecutive such absences → RESOLVED_ON_PORTAL. A PARTIAL/FAILED/invalid-session poll neither increments nor resets the
-counter. Any present-observation in a complete poll → reset to ACTIVE, count=0.
+**Three-poll lifecycle — per category (decision #8, correction #1):** a presence transition for
+`(account_id, claim_pk, category_code)` may occur **only** when **that exact category** has a
+`poll_run_categories` row with `status='COMPLETE' AND session_valid=1`. First absence under such a completed category:
+ACTIVE→MISSING_PENDING_CONFIRMATION, `consecutive_absence_count=1`. **Three consecutive** complete, valid-session
+absences **of that category** → RESOLVED_ON_PORTAL (for that category only). A **PARTIAL/FAILED/invalid** fetch of a
+category neither increments nor resets its counter, **and never affects another category**. Any present-observation of
+the category in a complete poll → reset that category to ACTIVE, count=0.
+
+**Observed human finalization (correction #2):** `FINALIZED_BY_HUMAN` is NOT an automation-job status. It is an observed
+claim/business event with its own evidence source and timestamp:
+```sql
+CREATE TABLE observed_finalizations (
+  claim_pk        TEXT NOT NULL REFERENCES claims(claim_pk),
+  observed_at     TEXT NOT NULL,
+  evidence_source TEXT NOT NULL,               -- e.g. POLL_READBACK | PORTAL_STATUS_SCRAPE
+  poll_run_id     TEXT REFERENCES poll_runs(poll_run_id),
+  PRIMARY KEY (claim_pk, observed_at));
+```
+It records that a human completed the final save in the portal; it never mutates `automation_jobs` into a
+human-completed automation status.
 
 ## 4. Automation jobs (decision #1)
 ```sql
@@ -93,6 +138,34 @@ CREATE TABLE automation_jobs (
 Every job transition writes this row **and** an `event_outbox` row in **one transaction**. Crash recovery:
 `WORKFLOW_STATE_MODEL.md` §7.
 
+### 4a. Durable job input (correction #4 — a hash alone cannot execute or recover a job)
+`automation_jobs.input_hash` is an integrity check, **not** the input. The actual typed input is retained encrypted so
+an async job can execute and survive a restart:
+```sql
+CREATE TABLE job_inputs (
+  job_id           TEXT PRIMARY KEY REFERENCES automation_jobs(job_id),  -- ownership: one input per job
+  content_hash     TEXT NOT NULL,               -- sha256 of the canonical typed input == automation_jobs.input_hash
+  ciphertext       BLOB NOT NULL,               -- DPAPI LocalMachine-encrypted (service-account ACL); never plaintext on disk
+  pii_class        TEXT NOT NULL,               -- e.g. CONTAINS_PII (claimant data) — governs retention/redaction
+  created_at       TEXT NOT NULL,
+  expires_at       TEXT NOT NULL,               -- retention window; a cleanup job deletes past expiry
+  deleted_at       TEXT);                        -- soft-delete marker for audit of removal
+```
+- **Encryption/access control:** encrypted with the same DPAPI LocalMachine + service-account-only ACL model as the
+  session vault (`SAFETY_MODEL.md` §7); decrypt is service-only. Not logged; excluded from ordinary backups unless the
+  backup itself is encrypted+access-controlled.
+- **Retention/deletion:** kept until `expires_at`, then deleted; a completed/terminal job's input may be purged earlier
+  per policy. `pii_class` drives handling.
+- **Crash recovery:** on restart, a resumable job re-reads its `job_inputs` row; the runner recomputes `content_hash`
+  and asserts it equals `automation_jobs.input_hash` before proceeding. If the input is missing/expired, the job cannot
+  resume and is marked needs-review (never executed on a guessed input).
+- **EXECUTE exact-input rule:** an EXECUTE job references its approved DRY_RUN (`parent_job_id`) and executes **only** if
+  the retained input's `content_hash` and the recomputed `plan_hash` match the approved snapshot; any mismatch →
+  fail closed `INPUT_CHANGED`.
+- **Expected mission identity (correction #4):** the typed input's expected identity MUST include the supplied insurer
+  reference and/or `idSinistre` **plus a mandatory normalized registration plate**. A plan/job whose input lacks a
+  registration plate is non-executable (fail closed) — see `DOMAIN_MODEL.md` §6 and `SAFETY_MODEL.md` §4.
+
 ## 5. Account leases (decision #5 — exact schema)
 ```sql
 CREATE TABLE account_leases (
@@ -104,9 +177,16 @@ CREATE TABLE account_leases (
   heartbeat_at     TEXT NOT NULL,
   expires_at       TEXT NOT NULL);
 ```
-Acquire is atomic (INSERT, or UPDATE where `expires_at < now`). The writer validates `fencing_token` immediately before
-each portal write; an expired or replaced ownership **aborts** further writes (`SAFETY_MODEL.md` §5). `heartbeat_at` is
-renewed while held; expiry frees a dead holder. Authoritative across processes (login tool vs service).
+Acquire is atomic (INSERT, or UPDATE where `expires_at < now`). The lease coordinates account access across processes
+(login tool vs service) and prevents two holders from working the same account; `heartbeat_at` is renewed while held and
+expiry frees a dead holder.
+
+**Fencing caveat (correction #5 — do not overstate):** the fencing token is an **internal** guard. **SinAuto does not
+validate any fencing token**, so the DB fence cannot make the *portal* reject a stale write; it only lets our own code
+detect lease loss and stop. The real single-writer guarantee is therefore: **an OS single-instance mutex** ensuring only
+one service process runs, and **only that single service process may hold row-write capability**. `owner_instance_id`
+records which process holds the lease; on heartbeat loss the holder aborts (`SAFETY_MODEL.md` §5). The interactive login
+tool never obtains row-write capability.
 
 ## 6. Employee actions & audit (server-derived identity)
 ```sql

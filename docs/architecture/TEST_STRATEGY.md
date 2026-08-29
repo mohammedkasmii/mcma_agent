@@ -5,11 +5,22 @@ extended. This strategy is the Phase 4/5 target; nothing here changes tests in t
 
 ---
 
-## 1. Unconditional production-domain blocking (highest priority)
-An **autouse, session-scoped `conftest.py`** fixture installs a socket guard that **blocks any connection to
-`sinauto.mamda-mcma.ma` and, by default, all non-loopback sockets** for the entire suite. It **cannot be disabled
-per-test**. This is the first migration step (`ARCHITECTURE.md` §6). Tests drive only `mock_server`/fixtures. A test
-that attempts a real portal connection fails loudly.
+## 1. Unconditional production-domain blocking (highest priority; correction #8 — defense in depth)
+A single session-scoped fixture is **insufficient**: collection-time imports and subprocesses/Chromium can run before or
+outside it. The block is therefore layered:
+1. **Before test collection:** the guard is installed at interpreter start, not in a fixture — via a `conftest.py` at the
+   repo root imported before collection **and** a `sitecustomize.py` / `PYTHONSTARTUP`-style hook (or a pytest plugin
+   registered in `pyproject`/`pytest.ini` entry points) so any import-time network attempt is already blocked.
+2. **OS/CI-level outbound blocking:** the CI job (and the documented local run) **blocks all outbound network** except an
+   explicit `mock_server` loopback allowance, covering **Python, Chromium, and any subprocess** (e.g., firewall rule /
+   network-namespace / container with no egress). This catches what an in-process Python guard cannot (a spawned browser).
+3. **pytest socket blocking as defense-in-depth:** `pytest-socket` (or equivalent) disables sockets by default, allowing
+   only loopback.
+4. **Explicit proof test:** a dedicated test **spawns a subprocess and launches a headless Chromium** and asserts **each
+   cannot reach the production host** (`sinauto.mamda-mcma.ma`) — proving the block covers subprocesses and the browser,
+   not just the test process.
+Tests drive only `mock_server`/fixtures; any real-portal connection fails loudly. This is the first migration step
+(`ARCHITECTURE.md` §6).
 
 ## 2. Layers
 - **Pure unit** (`domain`, `mapping`, `planning`) — no I/O.
@@ -19,12 +30,20 @@ that attempts a real portal connection fails loudly.
   10/11 by keyword), identity comparison (no match-by-absence), **plan determinism** (same input → identical
   `plan_hash`), malformed inputs, and job **state-transition** legality.
 - **Repository contract tests** on a temporary SQLite DB (WAL): claim identity uniqueness (`account_id, portal_claim_id`,
-  NOT NULL idSinistre), staging of unmatched notifications, three-poll presence transitions (complete/valid only),
-  outbox atomicity (transition + event in one transaction), account-lease acquire/fence/expire.
+  NOT NULL idSinistre), staging of unmatched notifications, **category-scoped** three-poll transitions using
+  `poll_run_categories` (a category increments only when **that category** completed under a valid session; a failed
+  category never affects another — correction #1), outbox atomicity (transition + event in one transaction), account-lease
+  acquire/heartbeat/expire, **`job_inputs`** round-trip (content_hash match, expiry, missing-input → needs-review), and
+  `observed_finalizations` never mutating `automation_jobs`.
 - **Safety tests** (the component whose failure is most consequential): context-level **default-deny** aborts unknown
-  requests; **final endpoints abort** (never fake-200); **dry-run constructs no writer**; write allowlist enforced;
-  **charge-mutuelle fields never appear** in any allowlist or plan; route-handler exceptions abort; `service_workers`
-  blocked; external domains blocked; **lease fencing** aborts a write when the token is stale.
+  requests (GET not auto-safe); **final endpoints abort** (never fake-200); **dry-run constructs no writer**; write
+  allowlist enforced; **charge-mutuelle fields never appear** in any allowlist or plan; route-handler exceptions abort;
+  `service_workers` blocked; external domains blocked; **plan has no `mode`/`read_only`** and no `ExecutablePlan` forms
+  without authorization (correction #3); **rubrique-row selection by exact `IdRubrique`, exactly one match** — substring/
+  first-row/positional fallback rejected, zero/multiple fail closed (F16, correction #7); **truthful readiness** — a
+  "READY/Verified/Prêt" label is set only after a real check passes, never from file existence or a `finally` block
+  (F12, correction #7); **portal never re-acquires the lease / never imports persistence** (import contract) and on
+  heartbeat loss the write context is closed (correction #5).
 - **Characterization tests** pinning current mapper/notification output before refactor (regression guard).
 - **Integration** against an **extended `mock_server`** that adds the notification surface and the row-op endpoints the
   current mock lacks (`docs/recovery/PORTAL_CONTRACT.md` §8), plus contract fixtures for each reviewed request tuple.

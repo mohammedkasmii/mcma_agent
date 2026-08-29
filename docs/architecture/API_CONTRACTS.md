@@ -20,6 +20,10 @@ Fixes `SAFETY_INVARIANTS.md` INV-11. Not implemented yet.
   Initial `LocalUserAuthProvider`; `WindowsAdAuthProvider` can be added later without touching domain/workflow code.
 - **Local users**, **Argon2id** password hashing. **No default credentials** — first run requires an admin bootstrap
   that forces setting a password (footgun A2).
+- **Secure first-admin bootstrap (correction #9):** bootstrap is **local-only** (bound to loopback / the console
+  session), **single-use**, and **expiring** (a short-lived token generated into a service-account-readable local file or
+  the console). A **LAN caller can never claim the first admin account** — the bootstrap endpoint rejects any non-loopback
+  origin and is disabled permanently once the first admin exists.
 - **Secure server-side sessions:** an opaque session id in a cookie (`HttpOnly`, `SameSite=Strict`, `Secure` — valid
   because TLS is required); session state server-side, with idle + absolute expiry and logout invalidation.
 - **CSRF protection** on all state-changing requests (double-submit token or per-session token).
@@ -35,6 +39,15 @@ Permission enum: `notifications:read`, `notifications:update`, `jobs:submit`, `j
 | operator | + jobs:submit |
 | admin | + sessions:manage, accounts:manage, users:manage |
 Each endpoint checks a specific permission server-side. **A viewer receives no mutation rights.**
+
+**Per-account authorization (correction #9):** a permission grants nothing until it is **scoped to the accounts the user
+may access** (`user_account_access`, `DATA_MODEL.md` §2). Every account-scoped endpoint — `notifications`, `jobs`,
+`sessions`, and the SSE stream — enforces both the permission **and** membership in `user_account_access` for the target
+`account_id`. **A global `jobs:view` (or `notifications:read`) alone must not expose another account's dossiers.** Listing
+endpoints return only the accounts the caller may access; a request for an unauthorized `account_id` is denied (404/403).
+
+**Account deletion (correction #9):** deletion normally **deactivates/archives** (`accounts.active=0`); records referenced
+by `automation_jobs`, `claims`, `audit_events` are never destroyed.
 
 ## 4. Endpoints (typed pydantic request/response)
 | Method | Path | Permission | Notes |

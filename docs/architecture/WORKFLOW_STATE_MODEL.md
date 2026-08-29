@@ -50,10 +50,15 @@ stateDiagram-v2
   NEEDS_REVIEW --> [*]
   IDENTITY_FAILED --> [*]
   WRITE_ABORTED --> [*]
-  READY_FOR_HUMAN_REVIEW --> FINALIZED_BY_HUMAN
   READY_FOR_HUMAN_REVIEW --> [*]
-  FINALIZED_BY_HUMAN --> [*]
 ```
+**`READY_FOR_HUMAN_REVIEW` is the TERMINAL automation state** (correction #2). The automation job never transitions to a
+"human-completed" status. `FINALIZED_BY_HUMAN` is modelled **outside** the automation job — see §6.
+
+**Plans are capability-neutral (correction #3):** PLANNING produces a `ProposedPlan` with **no** `mode`/`read_only`.
+EXECUTE authorization forms an `ApprovedPlanReference` and, only after re-deriving steps from the retained input
+(`DATA_MODEL.md` §4a) and matching `plan_hash`/`input_hash`, an `ExecutablePlan` bound to a `VerifiedMissionWriter`
+(`DOMAIN_MODEL.md` §6). The `mode` (DRY_RUN|EXECUTE) lives on `AutomationJob`; no field inside a plan can unlock writes.
 
 ## 3. Lease lifetime (decision #5)
 - **PLANNING is pure and holds no lease** (no portal, no session).
@@ -61,8 +66,13 @@ stateDiagram-v2
   **only** through IDENTITY_VERIFYING → WRITING → VERIFYING.
 - **Released on entry to `READY_FOR_HUMAN_REVIEW`.** A human delay never blocks notifications, session refresh, or
   other accounts. `heartbeat_at` is renewed while held; a dead holder's lease auto-expires.
-- **Fencing:** the writer checks the `fencing_token` is still current **immediately before every portal write**;
-  expired or replaced ownership → **abort** → `WRITE_ABORTED` (no further writes).
+- **LeaseHandle ownership (correction #5):** `execution` acquires the lease **through `persistence`** and receives a
+  `LeaseHandle`, which it **passes to `portal`**. `portal` never reacquires the lock and never imports sqlite/persistence.
+- **Heartbeat-loss response (correction #5):** the writer validates the `fencing_token`/handle **immediately before every
+  portal write**; if the heartbeat is lost or ownership was replaced, the writer **immediately aborts routing, closes the
+  write BrowserContext, and prevents any further requests** → `WRITE_ABORTED`. (Note the fencing caveat in
+  `SAFETY_MODEL.md` §5 / `DATA_MODEL.md` §5: SinAuto does not validate the token, so an OS single-instance mutex is the
+  real single-writer guarantee.)
 
 ## 4. Row-op lifecycle inside WRITING (RBW / DBW / VAW)
 For each `RowOp`:
@@ -77,13 +87,17 @@ Any mismatch at step 4, or a lost fence at step 3 → stop, `WRITE_ABORTED`, no 
 Identity is verified when the writer opens the mission **and re-verified immediately before the first write and after
 any navigation/redraw**, so a stale page cannot cause a write against the wrong mission.
 
-## 6. Human finalization (decision #8)
+## 6. Human finalization (decision #8, corrections #2 and #7-F12)
 - **`READY_FOR_HUMAN_REVIEW` is the terminal automation result.** The automation produces a readiness/diff report
   (planned vs verified read-back per row). The agent **never** invokes Enregistrer, Valider, Clôturer, GED, or any
   final endpoint (permanently blocked, `SAFETY_MODEL.md`).
-- **`FINALIZED_BY_HUMAN` is a separately observed business event**, recorded only on evidence (e.g., a later read shows
-  the mission validated). It is **not** an automation success transition and is never auto-set.
+- **`FINALIZED_BY_HUMAN` is a separately observed claim/business event** with its **own evidence source and timestamp**
+  (`observed_finalizations`, `DATA_MODEL.md` §3): it is recorded only when a subsequent read/scrape shows the mission
+  validated in the portal. It **must not** mutate `automation_jobs` into a human-completed automation status.
 - No `page.pause()` and no lease held while waiting for the human.
+- **Truthful state (correction #7, F12):** "Verified", "READY", "Prêt" must reflect a **real check** — an actual DOM/state
+  comparison or a completed verification — **never** file existence, a `finally` block, or an unconditional print. A
+  readiness label is set only after the corresponding check passes; a failed check yields a failure state, not "ready".
 
 ## 7. Atomic transitions, versions, crash recovery
 - Each transition writes the job row + its outbox event in **one transaction**; `state_version` = the account's

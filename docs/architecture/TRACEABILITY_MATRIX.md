@@ -34,8 +34,8 @@ Baseline noncompliance is **expected** — it is the Phase 4 migration backlog, 
 | 20 | SQLite WAL persistence | persistence | DATA_MODEL | 0005 | repo contract | NI |
 | 21 | Transactional event outbox | persistence | DATA_MODEL | 0005 | outbox atomicity | NI |
 | 22 | Claim identity account_id+idSinistre | persistence,domain | DATA_MODEL | 0006 | uniqueness/NOT NULL | NI |
-| 23 | Separate category-presence history | persistence | DATA_MODEL | 0006 | presence tests | NI |
-| 24 | Complete-poll absence transitions | notifications,persistence | DATA_MODEL | 0006 | three-poll test | NI |
+| 23 | **Category-scoped** presence history (per account_id,claim,category) | persistence | DATA_MODEL §3 | 0006 | per-category presence tests | NI |
+| 24 | Per-category complete-poll absence (`poll_run_categories`) | notifications,persistence | DATA_MODEL §3 | 0006 | three-poll-per-category test | NI |
 | 25 | Monotonic state versions | persistence | DATA_MODEL | 0005/0009 | version test | NI |
 | 26 | SSE with delta-query recovery | app,persistence | API_CONTRACTS,DATA_MODEL | 0009 | SSE replay/resync | NI |
 | 27 | Extensible account registry | persistence | DATA_MODEL | 0007 | accounts CRUD | NI |
@@ -78,6 +78,8 @@ Baseline noncompliance is **expected** — it is the Phase 4 migration backlog, 
 | F8 fail-open interceptor | abort not fake-200 (0004) | CN |
 | F9 page-scoped interception | context-level route (0004) | CN |
 | F11 mapping_status unused | plan NeedsReview blocks writes (0002) | CN |
+| **F12 false Verified/READY/Prêt** | truthful readiness — real check, never file existence or a `finally` block (WORKFLOW_STATE_MODEL §6) (0002) | CN |
+| **F16 rubrique-row selection** | exact `IdRubrique`, exactly-one match; substring/first-row/bidirectional/positional prohibited; zero/multiple fail closed (SAFETY_MODEL §4a, 0004) | CN |
 | F13,F14,F15,F33 mapping defaults | fail-closed mapping (0002) | CN/PC |
 | F17 negative TVA | INVALID_TAX_ALLOCATION (0002) | CN |
 | F18,F19,F20 LAN API / error leakage / 200-on-failure | auth+TLS+typed errors (0008) | CN |
@@ -98,3 +100,16 @@ identity two-tier (R5/#2), negative-TVA fail-closed (R6/#4-plan), labour structu
 identity (R8), LAN security (R9), multi-account (R10), INV-4 reclassification (R11), canonical route (R12), plan-file
 (R13), cross-branch exclusion (R14); Phase-3 finals #1–#8 (TLS, auth, at-rest, DPAPI, leases, SSE retention, spec-to-code
 classification, human finalization). All are reflected in the documents cited above with no contradiction to the recovery baseline.
+
+## 5. Phase-3 correction round (9 corrections) — where applied
+| # | Correction | Documents | ADR | Planned test | Baseline |
+|---|---|---|---|---|---|
+| 1 | Category-scoped presence + `poll_run_categories` | DATA_MODEL §3, TEST_STRATEGY | 0006 | per-category three-poll test | NI |
+| 2 | READY terminal; FINALIZED_BY_HUMAN observed-only | WORKFLOW_STATE_MODEL §2/§6, DATA_MODEL §3 | 0002 | observed_finalizations ≠ job status | NI |
+| 3 | No `mode`/`read_only` in plan; Proposed/Approved/Executable types | DOMAIN_MODEL §6, WORKFLOW_STATE_MODEL, SAFETY_MODEL §1 | 0002/0003 | no-write-without-authorization | NI |
+| 4 | Durable encrypted `job_inputs`; mandatory registration | DATA_MODEL §4a, DOMAIN_MODEL §6, SAFETY_MODEL §4 | 0002/0007 | job_inputs round-trip; registration required | NI |
+| 5 | LeaseHandle ownership; no portal re-acquire/sqlite; heartbeat-loss abort; OS mutex; fencing caveat | SAFETY_MODEL §1/§5, MODULE_BOUNDARIES §4, DATA_MODEL §5 | 0003/0007 | import contract; heartbeat-loss closes context | NI |
+| 6 | Single DPAPI (LocalMachine+ACL); no vault write by tool; secure handoff | SAFETY_MODEL §7, DATA_MODEL, THREAT_MODEL T15 | 0007 | decrypt fail-closed; no plaintext on disk | NI |
+| 7 | F12 truthful readiness; F16 exact-IdRubrique row selection | WORKFLOW_STATE_MODEL §6, SAFETY_MODEL §4a, ADR-0004 | 0004 | F12/F16 safety tests | CN |
+| 8 | Egress protection before collection + OS/CI + subprocess/browser proof | TEST_STRATEGY §1 | 0010 | subprocess+Chromium cannot reach prod host | CN |
+| 9 | Secure local-only admin bootstrap; per-account authz; archive-not-delete | API_CONTRACTS §2/§3, DATA_MODEL §2, THREAT_MODEL T18/T19 | 0008 | bootstrap loopback-only; cross-account denial | CN |

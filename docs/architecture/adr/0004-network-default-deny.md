@@ -16,6 +16,13 @@ blocked. Write mode allows only the workflow's confirmed **row-op** contracts. A
 (Enregistrer/Valider/Clôture/GED/…) is enforced in **every** capability, cannot be disabled by any flag/mode, and
 **aborts** (never fake-200). Enabling any live write requires **confirmed contract records + passing safety tests** (not a boolean).
 
+## Rubrique-row selection (correction #7 / F16)
+A reviewed row-op contract carries the row's **`IdRubrique`** as its key. Row selection is by **exact `IdRubrique`** and
+must match **exactly one** row; **label substring, first-row, bidirectional-substring and positional fallback are
+prohibited**; zero or multiple matches **fail closed** (`SAFETY_MODEL.md` §4a). This removes the current label-text
+matcher (`docs/recovery/KNOWN_FAILURES.md` F16).
+
 ## Consequences
-- (+) INV-3/INV-4 become fail-closed, context-scoped, un-disableable; the old fake-success footgun is removed.
+- (+) INV-3/INV-4 become fail-closed, context-scoped, un-disableable; the old fake-success footgun is removed; row
+  selection is unambiguous (F16 closed).
 - (−) Every legitimate request needs a reviewed contract — a deliberate, auditable gate before writes are enabled.

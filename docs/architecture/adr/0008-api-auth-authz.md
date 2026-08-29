@@ -18,6 +18,12 @@ F18/F19/F20). INV-11 is violated.
 - **Authorization** by a **Permission enum** (`notifications:read/update`, `jobs:submit/view`, `sessions:manage`,
   `accounts:manage`, `users:manage`) mapped to configurable roles; **a viewer gets no mutation rights**;
   notification-view is separate from automation permission.
+- **Per-account authorization (correction #9):** permissions are scoped by `user_account_access`; every account-scoped
+  endpoint (notifications, jobs, sessions, SSE) checks both the permission and account membership. A global `jobs:view`
+  alone never exposes another account's dossiers.
+- **Secure first-admin bootstrap (correction #9):** local-only (loopback/console), single-use, expiring; a LAN caller can
+  never claim the first admin; disabled once an admin exists.
+- **Account deletion:** deactivate/archive (`accounts.active=0`); never destroy records referenced by jobs/claims/audits.
 - **Configurable LAN exposure:** host/port/allowed-subnet from typed config; the subnet filter is **defense-in-depth
   only** and **never disables authentication**; no hardcoded `192.168.1.0/24`.
 - **Errors** are typed and non-sensitive (no raw `str(e)`); failures are reported truthfully (no 200-wrapping-failure).

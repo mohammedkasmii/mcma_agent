@@ -13,7 +13,7 @@
 | `mapping` | Wexia typed input → domain (normalization boundary) | `domain`,`core` | Playwright, sqlite3, FastAPI |
 | `planning` | workflow registry + deterministic plan builders → `ExecutionPlan` | `domain`,`core` | Playwright, sqlite3, FastAPI |
 | `persistence` | SQLite WAL repositories, outbox, migrations. **Sole `sqlite3` owner** | `domain`,`core` | Playwright, FastAPI |
-| `portal` | Playwright gateway: capabilities, context interception, session vault, identity gate, read/diff/verify ops. **Sole Playwright owner** | `domain`,`core` | sqlite3, FastAPI |
+| `portal` | Playwright gateway: capabilities, context interception, session vault, identity gate, read/diff/verify ops. **Sole Playwright owner** | `domain`,`core` | **sqlite3, `persistence`**, FastAPI |
 | `execution` | job runner, per-account lease use, applies a plan via `portal`, writes audit/outbox via `persistence` | `planning`,`portal`,`persistence`,`mapping`,`domain`,`core` | FastAPI |
 | `notifications` | extraction + category-presence sync + poll runs | `portal`,`persistence`,`domain`,`core` | FastAPI |
 | `app` | FastAPI: auth, RBAC, endpoints, SSE, DI wiring. **Sole FastAPI owner** | all below | — |
@@ -61,6 +61,12 @@ AuthProvider.supports_password_change: bool
 Only `portal` constructs BrowserContexts and capabilities (`LoginCapability`, `ReadCapability`,
 `VerifiedMissionWriter`). No other module receives a raw context or a general write handle. `execution` orchestrates
 by calling `portal`'s explicit methods; it cannot issue arbitrary portal requests.
+
+**Lease ownership (correction #5):** `execution` acquires the per-account lease **through `persistence`** and passes the
+resulting **`LeaseHandle`** into `portal`'s capability constructors. `portal` **does not import `persistence`/sqlite3**
+and **does not reacquire** the lock — this removes the previous self-deadlock (writer acquiring a lease then opening a
+reader that reacquires it). Row-write capability may be held only by the single service process (OS single-instance
+mutex, `SAFETY_MODEL.md` §5).
 
 ## 5. Configuration
 All environment/host/subnet/TLS/DPAPI/retention settings load through `core.config` as typed settings with

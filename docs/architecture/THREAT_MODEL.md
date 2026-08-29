@@ -38,9 +38,15 @@ desktop **onboarding tool** ↔ vault/DB (separate process). Each boundary is en
 | T12 | Raw error/text disclosure to clients (F19/F20) | Typed non-sensitive errors; correlation ids; truthful status (no 200-wrapping-failure) | INV-10/INV-11 |
 | T13 | Two writers on one account (process race) | DB `account_leases` + fencing token before every write; >1 worker unsupported | write-safety |
 | T14 | Stale SSE authorization; missed events on reconnect | Global `event_id` cursor; bounded retention; forced resync; periodic authz revalidation | — |
-| T15 | Cross-user DPAPI decrypt failure (silent) | Explicit DPAPI scope (same identity CurrentUser, or LocalMachine+ACL); fail-closed on failure | INV-10 |
+| T15 | DPAPI decrypt failure / plaintext session on disk | **Single model:** DPAPI LocalMachine + service-account-only NTFS ACL; onboarding tool never writes the vault or plaintext — authenticated single-use account-bound handoff to the service; fail-closed on decrypt/binding failure | INV-10 |
 | T16 | Data loss / corruption on restart or crash | WAL; atomic outbox; restart reconciliation; online-backup API; tested restore | — |
 | T17 | At-rest DB theft | BitLocker + NTFS ACL + encrypted backups + DB outside served dir; SQLCipher fallback if those can't be guaranteed | INV-10 |
+| T18 | LAN caller claims the first admin account (correction #9) | Bootstrap is local-only (loopback/console), single-use, expiring; disabled once an admin exists | INV-11 |
+| T19 | Cross-account dossier exposure via a global permission (correction #9) | `user_account_access` scoping enforced on notifications/jobs/sessions/SSE; unauthorized `account_id` denied | INV-11 |
+| T20 | Two writers on one account across processes (correction #5) | OS single-instance mutex (authoritative); DB lease + heartbeat as internal guard; SinAuto does not validate fencing tokens | write-safety |
+| T21 | Wrong rubrique row written (F16) | Exact `IdRubrique`, exactly-one match; substring/first-row/positional fallback prohibited; zero/multiple fail closed | INV-6 |
+| T22 | False "READY/Verified/Prêt" (F12) | Readiness reflects a real check, never file existence or a finally block | INV-5 |
+| T23 | Async job input lost/tampered across restart (correction #4) | Encrypted `job_inputs` (content_hash, ownership, expiry, DPAPI); recompute+match before execute/resume; missing/expired → needs-review | INV-10 |
 
 ## 5. Residual risks (accepted / deferred)
 - **Plain-HTTP internal tooling** is disallowed in production (TLS required); a misconfiguration that disables TLS
