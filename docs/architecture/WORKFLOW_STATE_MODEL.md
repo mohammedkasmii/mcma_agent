@@ -106,16 +106,23 @@ any navigation/redraw**, so a stale page cannot cause a write against the wrong 
   half-created job). Valid statuses are constrained by a CHECK (`DATA_MODEL.md` §4).
 - **Atomic transitions:** each transition writes the job row + its outbox event in **one transaction**; `state_version`
   = the account's monotonic version at that transition.
-- **Restart reconciliation** (before serving), by status — **fully deterministic, no operator- or config-dependent choice:**
-  - `{QUEUED, PLANNING, PLANNED}` → **verify the retained `job_inputs`** (present, unexpired, decryptable, `content_hash`
-    matches `input_hash`) → **return the job to `QUEUED`** → **deterministically re-plan from the beginning**. Planning is
-    pure and has no external side effects, and no portal state was touched, so this is always safe. If the input is
-    **missing, expired, undecryptable, or hash-mismatched** → **`ERROR`** with the appropriate fail-closed reason
-    (`MISSING_JOB_INPUT` / `INPUT_EXPIRED` / `INPUT_UNDECRYPTABLE` / `INPUT_HASH_MISMATCH`). Never executed on a guessed input.
-  - `{ACQUIRING_ACCOUNT_LOCK, IDENTITY_VERIFYING}` (no writes yet) → `ABORTED_ON_RESTART`; release the lease.
+- **Restart reconciliation** (before serving), by status — **fully deterministic, no operator- or config-dependent
+  choice; every non-terminal status has an explicit outcome:**
+  - `{QUEUED, PLANNING, PLANNED}` **and `READ_ONLY_IDENTITY_CHECK`** (DRY_RUN, read-only, no writes) → **verify the
+    retained `job_inputs`** (present, unexpired, decryptable, `content_hash` matches `input_hash`) → **return the job to
+    `QUEUED`** → **deterministically re-plan from the beginning**. Planning is pure and no portal state was touched, so
+    this is always safe. If the input is **missing, expired, undecryptable, or hash-mismatched** → **`ERROR`** with the
+    fail-closed reason (`MISSING_JOB_INPUT` / `INPUT_EXPIRED` / `INPUT_UNDECRYPTABLE` / `INPUT_HASH_MISMATCH`). Never
+    executed on a guessed input.
+  - `{ACQUIRING_ACCOUNT_LOCK, IDENTITY_VERIFYING, IDENTITY_VERIFIED}` — all **pre-write** (no row write has occurred yet,
+    even in `IDENTITY_VERIFIED`, which is the step immediately before `WRITING`) → **`ABORTED_ON_RESTART`; release the
+    lease**. Neither state performs nor resumes a write.
   - `{WRITING, VERIFYING}` (writes possibly partial) → `INTERRUPTED_NEEDS_HUMAN_REVIEW` with a diff report; **never
     automatically resumed or replayed.**
   - terminal / `READY_FOR_HUMAN_REVIEW` / `DRY_RUN_VERIFIED` → kept (lease already released).
   - stale `account_leases` (`expires_at < now`) → released first.
+
+  **Coverage:** these branches cover every value in the `automation_jobs` status CHECK (`DATA_MODEL.md` §4); no
+  non-terminal status is left without a deterministic, fail-closed restart outcome.
 - **Idempotency:** `(account_id, idempotency_key)` returns the existing job (incl. failed — not silently re-run); a real
   retry needs a new key + explicit authorization.
