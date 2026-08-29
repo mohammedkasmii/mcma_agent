@@ -1,0 +1,13 @@
+# INC-01: pytest configuration lives ONLY in this file.
+# (Packaging/dependency management via `uv` arrives at INC-03; nothing here
+# defines a build system yet.)
+
+[tool.pytest.ini_options]
+# -p testsupport.egress_guard  -> pre-collection egress guard (custom layer)
+# --disable-socket/--allow-hosts -> pytest-socket defense-in-depth layer
+# Run with `python -m pytest` from the repo root so both are importable.
+addopts = "-p testsupport.egress_guard --disable-socket --allow-hosts=127.0.0.1,::1"
+markers = [
+    "egress_proof: OS-level egress proof test; locally deselect with -m \"not egress_proof\"",
+    "requires_egress_isolation: runs only inside verified loopback-only isolation; fails at setup otherwise",
+]

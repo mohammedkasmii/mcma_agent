@@ -1,0 +1,35 @@
+name: inc01-no-egress
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  no-egress-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      # Everything network-dependent happens BEFORE isolation.
+      - name: Install dependencies (with network)
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m playwright install --with-deps chromium
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor,
+      # which breaks Chromium's OWN sandbox. Lifting the restriction on this
+      # ephemeral CI VM lets Chromium keep its normal sandbox — the browser
+      # is never launched with --no-sandbox.
+      - name: Allow Chromium's own sandbox on the ephemeral runner
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      # The script receives every value explicitly — it never assumes
+      # GITHUB_WORKSPACE, SUDO_USER, or the setup-python PATH survives sudo.
+      - name: Run FULL suite inside loopback-only network namespace
+        run: |
+          PYBIN="$(command -v python)"
+          echo "repo=$GITHUB_WORKSPACE user=$USER python=$PYBIN"
+          sudo -n bash ci/run_tests_in_netns.sh "$GITHUB_WORKSPACE" "$USER" "$PYBIN"

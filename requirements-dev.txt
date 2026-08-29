@@ -1,0 +1,6 @@
+# Development/test-only dependencies (runtime deps live in requirements.txt).
+# INC-01: pytest pinned to the verified interpreter/test stack; pytest-socket
+# is a defense-in-depth layer of the test egress lockdown (the authoritative
+# layer is the CI network namespace — see ci/no-egress.md).
+pytest==9.1.1
+pytest-socket==0.7.0
