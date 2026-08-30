@@ -121,6 +121,15 @@ no live write is possible until INC-23.
 
 ## INC-09 — Mission search + identity gate + TOCTOU + exact-IdRubrique + `VerifiedMissionWriter` mechanics
 
+**Execution note (owner decision):** INC-09 is delivered as two review-gated batches, not a single increment:
+- **09A** (`phase5/inc-09a-identity-workflow-gate`, accepted): exactly-one mission search, the two-tier identity gate,
+  and the observed-vs-planned workflow gate (`mcma/portal/identity.py`, `mcma/portal/mission.py`).
+- **09B** (planned, not yet branched): `VerifiedMissionWriter` and the row/native-calculation mechanics
+  (`mcma/portal/writer.py`).
+
+INC-09 and **G2** remain **incomplete until 09B is accepted** — every requirement below still applies to the combined
+09A+09B work; this split changes delivery sequencing only, not scope.
+
 - **Purpose/outcome:** Implement `portal.open_verified_writer(lease_handle, expected_identity)`: exactly-one search,
   open, **two-tier identity verify (registration mandatory)** in the **same context**, exact-`IdRubrique` row selection,
   read-before/diff-before/verify-after row ops, TOCTOU re-verify — with **charge-mutuelle never written**. Live writes

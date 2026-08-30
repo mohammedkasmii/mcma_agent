@@ -1,9 +1,16 @@
 """
 INC-09A -- reaffirms every contract fixture stays ineligible for the G5
-live allowlist. No new fixture is added by this increment (workflow
-detection and identity scraping use fixed DOM selectors, not a new HTTP
-route/contract), so this is a pure reaffirmation, same pattern as INC-06/
-07/08.
+live allowlist. This increment added two fixtures of its own
+(mission_index_navigation_mock_only.json and
+mission_workflow_query_mock_only.json, both MOCK_ONLY/UNCONFIRMED, added
+in the dea9ffd correction for the real-Chromium proofs' navigation
+contracts) alongside every fixture from INC-06/07/08. The test below does
+not enumerate fixtures by name: it dynamically globs every file under
+tests/fixtures/contracts/ and requires every eligibility field it finds
+(top-level `eligible_for_live_allowlist`, and the same field on each entry
+of a `final_endpoints` list) to be exactly False -- so a new fixture added
+by any future increment is checked automatically, without needing this
+test to be updated.
 """
 
 import json
