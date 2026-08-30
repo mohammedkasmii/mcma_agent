@@ -41,7 +41,7 @@ Each workflow lists its trigger, step sequence with `file:line` evidence, side e
 ## W4 — Fill dossier (form-filling) — **PROHIBITED IN LIVE USE AT BASELINE**
 
 - **Trigger:** `python run_dossier.py [--json ...]`, `POST /api/v1/fill-dossier`, or `POST /api/v1/fill-dossier-from-wexia`.
-- **Steps (`main.py:178-256` `process_workflow`):**
+- **Baseline Unsafe Steps (`main.py:178-256` `process_workflow`):**
   1. Load + map input (mapper, or raw payload) → dossier payload.
   2. Launch Chromium with saved state (`main.py:203-206`, `headless=False` hardcoded).
   3. Install network safety policy (`main.py:210`, gated on `TEST_MODE`).
@@ -50,7 +50,7 @@ Each workflow lists its trigger, step sequence with `file:line` evidence, side e
   6. Detect mode via live DOM (`main.py:219-231`): `fill_garage_conventionne` (conventionné) or `fill_mode_normal` (normal). **Both write row-level data to the portal.**
   7. `page.pause()` for human review (`main.py:244`) — occurs **after** row writes.
 - **Side effects:** **row-level writes** (`updateDevisDet`, `createRapportDefDet`) that are **not** network-blocked. Final saves (`Enregistrer`/`Valider`/`Clôture`/GED) are not clicked and are blocked.
-- **Safety note:** "preview"/"dry-run"/"safety mode" do **not** prevent these row writes. See `SAFETY_INVARIANTS.md`.
+- **Target Behavior:** The target architecture uses explicit `ExecutablePlanData` driving two typed execution workflows (`add_normal_row` / `edit_conventionne_row`), and requires mandatory financial verification before stopping at `READY_FOR_HUMAN_REVIEW`. Refer to `docs/architecture/PORTAL_ROW_WORKFLOWS.md`.
 
 ## W5 — Employee action tracking (dashboard)
 

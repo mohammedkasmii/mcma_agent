@@ -79,10 +79,13 @@ references a portal capability. The `mode` (DRY_RUN|EXECUTE) lives on `Automatio
 For each `RowOp`:
 1. **read-before-write** (Read op): read the current row state.
 2. **diff-before-write:** if current == intended, **skip** (idempotent; no write).
-3. **fencing check** (§3) then **write** via the writer's explicit `write_row` (allowlisted contract only).
+3. **fencing check** (§3) then **write** via the writer's explicit `add_normal_row` or `edit_conventionne_row` (allowlisted contract only).
 4. **verify-after-write** (Read op): re-read; must equal intended.
 5. **atomic commit:** `automation_jobs` transition + `audit_events` + `event_outbox` in one SQLite transaction.
 Any mismatch at step 4, or a lost fence at step 3 → stop, `WRITE_ABORTED`, no further writes.
+
+After all rows are written and verified, the workflow transitions to **VERIFYING**.
+In **VERIFYING**, the agent must trigger the native financial calculation and read/verify the resulting financial summary (`MontantChargeMutuelle`, `MontantChargeSocietaire`, TTC, TVA, etc.). This mandatory calculation verification must succeed before the final transition to `READY_FOR_HUMAN_REVIEW`. Any failure or mismatch here stops the workflow in `WRITE_ABORTED` or `INTERRUPTED_NEEDS_HUMAN_REVIEW`.
 
 ## 5. TOCTOU (decision #2)
 Identity is verified when the writer opens the mission **and re-verified immediately before the first write and after

@@ -16,9 +16,11 @@ no live write is possible until INC-23.
 - **Addresses:** PORTAL_CONTRACT §7/§8; TEST_STRATEGY integration; supports INC-07..09, INC-14.
 - **Baseline files modified/retired:** `mock_server.py` extended (it is a test/dev harness, not production runtime; safe
   to modify — it is not part of the shipped service). New fixtures added.
-- **Target modules/files introduced:** extend `mock_server.py` (add `/expertise/notification/alerte`,
-  `getAlerte/CodeAlerte/{code}`, `#listeAlerte` DataTable, `updateDevisDet`, `createRapportDefDet`, login/OTP/session,
-  final endpoints for block-testing); `tests/fixtures/contracts/*.json` (reviewed request/response tuples).
+- **Target modules/files introduced:** extend `mock_server.py` to cover:
+  - **Normal:** empty table, `#VehRepareI`, Ajouter, temporary row, field events, one checkmark, `createRapportDefDet`, redraw/read-back, native calculation, summary verification, stale/failure cases.
+  - **PEC:** original read-only table, editable validated table, exact preflight, pencil, validated fields, one checkmark, `updateDevisDet`, redraw/read-back, native calculation, summary verification, visible final button permanently blocked.
+  - Auth/session/final endpoints for block-testing.
+  - `tests/fixtures/contracts/*.json` (reviewed request/response tuples).
 - **DB migration impact:** none.
 - **Dependency/config impact:** none (uses existing FastAPI for the mock; served on loopback only).
 - **Feature flags/adapters:** none.
@@ -131,8 +133,8 @@ no live write is possible until INC-23.
 - **Baseline files modified/retired:** none retired; baseline `browser/mission_navigator.py`, `mode_normal.py`,
   `mode_conventionne.py` remain until INC-22. New `portal` writer is separate.
 - **Target modules/files introduced:** `portal/identity.py` (two-tier gate), `portal/mission.py` (search exactly-one +
-  open), `portal/writer.py` (`VerifiedMissionWriter`: `read_row`/`write_row`/`verify_row`/`trigger_native_recalc`;
-  exact-`IdRubrique`; RBW/DBW/VAW). Tests under `tests/portal/writer/`.
+  open), `portal/writer.py` (`VerifiedMissionWriter`: explicitly typed `add_normal_row`/`edit_conventionne_row`/`read_row`/`verify_row`/`trigger_native_recalc`/`read_financial_summary`/`verify_financial_summary`;
+  exact-`IdRubrique`; RBW/DBW/VAW; mandatory summary verification). Tests under `tests/portal/writer/`.
 - **DB migration impact:** none.
 - **Dependency/config impact:** none new.
 - **Feature flags/adapters (review SEC-3 — structural, not a flag):** mock-writes are permitted **only** because the

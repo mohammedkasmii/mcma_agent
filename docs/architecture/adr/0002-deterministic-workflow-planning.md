@@ -9,9 +9,11 @@ force-written; negative TVA is possible.
 
 ## Decision
 Introduce a **typed normalization boundary** and a **deterministic planning** step. A `WorkflowRegistry` maps a workflow
-name to a **pure** plan builder `(typed input) -> ProposedPlan`. `ProposedPlan` is **pure immutable data** — an ordered
-list of `RowOp` (`rubrique_id, ht, tva, vetuste` as `Money`) plus a `needs_review` list — with **no** `mode`/`read_only`
-and **no** live capability (`domain` never references `portal`/Playwright). Rules: three-origin parts (1/2/3, no keyword
+name to a **pure** plan builder `(typed input) -> ProposedPlan`. `ProposedPlan` is **pure immutable data** — containing an
+`expected_identity`, a `repair_workflow`, an ordered list of `RowOp` (`rubrique_id, ht, tva, vetuste` as `Money`), plus a
+`needs_review` list — with **no** `mode`/`read_only` and **no** live capability (`domain` never references `portal`/Playwright).
+The `repair_workflow` provides structural context only (identifying which builder and execution path apply); it is included
+in the canonical serialization and `plan_hash`, but is **not** an authorization to write. Rules: three-origin parts (1/2/3, no keyword
 4–6/13–15/10–11); glass by component×operation (19–24, ambiguity fails closed); labour structured-first; out-of-catalogue
 `mcma_rubric_id` fails closed; **negative line TVA → `NeedsReview(INVALID_TAX_ALLOCATION)`** (no clamp/redistribute).
 `RowOp` has **no** charge-mutuelle field (native-only). Any `NeedsReview` ⇒ non-writeable plan. Plans are deterministic

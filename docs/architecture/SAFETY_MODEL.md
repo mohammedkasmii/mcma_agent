@@ -35,9 +35,7 @@ Internally, using **one BrowserContext** (the same context the writer will use �
 2. open that candidate **in this context**;
 3. **fully re-verify** identity (two-tier, §4) against the opened mission **in this same context**;
 4. **only on full agreement** attach the write route policy to this context and return the writer.
-Exposes **explicit ops only**: `read_row`, `write_row(rubrique, ht, tva, vetuste)`, `verify_row`,
-`trigger_native_recalc()`. **No generic `request()`; no charge-mutuelle field is writable.** Identity is re-verified
-before the first write and after any navigation/redraw (TOCTOU). Dry-run does **not** call this — it uses a
+Exposes **explicit ops only**: `read_row`, `add_normal_row(rubrique, ht, tva)`, `edit_conventionne_row(rubrique, ht, tva, vetuste)`, `verify_row`, `trigger_native_recalc()`, `read_financial_summary()`, `verify_financial_summary()`. **No generic `write_row` or `request()`; no charge-mutuelle field is writable.** Identity is re-verified before the first write and after any navigation/redraw (TOCTOU). Dry-run does **not** call this — it uses a
 `ReadCapability` opened under the same `LeaseHandle`, with no write route ever attached.
 
 ## 2. Dry-run is write-incapable by construction (INV-1)

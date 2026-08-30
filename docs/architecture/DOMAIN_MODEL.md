@@ -13,6 +13,7 @@ Authoritative business rules: `docs/recovery/BUSINESS_RULES.md` (§B). This docu
 
 ## 2. Enums (normalization targets)
 - `Origin` = {ORIGINAL, ADAPTABLE, RECOVERED}
+- `RepairWorkflow` = {MODE_NORMAL, GARAGE_CONVENTIONNE}
 - `LabourFamily` = {TOLERIE_CARROSSERIE, MECANIQUE, PEINTURE, ELECTRIQUE, MARBRE, PARALLELISME_EQUILIBRAGE}
 - `GlassComponent` = {VITRE, PARE_BRISE, LUNETTE_ARRIERE}
 - `GlassOperation` = {REPARATION, REMPLACEMENT}
@@ -61,6 +62,7 @@ pairing of plan data with the live writer — see below and `MODULE_BOUNDARIES.m
 ```text
 ProposedPlan {                     # pure output of planning; capability-neutral; can never write
   expected_identity: ExpectedIdentity
+  repair_workflow: RepairWorkflow  # structurally determines which plan builder and portal execution contract apply
   steps: [RowOp]                   # ordered, stable
   needs_review: [NeedsReview]      # non-empty ⇒ NON-WRITEABLE
   provenance: {input_hash, plan_hash, builder_version}
@@ -81,7 +83,8 @@ ExpectedIdentity {                 # correction #4: registration is MANDATORY
   registration: RegistrationPlate              # MANDATORY, normalized — a plan without it is non-executable
 }
 ```
-- `ProposedPlan` is what a DRY_RUN produces and verifies; it is **capability-neutral** and has no path to a write.
+- `ProposedPlan` is what a DRY_RUN produces and verifies; it is **capability-neutral** and has no path to a write. Its canonical serialization and hash include the `repair_workflow`.
+- `repair_workflow` is structural context (which portal DOM/HTTP paths apply), **not** an execution authorization (DRY_RUN vs EXECUTE).
 - `ExecutablePlanData` is still **pure data** — it holds no writer and cannot write. The pairing of plan data with a
   live writer (`AuthorizedExecution`) is defined in the **`execution`** module — which may depend on both `domain` and
   `portal` — **not** in `domain`. See `MODULE_BOUNDARIES.md` §4 and `SAFETY_MODEL.md` §1 for that type; `domain` does not

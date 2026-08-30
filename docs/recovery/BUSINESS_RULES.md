@@ -71,11 +71,12 @@ Supplied mapping for rubriques 19–24 (component identity × operation type):
 
 **Current-code contradiction:** no producer for 19–24 exists; glass part lines fall through to rubrique 1 (`wexia_mapper.py:517-551`; `test_mapper.py:68`). Recorded as F13 in `KNOWN_FAILURES.md`.
 
-### B.3 Charge mutuelle
+### B.3 Charge mutuelle / Native Financial Calculation
 
-- The **portal-native calculation is always authoritative in both modes** (Mode Normal and Garage Conventionné).
-- **Neither mode may write `MontantChargeSocietaire` or `MontantChargeMutuelle`.**
-- The agent may permit **only** the approved row-level operation and the portal's native recalculation. This does **not** depend on final save: **final save remains blocked and human-controlled** regardless.
+- The **portal-native calculation is always authoritative in both workflows** (Mode Normal and Garage Conventionné).
+- **Native triggering AND verification are mandatory in both workflows.** The resulting financial summary must be verified before the state transitions to `READY_FOR_HUMAN_REVIEW`.
+- **Neither workflow may write `MontantChargeSocietaire` or `MontantChargeMutuelle`.**
+- For detailed workflow separation and mandatory financial verification steps, refer to `docs/architecture/PORTAL_ROW_WORKFLOWS.md`.
 
 **Current-code contradiction:** `browser/mode_normal.py:122-144` writes both fields (`MontantChargeMutuelle = MontantReparation`, `MontantChargeSocietaire = '0'`). This is prohibited under B.3. `mode_conventionne` already defers to native calc and writes neither. Recorded as F6 in `KNOWN_FAILURES.md`.
 

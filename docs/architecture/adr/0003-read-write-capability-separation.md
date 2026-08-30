@@ -14,7 +14,7 @@ The `portal` module constructs three narrow capabilities and nothing else hands 
   `execution` (acquired via `persistence`; `portal` never reacquires the lock or imports sqlite, correction #5). Using
   **one BrowserContext**, it requires **exactly one** search match, opens it, and **fully re-verifies every identifier
   in that same context** (two-tier; **registration mandatory**; no match-by-absence) before attaching the write route
-  and returning a writer exposing **explicit ops only** (`read_row/write_row/verify_row/trigger_native_recalc`). No
+  and returning a writer exposing **explicit ops only** (`read_row`, `add_normal_row`, `edit_conventionne_row`, `verify_row`, `trigger_native_recalc`, `read_financial_summary`, `verify_financial_summary`). No
   generic request; charge-mutuelle not writable; row selection by exact `IdRubrique` (ADR-0004). Identity re-verified
   before the first write and after navigation (TOCTOU).
 

@@ -26,7 +26,7 @@ Severity: **S1** = can cause a wrong or unintended live portal write · **S2** =
 `search_matricule_num in row_text` (`:76`) is an unanchored substring test over the whole row's concatenated text; the digit-run key discards the series/letter suffix, so `36165-B-50` and `36165-U-50` are indistinguishable (`test_mapper.py:344` shows such plate collisions in real data). No uniqueness check.
 
 ### F6. Forced charge-mutuelle overwrite — **S1, CONFIRMED**
-`browser/mode_normal.py:122-144` sets `MontantChargeMutuelle = MontantReparation` and `MontantChargeSocietaire = '0'` after native calc, zeroing franchise/vétusté/part-responsabilité. Violates the resolved rule (`BUSINESS_RULES.md` B.2). `mode_conventionne` does not do this — the two modes disagree on money semantics.
+`browser/mode_normal.py:122-144` sets `MontantChargeMutuelle = MontantReparation` and `MontantChargeSocietaire = '0'` after native calc, zeroing franchise/vétusté/part-responsabilité. Violates the resolved rule (`BUSINESS_RULES.md` B.2/B.3). Both workflows must trigger and verify native calculation (refer to `PORTAL_ROW_WORKFLOWS.md`). `mode_conventionne` defers to native calc and writes neither field, which is compliant.
 
 ### F7. Duplicate checkmark click (Mode Normal) — **S1/S3, CONFIRMED**
 `mode_normal.py:78-99` clicks the col-7 save control twice (Playwright locator then unconditional JS) with no guard on the first succeeding. Possible duplicate row creation.

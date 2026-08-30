@@ -62,7 +62,7 @@ Required (`BUSINESS_RULES.md` B.1–B.4): ordinary parts map only by origin (1/2
 
 ## INV-8 — Charge mutuelle: native calculation authoritative; agent must not write it — **VIOLATED (Mode Normal)**
 
-Required (`BUSINESS_RULES.md` B.3): the portal-native calculation is authoritative in **both** modes; **neither mode may write `MontantChargeSocietaire` or `MontantChargeMutuelle`**; this is independent of final save (final save stays blocked/human regardless).
+Required (`BUSINESS_RULES.md` B.3): the portal-native calculation is authoritative in **both** workflows; **neither workflow may write `MontantChargeSocietaire` or `MontantChargeMutuelle`**. Native triggering AND verification are mandatory in both workflows (refer to `PORTAL_ROW_WORKFLOWS.md`); this is independent of final save (final save stays blocked/human regardless).
 
 - Mode Normal writes both fields (`browser/mode_normal.py:122-144`) — **prohibited**. Mode Conventionné writes neither (relies on native `DevisCalculerMontantCharge()` `:354-387`) — compliant. See `KNOWN_FAILURES.md` F6.
 

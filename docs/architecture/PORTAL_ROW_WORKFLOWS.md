@@ -4,6 +4,8 @@ This document is the authoritative single source of truth for the explicit row-l
 
 The legacy concept of a single generic `write_row` is intentionally removed. Instead, automation executes narrow, explicitly typed operations bound to the deterministic repair workflow (Mode Normal vs. Garage Conventionné/PEC). The repair workflow is structural context, distinct from the authorization to write (DRY_RUN vs EXECUTE).
 
+Live execution consumes an `AuthorizedExecution` containing approved `ExecutablePlanData`, never a bare `ProposedPlan`. The `ProposedPlan` remains a capability-neutral planning output only.
+
 ## 1. Mode Normal (Add-Row Lifecycle)
 
 Mode Normal models an initially empty table where every planned item is added sequentially.
@@ -11,7 +13,7 @@ Mode Normal models an initially empty table where every planned item is added se
 ### Sequence
 1. Verify the opened mission identity.
 2. Ensure `#VehRepareI` is checked to expose the Mode Normal rubrique table.
-3. For every planned rubrique in the `ProposedPlan`:
+3. For every planned rubrique in the `ExecutablePlanData`:
    - Click the green `Ajouter` / `Ajouter +` button.
    - Wait for one temporary editable row to appear.
    - Select the exact `IdRubrique` in `#IdRubrique`.
@@ -34,7 +36,7 @@ Garage Conventionné provides a read-only table (`#DevisDetTable`) of the garage
 3. **Read all existing validated rows before writing.**
 4. Match every planned rubrique to **exactly one** existing portal row before making the first mutation. Zero, duplicate, or ambiguous matches fail closed immediately.
 5. **No `Ajouter` action is used in PEC.**
-6. For every planned rubrique:
+6. For every planned rubrique in the `ExecutablePlanData`:
    - Relocate the exact matched row after every previous redraw.
    - Click its pencil/edit action in column 7.
    - Wait until that row enters edit mode.
@@ -49,17 +51,26 @@ Garage Conventionné provides a read-only table (`#DevisDetTable`) of the garage
 
 ## 3. Mandatory Native Financial Recalculation
 
-After all row operations are completed and verified, the agent **must** trigger SinAuto's native financial summary calculation. The automation must **never** invent or force its own charge-mutuelle split. 
+After all row operations are completed and verified, the agent **must** trigger SinAuto's native financial summary calculation. The automation must **never** invent or force its own charge-mutuelle split. Neither workflow may directly write charge-mutuelle or charge-sociétaire. Both workflows must trigger SinAuto-native calculation and verify the resulting financial summary before `READY_FOR_HUMAN_REVIEW`.
 
-1. Dispatch the required change event for `#DevisTvaRecupI` if necessary.
-2. Invoke the confirmed native behavior (`DevisCalculerMontantCharge()`).
-3. Wait for the summary to update.
-4. Read and verify all relevant fields: `#DevisMontantChargeMutuelle`, `#DevisMontantChargeSocietaire`, total TVA, total TTC, vétusté, franchise, remise, montant arrêté, and base indemnité.
-5. A missing, failed, or stale native financial recalculation blocks `READY_FOR_HUMAN_REVIEW`. 
+### 3.1 Mode Normal
+- **Confirmed Selectors**: [UNCONFIRMED - MUST BE DISCOVERED/CONFIRMED AS G5 PRECONDITION]
+- Do **not** guess or apply PEC-only `#Devis...` selectors to Mode Normal.
+- Trigger the native calculation logic (exact function/event [UNCONFIRMED]).
+- Read and verify all relevant fields (exact selectors [UNCONFIRMED]).
+
+### 3.2 Garage Conventionné / PEC
+- **Confirmed Selectors**: `#DevisTvaRecupI`, `#DevisMontantChargeMutuelle`, `#DevisMontantChargeSocietaire`.
+- Dispatch the required change event for `#DevisTvaRecupI` if necessary.
+- Invoke the confirmed native behavior (`DevisCalculerMontantCharge()`).
+- Wait for the summary to update.
+- Read and verify all relevant fields: `#DevisMontantChargeMutuelle`, `#DevisMontantChargeSocietaire`, total TVA, total TTC, vétusté, franchise, remise, montant arrêté, and base indemnité.
+
+A missing, failed, or stale native financial recalculation blocks `READY_FOR_HUMAN_REVIEW` in both workflows.
 
 ## 4. Permanent Final-Action Prohibition
 
-The automation must **never** submit, save, or finalize the dossier. Final validation is permanently reserved for human employees. The terminal state of automation is `READY_FOR_HUMAN_REVIEW`.
+The automation must **never** perform dossier-level final submission, save, or validation. The terminal state of automation is `READY_FOR_HUMAN_REVIEW`. Reviewed row-level `createRapportDefDet` and `updateDevisDet` persistence remains explicitly permitted.
 
 The agent must never click, invoke, or dispatch to:
 - `#DEVISDET_Btn`

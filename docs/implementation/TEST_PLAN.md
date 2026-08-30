@@ -26,7 +26,7 @@ Golden tests for current mapper/garage/notification-shape from sanitized fixture
 | Dry-run cannot construct a writer | INC-08/INC-09 (`test_read_capability_cannot_be_upgraded_to_writer`, `test_dry_run_never_constructs_writer`) |
 | Identity mismatch / zero-match / multiple-match | INC-09 |
 | Exact-rubrique zero/multiple-match | INC-09 (`test_zero_or_multiple_rubrique_rows_fail_closed`) |
-| Charge-mutuelle never written | INC-09 (`test_charge_mutuelle_fields_never_written`) |
+| Explicit typed execution operations and mandatory financial summary verification | INC-09 (`test_charge_mutuelle_fields_never_written`, `test_mandatory_financial_verification_blocks_ready`) |
 | Decimal + negative-TVA | INC-04 (`test_negative_line_tva_fails_closed`) |
 | Repository-contract + integrity (cross-account FK, NOT NULL idSinistre, status CHECK) | INC-10 |
 | Single-writer + heartbeat-loss | INC-11 |
