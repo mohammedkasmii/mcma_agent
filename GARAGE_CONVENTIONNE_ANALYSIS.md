@@ -186,10 +186,7 @@ sequenceDiagram
         end
         Agent->>Form: Trigger DevisCalculerMontantCharge()
         Agent->>Form: Fill #DevisObservationExpert (if applicable)
-        Agent->>Form: Click #DEVISDET_Btn ("Valider Devis ✓")
-        Form->>API: POST /garageModifierValDevis
-        API-->>Form: Return 200 OK (state: success)
-        Agent->>Form: Verify Table 2 locked & proceed to GED / Clôture
+        Note right of Agent: [SUPERSEDED] Historical baseline clicked #DEVISDET_Btn.<br/>Automation now STOPs here (READY_FOR_HUMAN_REVIEW).
     end
 ```
 
@@ -229,13 +226,13 @@ sequenceDiagram
 
 ---
 
-#### Step 4: Devis Validation Submission
-* **Live Production Run**:
-  * Click `#DEVISDET_Btn` (`Valider Devis ✓`).
-  * Await the server response from `POST /garageModifierValDevis`.
-  * Confirm that `#blocDevisValide` is locked and `#DEVISDET_Btn` is hidden.
-* **Safety / Test Mode (`TEST_MODE = True`)**:
-  * Intercept the `garageModifierValDevis` call, extract and validate the payload in memory, and prevent submission to ensure zero server alteration.
+#### Step 4: Devis Validation Submission [SUPERSEDED / PERMANENTLY PROHIBITED]
+* **Historical Baseline (Superseded)**:
+  * The baseline implementation previously attempted to click `#DEVISDET_Btn` (`Valider Devis ✓`) and await `POST /garageModifierValDevis`.
+* **Target Architecture (Permanent Rule)**:
+  * **The automation must NEVER click `#DEVISDET_Btn` or any final validation button.**
+  * Final validation is permanently reserved for human employees.
+  * The terminal state of automation is `READY_FOR_HUMAN_REVIEW`.
 
 ---
 
@@ -256,6 +253,5 @@ graph TD
     M2 --> M2_1[Locate #DevisDetTableVal]
     M2_1 --> M2_2[Loop: Edit in-place & updateDevisDet]
     M2_2 --> M2_3[Trigger DevisCalculerMontantCharge]
-    M2_3 --> M2_4[Click #DEVISDET_Btn -> garageModifierValDevis]
-    M2_4 --> Common
+    M2_3 --> M2_4[STOP: READY_FOR_HUMAN_REVIEW]
 ```

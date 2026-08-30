@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from mcma.domain.values import IdSinistre, InsurerReference, RegistrationPlate
+from mcma.domain.enums import RepairWorkflow
 from mcma.mapping.wexia import parse_wexia
 from mcma.planning.plan import ExpectedIdentity, PlanBuildError, ProposedPlan, RowOp
 from mcma.planning.registry import WorkflowRegistry, default_registry
@@ -216,6 +217,7 @@ def test_proposed_plan_with_zero_steps_not_writeable():
 
     plan = ProposedPlan(
         expected_identity=identity,
+        repair_workflow=RepairWorkflow.MODE_NORMAL,
         steps=(),
         needs_review=(),
         provenance=prov,
@@ -266,3 +268,75 @@ def test_explicit_rubrique_versus_semantic_classification():
     raw["chiffrages"][0]["lignes_pieces"][0]["mcma_rubric_id"] = "20"
     plan = _build(raw)
     assert not plan.is_writeable
+
+
+def test_normal_input_produces_mode_normal():
+    raw = _input(**{"dossier.mission_type": "normal"})
+    plan = _build(raw)
+    from mcma.domain.enums import RepairWorkflow
+    assert plan.repair_workflow == RepairWorkflow.MODE_NORMAL
+
+
+def test_conventionne_input_produces_garage_conventionne():
+    raw = _input(**{"dossier.mission_type": "garage conventionne", "dossier.incident_description": "choc"})
+    plan = default_registry().get("garage_conventionne")(parse_wexia(raw))
+    from mcma.domain.enums import RepairWorkflow
+    assert plan.repair_workflow == RepairWorkflow.GARAGE_CONVENTIONNE
+
+
+def test_conventionne_builder_rejects_normal_input():
+    raw = _input(**{"dossier.mission_type": "normal"})
+    with pytest.raises(PlanBuildError, match="not handled by this builder"):
+        default_registry().get("garage_conventionne")(parse_wexia(raw))
+
+
+def test_registry_contains_both_canonical_workflows():
+    registry = default_registry()
+    names = registry.names()
+    assert set(names) == {"mission_normal", "garage_conventionne"}
+
+
+def test_repair_workflow_participates_in_canonical_json_and_hash():
+    raw_normal = _input(**{"dossier.mission_type": "normal"})
+    plan_normal = _build(raw_normal)
+
+    raw_pec = _input(**{"dossier.mission_type": "garage conventionne", "dossier.incident_description": "choc"})
+    plan_pec = default_registry().get("garage_conventionne")(parse_wexia(raw_pec))
+
+    assert plan_normal.canonical_json() != plan_pec.canonical_json()
+    assert plan_normal.provenance.plan_hash != plan_pec.provenance.plan_hash
+    assert "mode_normal" in plan_normal.canonical_json()
+    assert "garage_conventionne" in plan_pec.canonical_json()
+
+
+def test_same_valid_input_produces_same_plan_and_hash_repeatedly():
+    raw = _input(**{"dossier.mission_type": "garage conventionne", "dossier.incident_description": "choc"})
+    builder = default_registry().get("garage_conventionne")
+    plan1 = builder(parse_wexia(raw))
+    plan2 = builder(parse_wexia(raw))
+    assert plan1.canonical_json() == plan2.canonical_json()
+    assert plan1.provenance.plan_hash == plan2.provenance.plan_hash
+
+
+def test_shuffle_determinism_remains_true_for_both_workflows():
+    import copy
+
+    # Normal workflow shuffle
+    raw_n1 = _input(**{"dossier.mission_type": "normal"})
+    raw_n2 = copy.deepcopy(raw_n1)
+    # reverse lines
+    raw_n2["chiffrages"][0]["lignes_pieces"].reverse()
+
+    p1 = _build(raw_n1)
+    p2 = _build(raw_n2)
+    assert p1.provenance.plan_hash == p2.provenance.plan_hash
+
+    # PEC workflow shuffle
+    raw_p1 = _input(**{"dossier.mission_type": "garage conventionne", "dossier.incident_description": "choc"})
+    raw_p2 = copy.deepcopy(raw_p1)
+    raw_p2["chiffrages"][0]["lignes_pieces"].reverse()
+
+    builder = default_registry().get("garage_conventionne")
+    pp1 = builder(parse_wexia(raw_p1))
+    pp2 = builder(parse_wexia(raw_p2))
+    assert pp1.provenance.plan_hash == pp2.provenance.plan_hash

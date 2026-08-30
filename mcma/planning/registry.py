@@ -6,7 +6,7 @@ registration is refused.
 
 from typing import Callable, Dict
 
-from mcma.planning.plan import ProposedPlan, build_mission_normal_plan
+from mcma.planning.plan import ProposedPlan, build_mission_normal_plan, build_garage_conventionne_plan
 
 PlanBuilder = Callable[[object], ProposedPlan]
 
@@ -36,4 +36,5 @@ class WorkflowRegistry:
 def default_registry() -> WorkflowRegistry:
     registry = WorkflowRegistry()
     registry.register("mission_normal", build_mission_normal_plan)
+    registry.register("garage_conventionne", build_garage_conventionne_plan)
     return registry

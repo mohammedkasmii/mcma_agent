@@ -31,9 +31,10 @@ from mcma.domain.rubriques import (
     has_glass_signal,
     resolve_explicit_rubrique,
 )
+from mcma.domain.enums import RepairWorkflow
 from mcma.domain.values import IdSinistre, InsurerReference, RegistrationPlate, RubriqueId
 
-BUILDER_VERSION = "inc05-1"
+BUILDER_VERSION = "inc05-2"
 
 _CENT = Decimal("0.01")
 
@@ -104,6 +105,7 @@ class Provenance:
 @dataclass(frozen=True)
 class ProposedPlan:
     expected_identity: ExpectedIdentity
+    repair_workflow: RepairWorkflow
     steps: Tuple[RowOp, ...]
     needs_review: Tuple[NeedsReview, ...]
     provenance: Provenance
@@ -270,16 +272,20 @@ def _classify_piece(line):
     return sem_result
 
 
-def build_mission_normal_plan(typed_input) -> ProposedPlan:
+def _build_plan_core(typed_input, expected_workflow: RepairWorkflow) -> ProposedPlan:
     dossier = typed_input.dossier
     if dossier.is_reform is None:
         raise PlanBuildError("is_reform marker missing from the payload — fail closed")
     if dossier.is_reform:
         raise PlanBuildError("reform dossiers are excluded from automation — fail closed")
     mode = _detect_mode_fail_closed(dossier)
-    if mode != "normal":
+    if mode == "normal" and expected_workflow != RepairWorkflow.MODE_NORMAL:
         raise PlanBuildError(
-            f"mission mode {mode!r} is not handled by the mission_normal builder — fail closed"
+            f"mission mode {mode!r} is not handled by this builder — fail closed"
+        )
+    if mode == "conventionne" and expected_workflow != RepairWorkflow.GARAGE_CONVENTIONNE:
+        raise PlanBuildError(
+            f"mission mode {mode!r} is not handled by this builder — fail closed"
         )
 
     plate_raw = typed_input.registration_raw
@@ -389,6 +395,7 @@ def build_mission_normal_plan(typed_input) -> ProposedPlan:
         _canonicalize(
             {
                 "expected_identity": identity,
+                "repair_workflow": expected_workflow,
                 "steps": list(steps),
                 "needs_review": list(needs_review),
                 "builder_version": BUILDER_VERSION,
@@ -401,7 +408,16 @@ def build_mission_normal_plan(typed_input) -> ProposedPlan:
     )
     return ProposedPlan(
         expected_identity=identity,
+        repair_workflow=expected_workflow,
         steps=steps,
         needs_review=needs_review,
         provenance=provenance,
     )
+
+
+def build_mission_normal_plan(typed_input) -> ProposedPlan:
+    return _build_plan_core(typed_input, RepairWorkflow.MODE_NORMAL)
+
+
+def build_garage_conventionne_plan(typed_input) -> ProposedPlan:
+    return _build_plan_core(typed_input, RepairWorkflow.GARAGE_CONVENTIONNE)

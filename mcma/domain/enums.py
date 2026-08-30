@@ -44,3 +44,9 @@ class Permission(Enum):
     SESSIONS_MANAGE = "sessions:manage"
     ACCOUNTS_MANAGE = "accounts:manage"
     USERS_MANAGE = "users:manage"
+
+
+@unique
+class RepairWorkflow(Enum):
+    MODE_NORMAL = "mode_normal"
+    GARAGE_CONVENTIONNE = "garage_conventionne"
