@@ -33,6 +33,10 @@ id -u "$RUN_AS_USER" >/dev/null 2>&1 \
 [[ -x "$PYTHON_BIN" ]] \
   || { echo "FATAL: python executable '$PYTHON_BIN' not found/executable"; exit 13; }
 
+LINT_IMPORTS_BIN="$(dirname "$PYTHON_BIN")/lint-imports"
+[[ -x "$LINT_IMPORTS_BIN" ]] \
+  || { echo "FATAL: preinstalled lint-imports executable not found"; exit 17; }
+
 RUN_UID="$(id -u "$RUN_AS_USER")"
 RUN_GID="$(id -g "$RUN_AS_USER")"
 HOME_DIR="$(getent passwd "$RUN_AS_USER" | cut -d: -f6)"
@@ -76,5 +80,5 @@ timeout --signal=TERM --kill-after=30 "$OVERALL_TIMEOUT" \
       cd '$REPO_ROOT'
       '$PYTHON_BIN' -m pytest tests/ -v
       echo 'Running import-linter (lint-imports)'
-      '$PYTHON_BIN' -m uv run --frozen lint-imports
+      '$LINT_IMPORTS_BIN'
     "
