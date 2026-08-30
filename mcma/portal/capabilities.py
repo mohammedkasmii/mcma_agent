@@ -19,6 +19,20 @@ The four ReadCapability operations (search/open/scrape/read_rows) are
 deliberately narrow: typed/validated caller input only, fixed internal
 routes and scripts, caller data passed only as serialized page.evaluate()
 arguments -- never interpolated into script text, a route, or a selector.
+
+Neither open_login_session's initial navigation nor open_reader's initial
+navigation hardcodes a concrete page path in this module.
+docs/recovery/PORTAL_CONTRACT.md attests only detection HEURISTICS (a
+logged-in/logged-out marker set), never a confirmed navigable page path on
+the real portal -- inventing one here would be an unevidenced production
+claim. Both functions instead require the caller to supply exactly one
+reviewed GET contract for the purpose (capability="auth"/operation_type=
+"login_page" for login; capability="read"/operation_type="search_page" for
+reading) and navigate to whatever route that contract names. The INC-06
+mock's own convention for these routes is recorded in
+tests/fixtures/contracts/login_page_navigation_mock_only.json and
+read_search_page_navigation_mock_only.json, explicitly classified
+MOCK_ONLY/UNCONFIRMED and never eligible for the live allowlist.
 """
 
 from __future__ import annotations
@@ -144,9 +158,37 @@ class SessionMaterial:
 # LoginCapability (INC-08 amendment #6 -- narrow, onboarding-only)
 # --------------------------------------------------------------------- #
 
-_LOGIN_ROUTE = "/SinAuto_MCMA/login"
+_LOGIN_PAGE_OPERATION_TYPE = "login_page"
 _LOGGED_IN_MARKER_JS = """(selectors) => selectors.some(sel => document.querySelector(sel) !== null)"""
 LOGGED_IN_MARKERS = ("#formRecherche", "#ReferenceCie", "a[href*='logout']")
+
+
+def _find_single_navigation_route(
+    contracts: Sequence[RouteContract], *, capability: str, operation_type: str
+) -> str:
+    """The one GET route a capability is allowed to navigate its page to at
+    construction time, derived strictly from the caller's own reviewed
+    contracts -- never a path hardcoded in this module. A concrete
+    navigable page path is not something PORTAL_CONTRACT.md attests for
+    the real portal (it attests detection heuristics, not paths), so this
+    module never invents one; the caller must supply a contract for it
+    (tests/fixtures/contracts/login_page_navigation_mock_only.json and
+    read_search_page_navigation_mock_only.json record the INC-06 mock's
+    own convention, explicitly classified as MOCK_ONLY/UNCONFIRMED, never
+    eligible for the live allowlist). Zero or more than one match fails
+    closed: an ambiguous navigation target is never guessed at."""
+    matches = [
+        c
+        for c in contracts
+        if c.capability == capability and c.method == "GET" and c.operation_type == operation_type
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"exactly one reviewed GET {capability!r} contract with "
+            f"operation_type={operation_type!r} is required to navigate "
+            f"(found {len(matches)})"
+        )
+    return matches[0].route
 
 
 class LoginTimedOut(Exception):
@@ -157,10 +199,11 @@ class LoginTimedOut(Exception):
 
 class LoginCapability:
     """Desktop onboarding tool only (SAFETY_MODEL.md §1). Navigates ONLY to
-    its fixed reviewed login route and polls ONLY the fixed logged-in
-    markers above. It never accepts a credential argument, never fills a
-    form, never accepts an arbitrary URL/selector, and never opens a
-    mission page -- the human performs login and OTP themselves."""
+    the single reviewed GET login-page route supplied in its contracts
+    (open_login_session requires exactly one) and polls ONLY the fixed
+    logged-in markers above. It never accepts a credential argument, never
+    fills a form, never accepts an arbitrary URL/selector, and never opens
+    a mission page -- the human performs login and OTP themselves."""
 
     def __init__(self, context, page, account_id: str):
         self._context = context
@@ -215,10 +258,13 @@ async def open_login_session(
         raise ValueError("account_id must be a non-empty string")
     frozen_contracts = tuple(contracts)
     _require_only_capability(frozen_contracts, "auth")
+    login_page_route = _find_single_navigation_route(
+        frozen_contracts, capability="auth", operation_type=_LOGIN_PAGE_OPERATION_TYPE
+    )
     context = await open_guarded_context(browser, frozen_contracts, allowed_host, context_options)
     try:
         page = await context.new_page()
-        await page.goto(f"http://{allowed_host}{_LOGIN_ROUTE}")
+        await page.goto(f"http://{allowed_host}{login_page_route}")
     except Exception:
         await context.close()
         raise
@@ -297,6 +343,7 @@ class Candidate:
         return self._societaire
 
 
+_SEARCH_PAGE_OPERATION_TYPE = "search_page"
 _SEARCH_ROUTE = "/SinAuto_MCMA/expertise/FrontExpert/listeMissions"
 _MISSION_DEEP_LINK_TEMPLATE = (
     "/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/{id_sinistre}/rubrique/gestionexpert-index"
@@ -329,7 +376,19 @@ class ReadCapability:
     operation reaches the portal only through a fixed internal route and a
     fixed internal script; caller input is always passed as a serialized
     page.evaluate() argument, never interpolated into script text, a
-    route, or a selector."""
+    route, or a selector.
+
+    `open_reader` navigates this capability's page to a caller-supplied,
+    contract-reviewed GET route immediately after creation (before
+    returning the capability), establishing a same-origin document before
+    any fetch-based operation runs. A page that has never navigated stays
+    at `about:blank`, which has an opaque/null origin; a `fetch()` from
+    that origin to any host -- including an otherwise-correctly-allowed
+    one -- is a cross-origin request the browser's own Same-Origin Policy
+    rejects unless the target sends matching CORS headers, independent of
+    and prior to this module's own interception policy. Navigating first
+    makes every subsequent fetch same-origin, which needs no CORS headers
+    at all."""
 
     def __init__(self, context, page, allowed_host: str):
         self._context = context
@@ -423,9 +482,13 @@ async def open_reader(
     await lease_handle.assert_valid()
     frozen_contracts = tuple(contracts)
     _require_only_capability(frozen_contracts, "read")
+    search_page_route = _find_single_navigation_route(
+        frozen_contracts, capability="read", operation_type=_SEARCH_PAGE_OPERATION_TYPE
+    )
     context = await open_guarded_context(browser, frozen_contracts, allowed_host, context_options)
     try:
         page = await context.new_page()
+        await page.goto(f"http://{allowed_host}{search_page_route}")
     except Exception:
         await context.close()
         raise

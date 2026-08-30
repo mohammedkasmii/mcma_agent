@@ -11,6 +11,7 @@ import pytest
 from capabilities_test_support import (
     ALLOWED_HOST,
     AUTH_LOGIN_CONTRACT,
+    AUTH_LOGIN_PAGE_CONTRACT,
     FailingNewPageContext,
     FakeBrowser,
     FakePage,
@@ -78,22 +79,50 @@ def test_open_login_session_rejects_empty_or_non_string_account_id(bad_account_i
 
 
 # --------------------------------------------------------------------- #
-# Fixed navigation only; context setup failure closes and fails closed
+# Navigation target is derived from a caller-supplied reviewed contract,
+# never hardcoded; context setup failure closes and fails closed
 # --------------------------------------------------------------------- #
 
 
-def test_open_login_session_navigates_only_to_its_fixed_login_route():
+def test_open_login_session_requires_exactly_one_login_page_contract():
     browser = FakeBrowser()
-    login = run_async(open_login_session(browser, "acct-1", (AUTH_LOGIN_CONTRACT,), ALLOWED_HOST))
+    with pytest.raises(ValueError):
+        run_async(open_login_session(browser, "acct-1", (AUTH_LOGIN_CONTRACT,), ALLOWED_HOST))
+    assert browser.new_context_calls == []
+
+
+def test_open_login_session_rejects_multiple_login_page_contracts():
+    browser = FakeBrowser()
+    duplicate = AUTH_LOGIN_PAGE_CONTRACT
+    with pytest.raises(ValueError):
+        run_async(
+            open_login_session(
+                browser, "acct-1", (AUTH_LOGIN_CONTRACT, duplicate, duplicate), ALLOWED_HOST
+            )
+        )
+    assert browser.new_context_calls == []
+
+
+def test_open_login_session_navigates_to_the_contract_supplied_login_page_route():
+    browser = FakeBrowser()
+    login = run_async(
+        open_login_session(
+            browser, "acct-1", (AUTH_LOGIN_CONTRACT, AUTH_LOGIN_PAGE_CONTRACT), ALLOWED_HOST
+        )
+    )
     page = browser.contexts_created[0].pages_created[0]
-    assert page.goto_calls == [f"http://{ALLOWED_HOST}/SinAuto_MCMA/login"]
+    assert page.goto_calls == [f"http://{ALLOWED_HOST}{AUTH_LOGIN_PAGE_CONTRACT.route}"]
     run_async(login.close())
 
 
 def test_open_login_session_closes_context_when_new_page_fails():
     browser = FakeBrowser(context_factory=FailingNewPageContext)
     with pytest.raises(RuntimeError):
-        run_async(open_login_session(browser, "acct-1", (AUTH_LOGIN_CONTRACT,), ALLOWED_HOST))
+        run_async(
+            open_login_session(
+                browser, "acct-1", (AUTH_LOGIN_CONTRACT, AUTH_LOGIN_PAGE_CONTRACT), ALLOWED_HOST
+            )
+        )
     assert browser.contexts_created[0].closed_count == 1
 
 

@@ -27,7 +27,7 @@ def test_no_external_resource_urls_in_mission_page(client):
 
 
 def test_no_external_resource_urls_in_mission_search_page(client):
-    resp = client.get("/SinAuto_MCMA/expertise/frontexpert/")
+    resp = client.get("/SinAuto_MCMA/expertise/frontexpert")
     assert resp.status_code == 200
     _assert_no_external_urls(resp.text)
 

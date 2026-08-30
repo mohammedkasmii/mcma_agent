@@ -15,6 +15,7 @@ from capabilities_test_support import (
     FakeBrowser,
     NotALeaseHandle,
     READ_NORMAL_ROWS_CONTRACT,
+    READ_SEARCH_PAGE_CONTRACT,
     SyntheticLeaseHandle,
     run_async,
 )
@@ -30,7 +31,11 @@ def test_lease_handle_protocol_requires_assert_valid_and_account_id():
 def test_open_reader_validates_lease_before_creating_any_context():
     browser = FakeBrowser()
     lease = SyntheticLeaseHandle(valid=True)
-    run_async(open_reader(browser, lease, (READ_NORMAL_ROWS_CONTRACT,), ALLOWED_HOST))
+    run_async(
+        open_reader(
+            browser, lease, (READ_NORMAL_ROWS_CONTRACT, READ_SEARCH_PAGE_CONTRACT), ALLOWED_HOST
+        )
+    )
     assert lease.assert_valid_calls == 1
     assert len(browser.new_context_calls) == 1
 

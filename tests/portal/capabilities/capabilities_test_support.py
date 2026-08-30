@@ -42,6 +42,37 @@ AUTH_LOGIN_CONTRACT = RouteContract(
     workflow=None,
 )
 
+# The GET route open_login_session navigates to before polling for
+# logged-in markers -- a real deployment must supply its own confirmed
+# contract; this one records the INC-06 mock's own convention only
+# (tests/fixtures/contracts/login_page_navigation_mock_only.json).
+AUTH_LOGIN_PAGE_CONTRACT = RouteContract(
+    host=ALLOWED_HOST,
+    route="/SinAuto_MCMA/login",
+    method="GET",
+    query_fields=frozenset(),
+    content_type=None,
+    body_fields=frozenset(),
+    capability="auth",
+    operation_type="login_page",
+    workflow=None,
+)
+
+# The GET route open_reader navigates to immediately after creation, before
+# returning the capability, so every subsequent fetch is same-origin
+# (tests/fixtures/contracts/read_search_page_navigation_mock_only.json).
+READ_SEARCH_PAGE_CONTRACT = RouteContract(
+    host=ALLOWED_HOST,
+    route="/SinAuto_MCMA/expertise/frontexpert",
+    method="GET",
+    query_fields=frozenset(),
+    content_type=None,
+    body_fields=frozenset(),
+    capability="read",
+    operation_type="search_page",
+    workflow=None,
+)
+
 READ_LIST_MISSIONS_CONTRACT = RouteContract(
     host=ALLOWED_HOST,
     route="/SinAuto_MCMA/expertise/FrontExpert/listeMissions",

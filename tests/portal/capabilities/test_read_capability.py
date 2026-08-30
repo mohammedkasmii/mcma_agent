@@ -17,6 +17,7 @@ from capabilities_test_support import (
     READ_LIST_MISSIONS_CONTRACT,
     READ_NORMAL_ROWS_CONTRACT,
     READ_PEC_ROWS_CONTRACT,
+    READ_SEARCH_PAGE_CONTRACT,
     ROGUE_ROW_WRITE_CONTRACT,
     SyntheticLeaseHandle,
     run_async,
@@ -30,7 +31,12 @@ from mcma.portal.capabilities import (
     open_reader,
 )
 
-ALL_CONTRACTS = (READ_LIST_MISSIONS_CONTRACT, READ_NORMAL_ROWS_CONTRACT, READ_PEC_ROWS_CONTRACT)
+ALL_CONTRACTS = (
+    READ_LIST_MISSIONS_CONTRACT,
+    READ_NORMAL_ROWS_CONTRACT,
+    READ_PEC_ROWS_CONTRACT,
+    READ_SEARCH_PAGE_CONTRACT,
+)
 
 
 def _open(browser=None, lease=None, contracts=ALL_CONTRACTS):
@@ -65,6 +71,37 @@ def test_open_reader_closes_context_when_new_page_fails():
     with pytest.raises(RuntimeError):
         run_async(open_reader(browser, SyntheticLeaseHandle(), ALL_CONTRACTS, ALLOWED_HOST))
     assert browser.contexts_created[0].closed_count == 1
+
+
+def test_open_reader_requires_exactly_one_search_page_contract():
+    browser = FakeBrowser()
+    contracts_without_search_page = (READ_LIST_MISSIONS_CONTRACT, READ_NORMAL_ROWS_CONTRACT)
+    with pytest.raises(ValueError):
+        run_async(
+            open_reader(browser, SyntheticLeaseHandle(), contracts_without_search_page, ALLOWED_HOST)
+        )
+    assert browser.new_context_calls == []
+
+
+def test_open_reader_rejects_multiple_search_page_contracts():
+    browser = FakeBrowser()
+    duplicated = ALL_CONTRACTS + (READ_SEARCH_PAGE_CONTRACT,)
+    with pytest.raises(ValueError):
+        run_async(open_reader(browser, SyntheticLeaseHandle(), duplicated, ALLOWED_HOST))
+    assert browser.new_context_calls == []
+
+
+def test_open_reader_navigates_to_the_search_page_before_returning_the_capability():
+    browser, reader = _open()
+    page = browser.contexts_created[0].pages_created[0]
+    # The navigation to a same-origin page must happen BEFORE any fetch-based
+    # operation is available -- this is the actual fix for a page that would
+    # otherwise stay at about:blank (opaque/null origin), where a fetch() to
+    # any host is cross-origin and rejected by the browser's own CORS
+    # enforcement regardless of the portal interception policy.
+    assert page.goto_calls == [f"http://{ALLOWED_HOST}{READ_SEARCH_PAGE_CONTRACT.route}"]
+    assert page.evaluate_calls == []
+    run_async(reader.close())
 
 
 # --------------------------------------------------------------------- #
@@ -126,7 +163,9 @@ def test_open_navigates_using_only_id_mission_never_a_route_field():
     page._evaluate_results = [{"data": [{"IdMission": 42, "Matricule": "X", "ReferenceMission": "Y", "Societaire": "Z"}]}]
     (candidate,) = run_async(reader.search(SearchIdentifiers(matricule="X")))
     run_async(reader.open(candidate))
-    assert page.goto_calls == [
+    # goto_calls[0] is open_reader's own initial navigation to the reviewed
+    # search-page contract; open() appends the mission deep link after it.
+    assert page.goto_calls[1:] == [
         f"http://{ALLOWED_HOST}/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/42/rubrique/gestionexpert-index"
     ]
 
@@ -142,7 +181,7 @@ def test_open_percent_escapes_a_malicious_id_mission_instead_of_traversing():
         owner_token=reader._capability_token,
     )
     run_async(reader.open(candidate))
-    (url,) = page.goto_calls
+    url = page.goto_calls[-1]
     # The escaped id segment must not contain a literal, unescaped "/" --
     # otherwise it would extend the path instead of staying one segment.
     id_segment = url.split("idSinistre/", 1)[1].split("/rubrique")[0]

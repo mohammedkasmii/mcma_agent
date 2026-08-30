@@ -27,7 +27,9 @@ import uvicorn
 import mock_server
 from capabilities_test_support import (
     AUTH_LOGIN_CONTRACT,
+    AUTH_LOGIN_PAGE_CONTRACT,
     READ_NORMAL_ROWS_CONTRACT,
+    READ_SEARCH_PAGE_CONTRACT,
     SyntheticLeaseHandle,
 )
 from mcma.portal.capabilities import SessionMaterial, open_login_session, open_reader
@@ -88,7 +90,10 @@ async def _open_reader_real_read():
         browser = await p.chromium.launch(headless=True)
         try:
             reader = await open_reader(
-                browser, SyntheticLeaseHandle(), (READ_NORMAL_ROWS_CONTRACT,), ALLOWED_HOST
+                browser,
+                SyntheticLeaseHandle(),
+                (READ_NORMAL_ROWS_CONTRACT, READ_SEARCH_PAGE_CONTRACT),
+                ALLOWED_HOST,
             )
             try:
                 from mcma.domain.enums import RepairWorkflow
@@ -111,7 +116,7 @@ async def _login_flow(base_url):
 
     # Simulate "the human already logged in" out of band -- LoginCapability
     # itself never fills credentials (amendment #6); it only navigates to
-    # its fixed login route and polls fixed markers.
+    # the contract-supplied login-page route and polls fixed markers.
     async with httpx.AsyncClient() as client:
         await client.post(f"{base_url}/SinAuto_MCMA/front/Login/login")
 
@@ -119,7 +124,10 @@ async def _login_flow(base_url):
         browser = await p.chromium.launch(headless=True)
         try:
             login = await open_login_session(
-                browser, "synthetic-account", (AUTH_LOGIN_CONTRACT,), ALLOWED_HOST
+                browser,
+                "synthetic-account",
+                (AUTH_LOGIN_CONTRACT, AUTH_LOGIN_PAGE_CONTRACT),
+                ALLOWED_HOST,
             )
             try:
                 material = await login.perform_manual_login(
@@ -144,8 +152,19 @@ async def _final_endpoint_aborted():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            context = await open_guarded_context(browser, (), ALLOWED_HOST)
+            context = await open_guarded_context(
+                browser, (READ_SEARCH_PAGE_CONTRACT,), ALLOWED_HOST
+            )
             page = await context.new_page()
+            # Establish a same-origin document FIRST via one allowed GET.
+            # A page left at about:blank has an opaque/null origin, and a
+            # fetch() from there to any host -- allowed or not -- is
+            # cross-origin and rejected by the browser's own CORS policy
+            # (the mock never sends CORS headers), which would make this
+            # "blocked" outcome prove nothing about the interception guard.
+            # Navigating first removes that confound: any block observed
+            # below is attributable to the guard, not incidental CORS.
+            await page.goto(f"{BASE_URL}{READ_SEARCH_PAGE_CONTRACT.route}")
             outcome = await page.evaluate(
                 """(url) => fetch(url, {method: 'POST'}).then(() => 'reached', () => 'blocked')""",
                 f"{BASE_URL}/SinAuto_MCMA/expertise/gestiongarage/garageModifierValDevis",
@@ -170,8 +189,14 @@ async def _unknown_request_aborted():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            context = await open_guarded_context(browser, (), ALLOWED_HOST)
+            context = await open_guarded_context(
+                browser, (READ_SEARCH_PAGE_CONTRACT,), ALLOWED_HOST
+            )
             page = await context.new_page()
+            # Same-origin document first -- see the comment in
+            # _final_endpoint_aborted for why this rules out a CORS
+            # confound rather than proving the interception guard.
+            await page.goto(f"{BASE_URL}{READ_SEARCH_PAGE_CONTRACT.route}")
             outcome = await page.evaluate(
                 """(url) => fetch(url).then(() => 'reached', () => 'blocked')""",
                 f"{BASE_URL}/SinAuto_MCMA/expertise/gestionExpert/totallyUnknownRoute",
@@ -192,10 +217,18 @@ async def _new_page_is_covered():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            context = await open_guarded_context(browser, (), ALLOWED_HOST)
-            # A page opened AFTER the guard was installed -- proves the
-            # guard is context-level, not attached to one specific page.
+            context = await open_guarded_context(
+                browser, (READ_SEARCH_PAGE_CONTRACT,), ALLOWED_HOST
+            )
+            first_page = await context.new_page()
+            await first_page.goto(f"{BASE_URL}{READ_SEARCH_PAGE_CONTRACT.route}")
+
+            # A SECOND page, opened after the guard was installed and after
+            # the first page was already in use -- proves the guard is
+            # context-level, not attached to one specific page. Same-origin
+            # navigation first, for the same CORS-confound reason as above.
             second_page = await context.new_page()
+            await second_page.goto(f"{BASE_URL}{READ_SEARCH_PAGE_CONTRACT.route}")
             outcome = await second_page.evaluate(
                 """(url) => fetch(url, {method: 'POST'}).then(() => 'reached', () => 'blocked')""",
                 f"{BASE_URL}/SinAuto_MCMA/expertise/gestiongarage/garageModifierValDevis",

@@ -1,0 +1,15 @@
+{
+  "workflow": "SHARED",
+  "endpoint_name": "login_page_navigation",
+  "purpose": "The GET route open_login_session navigates LoginCapability's page to immediately after creation, before polling for logged-in markers.",
+  "observed_route": "/SinAuto_MCMA/login",
+  "method": "GET",
+  "evidence_status": "MOCK_ONLY",
+  "g5_live_contract_status": "UNCONFIRMED",
+  "eligible_for_live_allowlist": false,
+  "mock_only": true,
+  "mock_route": true,
+  "capability": "auth",
+  "operation_type": "login_page",
+  "notes": "docs/recovery/PORTAL_CONTRACT.md §2 attests only a logged-out-state detection HEURISTIC (URL contains 'login'; markers input[name='login']/#login/#password/expert_.phtml) -- it does NOT attest a concrete navigable login page path on the real portal. '/SinAuto_MCMA/login' is an INC-06 mock-only convention for offline/CI testing. mcma.portal.capabilities never hardcodes this path: open_login_session requires the caller to supply exactly one reviewed GET contract with capability='auth' and operation_type='login_page' in its policy, and navigates to whatever route that contract names -- a real deployment must supply its own confirmed contract before any live navigation."
+}

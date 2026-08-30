@@ -1,0 +1,15 @@
+{
+  "workflow": "SHARED",
+  "endpoint_name": "read_search_page_navigation",
+  "purpose": "The GET route open_reader navigates ReadCapability's page to immediately after creation, before returning the capability, establishing a same-origin document before any fetch-based operation (search/read_rows) runs.",
+  "observed_route": "/SinAuto_MCMA/expertise/frontexpert",
+  "method": "GET",
+  "evidence_status": "RECOVERED_BASELINE_EVIDENCE",
+  "g5_live_contract_status": "UNCONFIRMED",
+  "eligible_for_live_allowlist": false,
+  "mock_only": false,
+  "mock_route": true,
+  "capability": "read",
+  "operation_type": "search_page",
+  "notes": "docs/recovery/PORTAL_CONTRACT.md §3 attests the mission-search page's logged-in markers, not that this exact route is a confirmed navigable entry point on the real portal -- treated as recovered evidence, not a G5-approved contract. A page that has never navigated stays at about:blank (opaque/null origin); a fetch() from that origin to any host is cross-origin and is rejected by the browser's own Same-Origin Policy unless the target sends matching CORS headers, independent of and prior to the portal interception policy. Navigating to this route first makes every subsequent fetch same-origin. mcma.portal.capabilities never hardcodes this path: open_reader requires the caller to supply exactly one reviewed GET contract with capability='read' and operation_type='search_page' in its policy and navigates to whatever route that contract names."
+}

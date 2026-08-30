@@ -631,7 +631,7 @@ def get_mission_deep_link(id_sinistre: str):
     return HTMLResponse(content=_render_mission_page())
 
 
-@app.get("/SinAuto_MCMA/expertise/frontexpert/")
+@app.get("/SinAuto_MCMA/expertise/frontexpert")
 def get_mission_search_page():
     """Logged-in mission-search markers (docs/recovery/PORTAL_CONTRACT.md §2/§3)."""
     html = (
@@ -674,7 +674,7 @@ def get_login_page():
 @app.post("/SinAuto_MCMA/front/Login/login")
 def mock_login():
     MOCK_STATE["logged_in"] = True
-    return JSONResponse({"state": "success", "message": "Login successful", "redirect": "/SinAuto_MCMA/expertise/frontexpert/"})
+    return JSONResponse({"state": "success", "message": "Login successful", "redirect": "/SinAuto_MCMA/expertise/frontexpert"})
 
 
 @app.post("/SinAuto_MCMA/expertise/FrontExpert/listeMissions")
