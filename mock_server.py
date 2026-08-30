@@ -118,6 +118,10 @@ def _initial_state() -> dict:
         "last_saved_mission": None,
         "validated_devis_payload": None,
         "uploaded_documents": [],
+        # INC-08 synthetic-only marker: flips true once /front/Login/login
+        # succeeds, so /login can reflect logged-in markers for the
+        # isolated-CI LoginCapability proof test. Never a real auth state.
+        "logged_in": False,
         "rows": {
             "normal": [],
             # Immutable baseline evidence: the garage's original quote.
@@ -644,7 +648,21 @@ def get_mission_search_page():
 
 @app.get("/SinAuto_MCMA/login")
 def get_login_page():
-    """Logged-out markers (docs/recovery/PORTAL_CONTRACT.md §2)."""
+    """Logged-out markers (docs/recovery/PORTAL_CONTRACT.md §2), or -- once
+    the synthetic /front/Login/login call has succeeded -- the same
+    logged-in markers used on the mission-search page, so an isolated-CI
+    LoginCapability proof test can observe a real state transition on one
+    fixed route without any credential automation."""
+    if MOCK_STATE["logged_in"]:
+        html = (
+            "<html><body>"
+            "<form id='formRecherche'>"
+            "<input id='ReferenceCie'><input id='Matricule'>"
+            "</form>"
+            "<a href='/SinAuto_MCMA/logout'>logout</a>"
+            "</body></html>"
+        )
+        return HTMLResponse(content=html)
     html = (
         "<html><body data-page-marker='expert_.phtml'>"
         "<form><input name='login' id='login'><input id='password' type='password'></form>"
@@ -655,6 +673,7 @@ def get_login_page():
 
 @app.post("/SinAuto_MCMA/front/Login/login")
 def mock_login():
+    MOCK_STATE["logged_in"] = True
     return JSONResponse({"state": "success", "message": "Login successful", "redirect": "/SinAuto_MCMA/expertise/frontexpert/"})
 
 
