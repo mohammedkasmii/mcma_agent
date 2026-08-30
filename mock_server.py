@@ -286,6 +286,7 @@ HTML_TEMPLATE = """
     <form id="formExpertMission" onsubmit="return false;">
         <input type="hidden" id="IdSinistre__I" value="534660">
         <input type="hidden" id="IdMission" value="532805">
+        <input type="hidden" id="MatriculeVeh" value="34602-B-7">
 
         <fieldset>
             <legend>Options</legend>
@@ -610,8 +611,51 @@ def _render_pec_original_rows() -> str:
     return "\n".join(parts)
 
 
-def _render_mission_page() -> str:
-    return HTML_TEMPLATE.replace("__PEC_ORIGINAL_ROWS__", _render_pec_original_rows())
+def _strip_section(html: str, section_id: str) -> str:
+    """Removes the <div id="{section_id}">...</div> block ENTIRELY
+    (balanced-tag scan, not a naive first-</div> cut -- both sections
+    contain their own nested <div> elements) -- not merely hidden, so a
+    document.querySelector for a marker inside it finds nothing, not just
+    something invisible. Used only by the mock-only ?workflow= parameter
+    below (INC-09A)."""
+    start_marker = f'<div id="{section_id}"'
+    start = html.index(start_marker)
+    pos = html.index(">", start) + 1
+    depth = 1
+    while depth > 0:
+        next_open = html.find("<div", pos)
+        next_close = html.find("</div>", pos)
+        if next_close == -1:
+            raise ValueError(f"unbalanced <div> while stripping {section_id!r}")
+        if next_open != -1 and next_open < next_close:
+            depth += 1
+            pos = next_open + 4
+        else:
+            depth -= 1
+            pos = next_close + len("</div>")
+    return html[:start] + html[pos:]
+
+
+def _render_mission_page(workflow: str | None = None) -> str:
+    """`workflow` is MOCK-ONLY test infrastructure (INC-09A), never a
+    confirmed live query parameter or contract -- see
+    tests/fixtures/contracts/ for how every genuinely confirmed contract in
+    this project is classified; this parameter is not one of them.
+
+    None (the default, unspecified) renders BOTH sections exactly as the
+    baseline INC-06 page always has (PEC visible, Mode Normal present at
+    display:none) -- this is unchanged, existing behavior, preserved
+    byte-for-byte for any caller that never passes it.
+    "normal" or "conventionne" REMOVES the other section's markup entirely
+    (not just hides it) so a real browser's document.querySelector can
+    distinguish "workflow section absent" from "present but invisible" --
+    needed for INC-09A's workflow-detection gate (mcma.portal.mission)."""
+    html = HTML_TEMPLATE.replace("__PEC_ORIGINAL_ROWS__", _render_pec_original_rows())
+    if workflow == "normal":
+        html = _strip_section(html, "sectionGarageConventionne")
+    elif workflow == "conventionne":
+        html = _strip_section(html, "sectionModeNormal")
+    return html
 
 
 # ---------------------------------------------------------------------------
@@ -622,13 +666,13 @@ def _render_mission_page() -> str:
 @app.get("/")
 @app.get("/SinAuto_MCMA/expertise/gestionexpert/index")
 @app.get("/SinAuto_MCMA/expertise/gestionExpert/index")
-def get_mission_page():
-    return HTMLResponse(content=_render_mission_page())
+def get_mission_page(workflow: str | None = None):
+    return HTMLResponse(content=_render_mission_page(workflow))
 
 
 @app.get("/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/{id_sinistre}/rubrique/gestionexpert-index")
-def get_mission_deep_link(id_sinistre: str):
-    return HTMLResponse(content=_render_mission_page())
+def get_mission_deep_link(id_sinistre: str, workflow: str | None = None):
+    return HTMLResponse(content=_render_mission_page(workflow))
 
 
 @app.get("/SinAuto_MCMA/expertise/frontexpert")
@@ -677,22 +721,29 @@ def mock_login():
     return JSONResponse({"state": "success", "message": "Login successful", "redirect": "/SinAuto_MCMA/expertise/frontexpert"})
 
 
+_FIXED_MISSION = {
+    "IdMission": 532805,
+    "ReferenceMission": "3.MH.02.2026.00047",
+    "RefSinistre": "MEX202648130",
+    "Matricule": "34602-B-7",
+    "Societaire": "SAPRESS SA",
+    "ModeReparation": "GARAGE CONVENTIONNE",
+}
+
+
 @app.post("/SinAuto_MCMA/expertise/FrontExpert/listeMissions")
-def mock_liste_missions():
-    return JSONResponse(
-        {
-            "data": [
-                {
-                    "IdMission": 532805,
-                    "ReferenceMission": "3.MH.02.2026.00047",
-                    "RefSinistre": "MEX202648130",
-                    "Matricule": "34602-B-7",
-                    "Societaire": "SAPRESS SA",
-                    "ModeReparation": "GARAGE CONVENTIONNE",
-                }
-            ]
-        }
-    )
+async def mock_liste_missions(request: Request):
+    """INC-09A: filters by Matricule so a non-matching search genuinely
+    yields zero rows (needed for the exactly-one-search fail-closed proof;
+    docs/recovery/KNOWN_FAILURES.md F3-F5). A blank/omitted Matricule (or
+    the one matching plate) returns the fixed mission -- unchanged from
+    every prior increment's behavior, since no earlier test ever supplied a
+    non-matching Matricule to this route."""
+    form = await _read_form(request)
+    matricule = (form.get("Matricule") or "").strip()
+    if matricule and matricule != _FIXED_MISSION["Matricule"]:
+        return JSONResponse({"data": []})
+    return JSONResponse({"data": [_FIXED_MISSION]})
 
 
 @app.post("/SinAuto_MCMA/expertise/notification/getAlerte/CodeAlerte/{code}")
