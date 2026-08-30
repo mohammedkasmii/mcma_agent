@@ -1,12 +1,14 @@
 """
-INC-09B -- Mode Normal real-Chromium proof: real search+open (no
-?workflow= in the URL, no mock-only function/endpoint referenced by
-writer.py at all), real DOM-driven add via the scoped Ajouter locator,
-exact HTTP-status+state-field validated createRapportDefDet, exact
-read-back -- then trigger_native_recalc() must raise
-NativeCalculationUnconfirmed and terminally abort the writer. This proof
-never claims READY_FOR_HUMAN_REVIEW or calculation success for Mode
-Normal.
+INC-09B (round-3 corrected) -- Mode Normal real-Chromium proof: real
+search+open against the SYNTHETIC NORMAL mission's own identity (item
+A.2: 77001-C-3 / 699001 / 612001 -- never the PEC mission's), real
+DOM-driven add via the scoped Ajouter locator and a set-difference-based
+new-row identification (never document.querySelector(...first)), a
+real fresh-rows read-before-write and read-after-write, exact
+HTTP-status+state-field validated createRapportDefDet -- then
+trigger_native_recalc() must raise NativeCalculationUnconfirmed and
+terminally abort the writer. This proof never claims
+READY_FOR_HUMAN_REVIEW or calculation success for Mode Normal.
 """
 
 import pytest
@@ -23,6 +25,7 @@ from mcma.portal.writer import (
 )
 from writer_live_chromium_test_support import ALLOWED_HOST, live_mock_server  # noqa: F401
 from writer_test_support import (
+    NORMAL_READ_ROWS_CONTRACT,
     NORMAL_ROW_WRITE_CONTRACT,
     SEARCH_LISTE_MISSIONS_CONTRACT,
     SEARCH_PAGE_CONTRACT,
@@ -34,10 +37,16 @@ from writer_test_support import (
 
 pytestmark = [pytest.mark.egress_proof, pytest.mark.requires_egress_isolation]
 
-CONTRACTS = (SEARCH_PAGE_CONTRACT, SEARCH_LISTE_MISSIONS_CONTRACT, NORMAL_ROW_WRITE_CONTRACT)
-IDENTITY = make_expected_identity("34602-B-7", "534660")
+CONTRACTS = (SEARCH_PAGE_CONTRACT, SEARCH_LISTE_MISSIONS_CONTRACT, NORMAL_READ_ROWS_CONTRACT, NORMAL_ROW_WRITE_CONTRACT)
+IDENTITY = make_expected_identity("77001-C-3", "699001")
 PLAN = WriterPlanData(repair_workflow=RepairWorkflow.MODE_NORMAL, row_intents=(row_intent("3", "10.00", "2.00"),))
-IDENTIFIERS = SearchIdentifiers(matricule="34602-B-7")
+IDENTIFIERS = SearchIdentifiers(matricule="77001-C-3")
+
+
+async def _open_writer(browser):
+    return await open_verified_writer(
+        browser, SyntheticLeaseHandle(), IDENTITY, PLAN, IDENTIFIERS, CONTRACTS, ALLOWED_HOST
+    )
 
 
 def test_mode_normal_row_persists_then_calculation_unconfirmed_aborts(live_mock_server):
@@ -50,62 +59,99 @@ async def _scenario():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            writer = await open_verified_writer(
-                browser, SyntheticLeaseHandle(), IDENTITY, PLAN, IDENTIFIERS, CONTRACTS, ALLOWED_HOST
-            )
-            # No page.evaluate("...mockJsFunctionName...") -- the writer
-            # drove the DOM via real navigate/click/select_option only, as
-            # a fresh page/goto/click trail confirms indirectly here:
+            writer = await _open_writer(browser)
             page = writer._page
-            assert page.url.startswith(ALLOWED_HOST) or ALLOWED_HOST in page.url
 
-            await writer.add_normal_row(SyntheticLeaseHandle(), RubriqueId("3"))
+            await writer.add_normal_row(RubriqueId("3"))
 
             # Exact read-back: exactly one row now exists in the mock's
-            # own persisted state.
+            # own persisted state, fetched fresh (never the same
+            # in-memory value read twice).
             row_count = await page.evaluate(
                 "async () => (await (await fetch('/SinAuto_MCMA/expertise/gestionExpert/listeRapportDefDet', "
-                "{method: 'POST'})).json()).data.length"
+                "{method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: ''}"
+                ")).json()).data.length"
             )
             assert row_count == 1
+
+            await writer.verify_row(RubriqueId("3"))
 
             with pytest.raises(NativeCalculationUnconfirmed):
                 await writer.trigger_native_recalc()
 
             # Terminally aborted -- no retry, no further page interaction.
             with pytest.raises(WriteAborted):
-                await writer.add_normal_row(SyntheticLeaseHandle(), RubriqueId("3"))
+                await writer.add_normal_row(RubriqueId("3"))
         finally:
             await browser.close()
 
 
-def test_unplanned_rubrique_aborts_before_any_dom_interaction_with_valid_add_as_positive_control(
-    live_mock_server,
-):
-    run_async(_unplanned_then_valid())
+def test_unplanned_rubrique_terminally_aborts_with_a_fresh_writer_as_positive_control(live_mock_server):
+    run_async(_unplanned_then_fresh_writer_scenario())
 
 
-async def _unplanned_then_valid():
+async def _unplanned_then_fresh_writer_scenario():
+    from playwright.async_api import async_playwright
+    import mock_server
+
+    # An UnplannedRubrique abort closes the whole context (terminal abort
+    # is unconditional), so "no DOM interaction happened" cannot be proven
+    # by re-evaluating the SAME (now-closed) page afterward -- it is
+    # proven instead via the mock's own server-side observability, a
+    # stronger, network-level signal that no request was ever made.
+    calls_before = mock_server.MOCK_STATE["observability"]["row_endpoint_calls"]["MODE_NORMAL"]["createRapportDefDet"]
+    rows_before = len(mock_server.MOCK_STATE["rows"]["normal"])
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        try:
+            aborted_writer = await _open_writer(browser)
+
+            with pytest.raises(UnplannedRubrique):
+                await aborted_writer.add_normal_row(RubriqueId("999"))
+
+            assert (
+                mock_server.MOCK_STATE["observability"]["row_endpoint_calls"]["MODE_NORMAL"]["createRapportDefDet"]
+                == calls_before
+            )
+            assert len(mock_server.MOCK_STATE["rows"]["normal"]) == rows_before
+            with pytest.raises(WriteAborted):
+                await aborted_writer.add_normal_row(RubriqueId("3"))  # terminally aborted -- no retry
+
+            # Item H: the positive control uses a FRESH writer/context --
+            # it never expects the already-terminally-aborted writer above
+            # to succeed.
+            fresh_writer = await _open_writer(browser)
+            await fresh_writer.add_normal_row(RubriqueId("3"))
+            await fresh_writer.close()
+        finally:
+            await browser.close()
+
+
+def test_no_direct_charge_field_in_outgoing_create_rapport_def_det_payload(live_mock_server):
+    run_async(_charge_field_payload_scenario())
+
+
+async def _charge_field_payload_scenario():
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            writer = await open_verified_writer(
-                browser, SyntheticLeaseHandle(), IDENTITY, PLAN, IDENTIFIERS, CONTRACTS, ALLOWED_HOST
-            )
+            writer = await _open_writer(browser)
             page = writer._page
-            before = await page.evaluate("() => document.querySelectorAll('#tbodyModeNormal tr').length")
 
-            with pytest.raises(UnplannedRubrique):
-                await writer.add_normal_row(SyntheticLeaseHandle(), RubriqueId("999"))
+            captured = {}
 
-            after_unplanned = await page.evaluate(
-                "() => document.querySelectorAll('#tbodyModeNormal tr').length"
-            )
-            assert after_unplanned == before  # no DOM interaction happened
+            async def _capture(request):
+                if request.url.endswith("/createRapportDefDet") and request.method == "POST":
+                    captured["post_data"] = request.post_data
 
-            with pytest.raises(WriteAborted):
-                await writer.add_normal_row(SyntheticLeaseHandle(), RubriqueId("3"))
+            page.on("request", _capture)
+            await writer.add_normal_row(RubriqueId("3"))
+
+            assert "post_data" in captured
+            assert "MontantChargeMutuelle" not in captured["post_data"]
+            assert "MontantChargeSocietaire" not in captured["post_data"]
         finally:
             await browser.close()

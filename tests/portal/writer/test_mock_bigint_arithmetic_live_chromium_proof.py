@@ -7,6 +7,14 @@ project's dependency set) -- exercises: an exact .5 boundary, a repeating
 fraction, a value beyond Number.MAX_SAFE_INTEGER, a zero denominator, a
 malformed input, excess decimal precision, and canonical two-decimal
 output.
+
+Round-3 correction (item A.1): a single-argument callback destructuring
+its argument as `([s]) => ...` while being passed a bare Python string
+(not wrapped in a list) makes Playwright hand it a plain JS string, and
+array-destructuring a STRING takes only its first character. Every
+single-scalar callback below now takes the scalar directly (`(s) => ...`,
+no destructuring) instead; multi-argument callbacks that are genuinely
+passed a Python list (`[n, d]`) are unaffected and unchanged.
 """
 
 import pytest
@@ -69,7 +77,7 @@ def test_half_up_divide_zero_denominator_raises(live_mock_server):
 def test_parse_money_to_cents_rejects_malformed_input(live_mock_server):
     result = run_async(
         _evaluate_on_mission_page(
-            "([s]) => { try { parseMoneyToCents(s); return 'no-error'; } "
+            "(s) => { try { parseMoneyToCents(s); return 'no-error'; } "
             "catch (e) { return 'error:' + e.message; } }",
             "12.3.4",
         )
@@ -80,7 +88,7 @@ def test_parse_money_to_cents_rejects_malformed_input(live_mock_server):
 def test_parse_money_to_cents_rejects_excess_decimal_precision(live_mock_server):
     result = run_async(
         _evaluate_on_mission_page(
-            "([s]) => { try { parseMoneyToCents(s); return 'no-error'; } "
+            "(s) => { try { parseMoneyToCents(s); return 'no-error'; } "
             "catch (e) { return 'error:' + e.message; } }",
             "12.345",
         )
@@ -89,16 +97,16 @@ def test_parse_money_to_cents_rejects_excess_decimal_precision(live_mock_server)
 
 
 def test_cents_to_money_string_canonical_two_decimal_output(live_mock_server):
-    result = run_async(_evaluate_on_mission_page("([c]) => centsToMoneyString(BigInt(c))", "500"))
+    result = run_async(_evaluate_on_mission_page("(c) => centsToMoneyString(BigInt(c))", "500"))
     assert result == "5.00"
-    result_neg = run_async(_evaluate_on_mission_page("([c]) => centsToMoneyString(BigInt(c))", "-5"))
+    result_neg = run_async(_evaluate_on_mission_page("(c) => centsToMoneyString(BigInt(c))", "-5"))
     assert result_neg == "-0.05"
 
 
 def test_parse_then_format_round_trips_exactly(live_mock_server):
     result = run_async(
         _evaluate_on_mission_page(
-            "([s]) => centsToMoneyString(parseMoneyToCents(s))", "1234.50"
+            "(s) => centsToMoneyString(parseMoneyToCents(s))", "1234.50"
         )
     )
     assert result == "1234.50"

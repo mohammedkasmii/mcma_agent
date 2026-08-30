@@ -12,10 +12,21 @@ only an AbortOnlyHandle wrapping one, which exposes exactly one method.
 See mcma.portal.interception's module docstring for the full state
 machine (SEARCH_READ -> MISSION_READ -> WRITE_ACTIVE -> ABORTED).
 
-Deliberately duplicates a small amount of mechanics already present in
-mcma.portal.mission/capabilities (the deep-link template, the exactly-one
-search) rather than importing/refactoring across already-accepted files --
-this project's established convention (INC-06/07/08/09A).
+PEC's read-before-write preflight (matching every planned rubrique to
+exactly one existing row) happens INSIDE open_verified_writer's
+construction sequence, using rows fetched through the caller's own
+reviewed read_rows contract -- never accepted as a caller-supplied
+dictionary. Preflight failure aborts and closes the context before
+WRITE_ACTIVE is ever reached; there is no public preflight method.
+
+The public surface is exactly eight operations: add_normal_row,
+edit_conventionne_row, read_row, verify_row, trigger_native_recalc,
+read_financial_summary, verify_financial_summary, close. None of them
+take a lease_handle argument -- open_verified_writer stores the single
+LeaseHandle that passed construction, and every request-emitting
+operation rechecks THAT stored lease (never a value a caller could
+substitute later) immediately before emission and again after a
+successful response/read-back.
 
 -- Mode Normal's native financial calculation is UNCONFIRMED --
 docs/architecture/PORTAL_ROW_WORKFLOWS.md §3.1: there is no confirmed
@@ -61,11 +72,17 @@ amount (never the reverse); the writer then independently recomputes the
 same exact HALF_UP formula in Python (Decimal, matching Money's own
 convention) and asserts the DOM's derived rate equals that computed value
 exactly -- not merely that it is present/parseable. A TTC of zero (or any
-other undefined derivation) fails closed: the mock leaves the field blank
-rather than coercing to "0.00", and the writer raises
-VetusteRateDerivationUndefined rather than accepting a blank/malformed
-value. This formula is itself MOCK_ONLY/UNCONFIRMED for the live PEC
-contract -- see the module docstring section above.
+other undefined derivation) fails closed. This formula is itself
+MOCK_ONLY/UNCONFIRMED for the live PEC contract -- see the module
+docstring section above.
+
+-- No raw external data in exception messages --
+Every exception message is built from fixed strings, a field NAME (never
+a value), and/or a reason code drawn from a fixed allowlist
+(_ALLOWLISTED_SERVER_REASON_CODES) -- never a raw response body, URL,
+identity, mission id, registration, or monetary value. An unrecognized
+server-supplied reason string is mapped to the fixed "UNKNOWN_SERVER_
+REASON" code rather than echoed.
 """
 
 from __future__ import annotations
@@ -144,7 +161,7 @@ class WriterPlanData:
         seen: set = set()
         for intent in intents:
             if intent.rubrique_id in seen:
-                raise ValueError(f"duplicate rubrique_id in WriterPlanData: {intent.rubrique_id!r}")
+                raise ValueError("duplicate rubrique_id in WriterPlanData")
             seen.add(intent.rubrique_id)
 
     def intent_for(self, rubrique_id: RubriqueId) -> Optional[PortalRowIntent]:
@@ -152,6 +169,9 @@ class WriterPlanData:
             if intent.rubrique_id == rubrique_id:
                 return intent
         return None
+
+    def planned_rubrique_values(self) -> frozenset:
+        return frozenset(i.rubrique_id.value for i in self.row_intents)
 
 
 def _workflow_key(repair_workflow: RepairWorkflow) -> str:
@@ -166,7 +186,7 @@ def _workflow_key(repair_workflow: RepairWorkflow) -> str:
 
 
 # --------------------------------------------------------------------- #
-# Strict validation (INC-09B amendments #1/#6)
+# Strict validation (INC-09B amendments #1/#6, round-3 item G)
 # --------------------------------------------------------------------- #
 
 
@@ -175,12 +195,24 @@ def _require_valid_mission_id(id_mission: object) -> int:
     an int subclass in Python. The validated integer is later formatted
     via plain str(int) -- never string-interpolating a raw value -- so
     encoded separators/traversal text are structurally excluded from the
-    constructed route rather than merely screened for."""
+    constructed route rather than merely screened for. The error message
+    never echoes the raw (possibly attacker/portal-supplied) value."""
     if isinstance(id_mission, bool) or not isinstance(id_mission, int):
-        raise ValueError(f"id_mission must be a strict positive integer, got {id_mission!r}")
+        raise ValueError("id_mission must be a strict positive integer")
     if id_mission <= 0:
-        raise ValueError(f"id_mission must be a strict positive integer, got {id_mission!r}")
+        raise ValueError("id_mission must be a strict positive integer")
     return id_mission
+
+
+def _require_valid_calculation_version(raw) -> int:
+    """Strict positive integer -- bool/float/string coercion/zero/negative
+    all rejected outright, never truncated or silently coerced via a bare
+    int(...) call."""
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError("calculation_version must be a strict positive integer")
+    if raw <= 0:
+        raise ValueError("calculation_version must be a strict positive integer")
+    return raw
 
 
 _MISSION_DEEP_LINK_TEMPLATE = (
@@ -213,26 +245,49 @@ def _require_loopback_host(allowed_host: str) -> None:
     try:
         _ = parsed.port
     except ValueError as exc:
-        raise ValueError(f"allowed_host has a malformed or out-of-range port: {allowed_host!r}") from exc
+        raise ValueError("allowed_host has a malformed or out-of-range port") from exc
     try:
         ip = ipaddress.ip_address(hostname)
     except ValueError as exc:
-        raise ValueError(
-            f"allowed_host must be a loopback IP literal, not a DNS name: {allowed_host!r}"
-        ) from exc
+        raise ValueError("allowed_host must be a loopback IP literal, not a DNS name") from exc
     if not ip.is_loopback:
-        raise ValueError(f"allowed_host must be a loopback address: {allowed_host!r}")
+        raise ValueError("allowed_host must be a loopback address")
 
 
 # --------------------------------------------------------------------- #
-# Exceptions
+# Fixed server reason-code allowlist -- an unrecognized reason is mapped
+# to a fixed placeholder, never echoed raw into an exception message.
+# --------------------------------------------------------------------- #
+
+_ALLOWLISTED_SERVER_REASON_CODES = frozenset(
+    {
+        "DIRECT_CHARGE_FIELD_WRITE_REJECTED",
+        "MISSING_TEMP_ROW_ID",
+        "DUPLICATE_ROW_SUBMISSION",
+        "MISSING_SUBMISSION_NONCE",
+        "ROW_NOT_FOUND",
+        "NATIVE_CALCULATION_FAILED",
+        "MISSING_CALCULATION_RESULT",
+    }
+)
+
+_UNKNOWN_SERVER_REASON = "UNKNOWN_SERVER_REASON"
+
+
+def _map_reason_code(raw_reason: object) -> str:
+    if isinstance(raw_reason, str) and raw_reason in _ALLOWLISTED_SERVER_REASON_CODES:
+        return raw_reason
+    return _UNKNOWN_SERVER_REASON
+
+
+# --------------------------------------------------------------------- #
+# Exceptions -- every message is a fixed string plus, at most, a field
+# name or an allowlisted reason code. Never a raw external value.
 # --------------------------------------------------------------------- #
 
 
 class WriteAborted(Exception):
-    """Base for every failure that terminally aborts a VerifiedMissionWriter.
-    Never carries an identity/registration/claim/monetary value in its
-    message -- only field/reason names."""
+    """Base for every failure that terminally aborts a VerifiedMissionWriter."""
 
 
 class MissionRouteInvalid(WriteAborted):
@@ -243,15 +298,15 @@ class UnplannedRubrique(WriteAborted):
     pass
 
 
+class UnplannedExistingRow(WriteAborted):
+    pass
+
+
 class RowAmbiguous(WriteAborted):
     pass
 
 
 class RowMismatch(WriteAborted):
-    pass
-
-
-class UnplannedExistingRow(WriteAborted):
     pass
 
 
@@ -302,14 +357,15 @@ class NativeCalculationMismatch(WriteAborted):
 
 # --------------------------------------------------------------------- #
 # FinancialSummary + the pure, page-free calculation ledger
-# (INC-09B amendment #2/#3: extracted so generation/version invalidation
-# is testable directly, with no test-only hook anywhere on the writer)
 # --------------------------------------------------------------------- #
 
 # Every field below is independently classified. The first two are
 # CONFIRMED_RECOVERED_PEC_DOM_EVIDENCE (PORTAL_ROW_WORKFLOWS.md §3.2); the
 # remaining seven are MOCK_ONLY/UNCONFIRMED -- named concepts from the same
 # section with no confirmed live selector anywhere in recovered evidence.
+# #DevisTvaRecupI is confirmed but is an input TOGGLE dispatched before
+# the trigger, not a read/verify summary VALUE -- it is deliberately not
+# a FinancialSummary field (see read_financial_summary()).
 FINANCIAL_SUMMARY_FIELDS: Tuple[str, ...] = (
     "montant_charge_mutuelle",
     "montant_charge_societaire",
@@ -321,6 +377,7 @@ FINANCIAL_SUMMARY_FIELDS: Tuple[str, ...] = (
     "montant_arrete",
     "base_indemnite",
 )
+
 
 @dataclass(frozen=True)
 class FinancialSummary:
@@ -362,6 +419,16 @@ def parse_financial_summary(raw: dict) -> FinancialSummary:
     return FinancialSummary(**values)
 
 
+@dataclass(frozen=True)
+class TvaRecuperableContext:
+    """#DevisTvaRecupI is a CONFIRMED input toggle (PORTAL_ROW_WORKFLOWS.md
+    3.2), never a FinancialSummary Money field -- it is a boolean the
+    trigger step may dispatch a change event on, kept structurally
+    separate from the nine monetary summary fields."""
+
+    checked: bool
+
+
 @dataclass
 class _CalculationEvidence:
     row_generation: int
@@ -373,7 +440,7 @@ class CalculationLedger:
     """Pure, page-free, Playwright-free state machine -- no I/O of any
     kind. Tracks row-mutation generation AND the mock's own monotonic
     calculation_version; staleness is detected via EITHER signal
-    independently (INC-09B amendment #2)."""
+    independently."""
 
     def __init__(self) -> None:
         self.row_generation = 0
@@ -386,30 +453,24 @@ class CalculationLedger:
         make the row_generation mismatch branch in verify_fresh() dead
         code, collapsing "mutated since the last calculation" into
         "never calculated at all" (WriteAborted) instead of the more
-        specific NativeCalculationStale. Evidence from a stale generation
-        is still rejected by verify_fresh()'s row_generation check below;
-        it is never silently accepted."""
+        specific NativeCalculationStale."""
         self.row_generation += 1
 
     def record_trigger(self, calculation_version: int, expected: FinancialSummary) -> None:
         """Called immediately after a successful (state=success) trigger
-        response is parsed. A calculation_version that does not strictly
-        advance past the last one this ledger has seen is stale -- the
-        mock's own simulate=stale mode produces exactly this."""
+        response is parsed. calculation_version must already have been
+        validated by _require_valid_calculation_version. A version that
+        does not strictly advance past the last one this ledger has seen
+        is stale -- the mock's own simulate=stale mode produces exactly
+        this."""
         if calculation_version <= self._last_calculation_version:
-            raise NativeCalculationStale(
-                f"calculation_version {calculation_version} did not advance past "
-                f"{self._last_calculation_version}"
-            )
+            raise NativeCalculationStale("calculation_version did not advance past the last recorded value")
         self._last_calculation_version = calculation_version
         self._evidence = _CalculationEvidence(self.row_generation, calculation_version, expected)
 
     def verify_fresh(self, observed: FinancialSummary) -> FinancialSummary:
         """Called with an INDEPENDENTLY read (never the same value read
-        twice) observed summary. Raises WriteAborted if verify is called
-        before any successful trigger; NativeCalculationStale if a row was
-        mutated since that trigger; NativeCalculationMismatch if the
-        expected and observed summaries disagree on any field."""
+        twice) observed summary."""
         if self._evidence is None:
             raise WriteAborted("verify_financial_summary called before any successful trigger")
         if self._evidence.row_generation != self.row_generation:
@@ -420,9 +481,9 @@ class CalculationLedger:
 
 
 # --------------------------------------------------------------------- #
-# Vétusté rate derivation (amendment #4) -- Decimal/HALF_UP, matching
-# Money's own established convention; independently recomputed here, not
-# trusted from the DOM alone.
+# Vétusté rate derivation -- Decimal/HALF_UP, matching Money's own
+# established convention; independently recomputed here, not trusted
+# from the DOM alone.
 # --------------------------------------------------------------------- #
 
 _TWO_DP = Decimal("0.01")
@@ -444,6 +505,12 @@ def derive_vetuste_rate(amount: Money, ttc: Money) -> Decimal:
 # arguments -- never interpolated into script text. Named by role
 # (FILL vs READ) so a static test can distinguish them.
 # --------------------------------------------------------------------- #
+
+_FETCH_JSON_JS = """([url, payload]) => fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: new URLSearchParams(payload).toString()
+}).then(r => r.json())"""
 
 _FILL_NORMAL_ROW_JS = """([tempId, ht, tva]) => {
     const setAndFire = (el, value) => {
@@ -508,7 +575,17 @@ _READ_FINANCIAL_SUMMARY_JS = """() => {
     };
 }"""
 
-_FIND_ROW_ELEMENT_COUNT_JS = """(selector) => document.querySelectorAll(selector).length"""
+_READ_TVA_RECUPERABLE_TOGGLE_JS = """() => {
+    const el = document.getElementById('DevisTvaRecupI');
+    return el ? !!el.checked : null;
+}"""
+
+_DISPATCH_CHANGE_JS = """(id) => {
+    const el = document.getElementById(id);
+    if (el) { el.dispatchEvent(new Event('change', {bubbles: true})); }
+}"""
+
+_DOM_ROW_IDS_JS = """(selector) => Array.from(document.querySelectorAll(selector)).map((tr) => tr.id)"""
 
 
 # --------------------------------------------------------------------- #
@@ -525,10 +602,26 @@ class VerifiedMissionWriter:
     -- Python provides no true private construction, and this does not
     claim otherwise.
 
-    Holds an AbortOnlyHandle, never a WriterPolicyController directly --
-    the handle exposes exactly one method (abort()), so there is no
-    policy-mutation capability reachable through this instance's public
-    or private surface after construction."""
+    Public surface: add_normal_row, edit_conventionne_row, read_row,
+    verify_row, trigger_native_recalc, read_financial_summary,
+    verify_financial_summary, close. Nothing else -- no lease_handle
+    parameter anywhere, no preflight method, no generic write method, no
+    access to the page/context/request objects or the policy control."""
+
+    __slots__ = (
+        "_context",
+        "_page",
+        "_abort_handle",
+        "_lease_handle",
+        "_expected_identity",
+        "_writer_plan",
+        "_allowed_host",
+        "_read_rows_route",
+        "_closed",
+        "_terminally_aborted",
+        "_ledger",
+        "_pec_row_map",
+    )
 
     def __init__(
         self,
@@ -536,9 +629,12 @@ class VerifiedMissionWriter:
         context,
         page,
         abort_handle: AbortOnlyHandle,
+        lease_handle: LeaseHandle,
         expected_identity: ExpectedIdentity,
         writer_plan: WriterPlanData,
         allowed_host: str,
+        read_rows_route: str,
+        pec_row_map: dict,
     ) -> None:
         if construction_token is not _CONSTRUCTION_TOKEN:
             raise RuntimeError(
@@ -547,16 +643,15 @@ class VerifiedMissionWriter:
         self._context = context
         self._page = page
         self._abort_handle = abort_handle
+        self._lease_handle = lease_handle
         self._expected_identity = expected_identity
         self._writer_plan = writer_plan
         self._allowed_host = allowed_host
+        self._read_rows_route = read_rows_route
         self._closed = False
         self._terminally_aborted = False
         self._ledger = CalculationLedger()
-        self._submitted_temp_ids: set = set()
-        self._submitted_pec_nonces: set = set()
-        self._pec_row_map: dict = {}  # rubrique_id.value -> IdDevisDet (preflight cache)
-        self._pec_nonce_counter = 0
+        self._pec_row_map = dict(pec_row_map)
 
     # -- guards ---------------------------------------------------------
 
@@ -567,8 +662,7 @@ class VerifiedMissionWriter:
             raise WriteAborted("writer is terminally aborted; construct a new writer")
 
     async def _terminal_abort(self, exc: BaseException) -> NoReturn:
-        """Amendment #1 ordering: policy -> ABORTED/deny-all BEFORE
-        awaiting context.close()."""
+        """Policy -> ABORTED/deny-all BEFORE awaiting context.close()."""
         self._terminally_aborted = True
         self._abort_handle.abort()
         try:
@@ -577,13 +671,18 @@ class VerifiedMissionWriter:
             pass
         raise exc
 
-    async def _preflight_before_mutation(self, lease_handle: LeaseHandle) -> None:
-        """Re-checked immediately before EVERY request-emitting action
-        (not just once before the first write)."""
+    async def _recheck_lease(self) -> None:
         try:
-            await lease_handle.assert_valid()
+            await self._lease_handle.assert_valid()
         except Exception as exc:
             await self._terminal_abort(exc)
+
+    async def _preflight_before_mutation(self) -> None:
+        """Re-checked immediately before EVERY request-emitting action:
+        the stored lease, identity, and workflow agreement. A caller
+        cannot substitute a fresh lease here -- there is no parameter
+        through which one could ever be supplied."""
+        await self._recheck_lease()
         try:
             observed_identity = await observe_identity(self._page)
             verify_identity(self._expected_identity, observed_identity)
@@ -594,120 +693,151 @@ class VerifiedMissionWriter:
         except Exception as exc:
             await self._terminal_abort(exc)
 
+    def _absolute_url(self, path: str) -> str:
+        return f"http://{self._allowed_host}{path}"
+
+    async def _fetch_rows(self) -> list:
+        try:
+            result = await self._page.evaluate(_FETCH_JSON_JS, [self._absolute_url(self._read_rows_route), {}])
+        except Exception as exc:
+            await self._terminal_abort(RowWriteUncertain("could not fetch current rows"))
+        data = result.get("data", []) if isinstance(result, dict) else []
+        return list(data) if isinstance(data, list) else []
+
     # -- Mode Normal ------------------------------------------------------
 
-    async def add_normal_row(self, lease_handle: LeaseHandle, rubrique_id: RubriqueId) -> None:
+    async def add_normal_row(self, rubrique_id: RubriqueId) -> None:
         self._ensure_open()
         if self._writer_plan.repair_workflow is not RepairWorkflow.MODE_NORMAL:
             await self._terminal_abort(WriteAborted("add_normal_row requires a MODE_NORMAL writer"))
         intent = self._writer_plan.intent_for(rubrique_id)
         if intent is None:
-            await self._terminal_abort(UnplannedRubrique(f"rubrique_id is not in the approved plan"))
+            await self._terminal_abort(UnplannedRubrique("rubrique_id is not in the approved plan"))
 
-        await self._preflight_before_mutation(lease_handle)
+        await self._preflight_before_mutation()
 
-        before_count = await self._page.evaluate(_FIND_ROW_ELEMENT_COUNT_JS, "#tbodyModeNormal tr")
+        rows = await self._fetch_rows()
+        planned = self._writer_plan.planned_rubrique_values()
+        for row in rows:
+            if str(row.get("IdRubrique")) not in planned:
+                await self._terminal_abort(UnplannedExistingRow("an unplanned existing row is present"))
+
+        matches = [r for r in rows if str(r.get("IdRubrique")) == rubrique_id.value]
+        if len(matches) == 1:
+            existing = matches[0]
+            if Money.of(str(existing.get("MontantHT", ""))) == intent.ht and Money.of(
+                str(existing.get("Taxe", ""))
+            ) == intent.tva:
+                return  # already satisfied -- no-op
+            await self._terminal_abort(RowMismatch("an existing row disagrees with the approved intent"))
+        elif len(matches) > 1:
+            await self._terminal_abort(RowAmbiguous("multiple existing rows match this rubrique"))
+
+        before_ids = set(await self._page.evaluate(_DOM_ROW_IDS_JS, "#tbodyModeNormal tr"))
+        ajouter = self._page.locator("#sectionModeNormal").get_by_text("Ajouter", exact=False)
         try:
-            await self._page.locator("#sectionModeNormal").get_by_text("Ajouter", exact=False).click()
+            count = await ajouter.count()
         except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain(f"could not click Ajouter: {exc}"))
-        after_count = await self._page.evaluate(_FIND_ROW_ELEMENT_COUNT_JS, "#tbodyModeNormal tr")
-        if after_count != before_count + 1:
+            await self._terminal_abort(RowWriteUncertain("could not locate the Ajouter control"))
+        if count != 1:
+            await self._terminal_abort(RowAmbiguous("Ajouter is not scoped to exactly one element"))
+        try:
+            await ajouter.click()
+        except Exception as exc:
+            await self._terminal_abort(RowWriteUncertain("could not click Ajouter"))
+        after_ids = set(await self._page.evaluate(_DOM_ROW_IDS_JS, "#tbodyModeNormal tr"))
+        new_ids = after_ids - before_ids
+        if len(new_ids) != 1:
             await self._terminal_abort(RowAmbiguous("Ajouter did not create exactly one new row"))
-
-        new_row_id = await self._page.evaluate(
-            "() => document.querySelector('#tbodyModeNormal tr').id"
-        )
+        new_row_id = next(iter(new_ids))
         temp_id = new_row_id.replace("normal_row_", "", 1)
 
-        select_locator = self._page.locator(f"#IdRubrique_{temp_id}")
-        await select_locator.select_option(value=intent.rubrique_id.value)
-        await self._page.evaluate(
-            _FILL_NORMAL_ROW_JS, [temp_id, str(intent.ht.amount), str(intent.tva.amount)]
-        )
+        try:
+            select_locator = self._page.locator(f"#IdRubrique_{temp_id}")
+            await select_locator.select_option(value=intent.rubrique_id.value)
+            await self._page.evaluate(
+                _FILL_NORMAL_ROW_JS, [temp_id, str(intent.ht.amount), str(intent.tva.amount)]
+            )
+        except Exception as exc:
+            await self._terminal_abort(RowWriteUncertain("could not fill the new row"))
 
         try:
             async with self._page.expect_response(
-                lambda r: r.url.endswith("/createRapportDefDet") and r.request.method == "POST"
+                lambda r: r.url.endswith("/createRapportDefDet") and r.request.method == "POST",
+                timeout=5000,
             ) as response_info:
                 await self._page.locator(f"#normal_row_{temp_id} >> text=OK").click()
             response = await response_info.value
         except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain(f"createRapportDefDet response was not observed: {exc}"))
+            await self._terminal_abort(RowWriteUncertain("createRapportDefDet response was not observed"))
 
         if response.status != 200:
-            await self._terminal_abort(RowWriteRejected(f"createRapportDefDet returned HTTP {response.status}"))
+            await self._terminal_abort(RowWriteRejected("createRapportDefDet returned a non-200 status"))
         try:
             body = await response.json()
         except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain(f"createRapportDefDet response body was not JSON: {exc}"))
+            await self._terminal_abort(RowWriteUncertain("createRapportDefDet response body was not JSON"))
         if body.get("state") != "success":
-            await self._terminal_abort(RowWriteRejected(f"createRapportDefDet rejected: {body.get('reason')}"))
+            await self._terminal_abort(RowWriteRejected(_map_reason_code(body.get("reason"))))
 
-        self._submitted_temp_ids.add(temp_id)
         self._ledger.record_mutation()
 
-        saved = body.get("data") or {}
-        if saved.get("IdRubrique") != intent.rubrique_id.value:
-            await self._terminal_abort(RowReadBackMismatch("IdRubrique"))
-        if Money.of(saved.get("MontantHT", "")) != intent.ht:
-            await self._terminal_abort(RowReadBackMismatch("MontantHT"))
-        if Money.of(saved.get("Taxe", "")) != intent.tva:
-            await self._terminal_abort(RowReadBackMismatch("Taxe"))
+        fresh_rows = await self._fetch_rows()
+        persisted = [
+            r
+            for r in fresh_rows
+            if str(r.get("IdRubrique")) == rubrique_id.value
+            and Money.of(str(r.get("MontantHT", ""))) == intent.ht
+            and Money.of(str(r.get("Taxe", ""))) == intent.tva
+        ]
+        if len(persisted) != 1:
+            await self._terminal_abort(RowReadBackMismatch("exact read-back after createRapportDefDet failed"))
+
+        await self._recheck_lease()
 
     # -- Garage Conventionne / PEC ---------------------------------------
 
-    async def preflight_pec_rows(self, lease_handle: LeaseHandle, rows: Sequence[dict]) -> None:
-        """Matches every planned rubrique to exactly one existing row
-        BEFORE any mutation. Zero, duplicate, or ambiguous matches fail
-        closed. Caller supplies the already-fetched row list (via
-        ReadCapability-style read_rows, kept out of this module)."""
-        self._ensure_open()
-        if self._writer_plan.repair_workflow is not RepairWorkflow.GARAGE_CONVENTIONNE:
-            await self._terminal_abort(WriteAborted("preflight_pec_rows requires a GARAGE_CONVENTIONNE writer"))
-        await self._preflight_before_mutation(lease_handle)
-
-        row_map: dict = {}
-        for intent in self._writer_plan.row_intents:
-            matches = [r for r in rows if str(r.get("IdRubrique")) == intent.rubrique_id.value]
-            if len(matches) != 1:
-                await self._terminal_abort(
-                    RowAmbiguous(f"expected exactly one existing row for a planned rubrique, found {len(matches)}")
-                )
-            row_map[intent.rubrique_id.value] = matches[0]["IdDevisDet"]
-        self._pec_row_map = row_map
-
-    async def edit_conventionne_row(self, lease_handle: LeaseHandle, rubrique_id: RubriqueId) -> None:
+    async def edit_conventionne_row(self, rubrique_id: RubriqueId) -> None:
         self._ensure_open()
         if self._writer_plan.repair_workflow is not RepairWorkflow.GARAGE_CONVENTIONNE:
             await self._terminal_abort(WriteAborted("edit_conventionne_row requires a GARAGE_CONVENTIONNE writer"))
         intent = self._writer_plan.intent_for(rubrique_id)
         if intent is None:
             await self._terminal_abort(UnplannedRubrique("rubrique_id is not in the approved plan"))
-        id_devis_det = self._pec_row_map.get(rubrique_id.value)
-        if id_devis_det is None:
-            await self._terminal_abort(UnplannedRubrique("rubrique_id was not preflighted"))
+        cached_id_devis_det = self._pec_row_map.get(rubrique_id.value)
+        if cached_id_devis_det is None:
+            await self._terminal_abort(UnplannedRubrique("rubrique_id was not resolved during preflight"))
 
-        await self._preflight_before_mutation(lease_handle)
+        await self._preflight_before_mutation()
 
-        # Re-check the cached mapping still resolves to exactly one row of
-        # the same rubrique, immediately before this specific edit.
-        current = await self._page.evaluate(
-            "([id]) => { const tr = document.getElementById('row_val_' + id); return tr ? tr.isConnected : false; }",
-            [id_devis_det],
-        )
-        if not current:
-            await self._terminal_abort(RowAmbiguous("preflighted row is no longer present before edit"))
+        rows = await self._fetch_rows()
+        matches = [r for r in rows if str(r.get("IdRubrique")) == rubrique_id.value]
+        if len(matches) != 1:
+            await self._terminal_abort(RowAmbiguous("the planned rubrique no longer matches exactly one row"))
+        current = matches[0]
+        if current.get("IdDevisDet") != cached_id_devis_det:
+            await self._terminal_abort(RowAmbiguous("the cached row mapping no longer matches the fresh read"))
 
+        if (
+            Money.of(str(current.get("MontantHT", ""))) == intent.ht
+            and Money.of(str(current.get("Taxe", ""))) == intent.tva
+            and Money.of(str(current.get("MontantVetuste", ""))) == intent.vetuste
+        ):
+            return  # diff-before-write: already exactly equal -- no-op
+
+        id_devis_det = cached_id_devis_det
         try:
             await self._page.locator(f"#row_val_{id_devis_det} >> text=edit").click()
         except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain(f"could not click the row's edit action: {exc}"))
+            await self._terminal_abort(RowWriteUncertain("could not click the row's edit action"))
 
-        await self._page.evaluate(
-            _FILL_PEC_ROW_JS,
-            [id_devis_det, str(intent.ht.amount), str(intent.tva.amount), str(intent.vetuste.amount)],
-        )
+        try:
+            await self._page.evaluate(
+                _FILL_PEC_ROW_JS,
+                [id_devis_det, str(intent.ht.amount), str(intent.tva.amount), str(intent.vetuste.amount)],
+            )
+        except Exception as exc:
+            await self._terminal_abort(RowWriteUncertain("could not fill the row's fields"))
 
         ttc = intent.ht + intent.tva
         try:
@@ -715,67 +845,108 @@ class VerifiedMissionWriter:
         except VetusteRateDerivationUndefined:
             expected_rate = None
 
-        rendered = await self._page.evaluate(_READ_PEC_ROW_JS, [id_devis_det])
-        rendered_ttc_raw = rendered.get("MontantTTC")
+        try:
+            rendered = await self._page.evaluate(_READ_PEC_ROW_JS, [id_devis_det])
+        except Exception as exc:
+            await self._terminal_abort(RowWriteUncertain("could not read the row's rendered fields"))
+
+        rendered_rate_raw = rendered.get("TauxVetuste")
         if expected_rate is None:
-            rendered_rate_raw = rendered.get("TauxVetuste")
             if rendered_rate_raw not in (None, ""):
                 await self._terminal_abort(
                     VetusteRateDerivationUndefined("TTC is zero but a vetuste rate was rendered")
                 )
         else:
-            if rendered_ttc_raw in (None, ""):
+            if rendered.get("MontantTTC") in (None, ""):
                 await self._terminal_abort(VetusteRateDerivationUndefined("TTC was not rendered"))
-            rendered_rate_raw = rendered.get("TauxVetuste")
             if rendered_rate_raw in (None, ""):
                 await self._terminal_abort(VetusteRateDerivationUndefined("vetuste rate was not rendered"))
             try:
                 rendered_rate = Decimal(str(rendered_rate_raw))
-            except Exception as exc:
-                await self._terminal_abort(VetusteRateDerivationUndefined(f"vetuste rate is not a valid decimal: {exc}"))
+            except Exception:
+                await self._terminal_abort(VetusteRateDerivationUndefined("vetuste rate is not a valid decimal"))
             if rendered_rate != expected_rate:
                 await self._terminal_abort(
                     VetusteRateDerivationUndefined("rendered vetuste rate disagrees with the exact formula result")
                 )
 
-        self._pec_nonce_counter += 1
-        nonce = f"pec-{id_devis_det}-{self._pec_nonce_counter}"
-        try:
-            await self._page.evaluate(
-                "([id, nonce]) => { document.getElementById('MontantTTCValide_' + id) ? null : null; }",
-                [id_devis_det, nonce],
-            )
-        except Exception:
-            pass
-
         try:
             async with self._page.expect_response(
-                lambda r: r.url.endswith("/updateDevisDet") and r.request.method == "POST"
+                lambda r: r.url.endswith("/updateDevisDet") and r.request.method == "POST",
+                timeout=5000,
             ) as response_info:
                 await self._page.locator(f"#row_val_{id_devis_det} >> text=OK").click()
             response = await response_info.value
         except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain(f"updateDevisDet response was not observed: {exc}"))
+            await self._terminal_abort(RowWriteUncertain("updateDevisDet response was not observed"))
 
         if response.status != 200:
-            await self._terminal_abort(RowWriteRejected(f"updateDevisDet returned HTTP {response.status}"))
+            await self._terminal_abort(RowWriteRejected("updateDevisDet returned a non-200 status"))
         try:
             body = await response.json()
         except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain(f"updateDevisDet response body was not JSON: {exc}"))
+            await self._terminal_abort(RowWriteUncertain("updateDevisDet response body was not JSON"))
         if body.get("state") != "success":
-            await self._terminal_abort(RowWriteRejected(f"updateDevisDet rejected: {body.get('reason')}"))
+            await self._terminal_abort(RowWriteRejected(_map_reason_code(body.get("reason"))))
 
-        self._submitted_pec_nonces.add(nonce)
         self._ledger.record_mutation()
 
-        saved = body.get("data") or {}
-        if Money.of(saved.get("MontantHT", "")) != intent.ht:
+        fresh_rows = await self._fetch_rows()
+        fresh_matches = [r for r in fresh_rows if r.get("IdDevisDet") == id_devis_det]
+        if len(fresh_matches) != 1:
+            await self._terminal_abort(RowReadBackMismatch("exact read-back after updateDevisDet failed"))
+        persisted = fresh_matches[0]
+        if Money.of(str(persisted.get("MontantHT", ""))) != intent.ht:
             await self._terminal_abort(RowReadBackMismatch("MontantHT"))
-        if Money.of(saved.get("Taxe", "")) != intent.tva:
+        if Money.of(str(persisted.get("Taxe", ""))) != intent.tva:
             await self._terminal_abort(RowReadBackMismatch("Taxe"))
-        if Money.of(saved.get("MontantVetuste", "")) != intent.vetuste:
+        if Money.of(str(persisted.get("MontantVetuste", ""))) != intent.vetuste:
             await self._terminal_abort(RowReadBackMismatch("MontantVetuste"))
+        if expected_rate is not None:
+            try:
+                if Decimal(str(persisted.get("TauxVetuste", ""))) != expected_rate:
+                    await self._terminal_abort(RowReadBackMismatch("TauxVetuste"))
+            except Exception:
+                await self._terminal_abort(RowReadBackMismatch("TauxVetuste"))
+
+        await self._recheck_lease()
+
+    # -- Read-back / verification (shared) --------------------------------
+
+    async def read_row(self, rubrique_id: RubriqueId) -> dict:
+        """Never a first-row/positional fallback -- zero or multiple
+        matches for this rubrique fails closed."""
+        self._ensure_open()
+        rows = await self._fetch_rows()
+        matches = [r for r in rows if str(r.get("IdRubrique")) == rubrique_id.value]
+        if len(matches) != 1:
+            await self._terminal_abort(RowAmbiguous("read_row did not find exactly one matching row"))
+        return dict(matches[0])
+
+    async def verify_row(self, rubrique_id: RubriqueId) -> None:
+        self._ensure_open()
+        intent = self._writer_plan.intent_for(rubrique_id)
+        if intent is None:
+            await self._terminal_abort(UnplannedRubrique("rubrique_id is not in the approved plan"))
+        row = await self.read_row(rubrique_id)
+        if Money.of(str(row.get("MontantHT", ""))) != intent.ht:
+            await self._terminal_abort(RowReadBackMismatch("MontantHT"))
+        if Money.of(str(row.get("Taxe", ""))) != intent.tva:
+            await self._terminal_abort(RowReadBackMismatch("Taxe"))
+        if self._writer_plan.repair_workflow is RepairWorkflow.GARAGE_CONVENTIONNE:
+            if Money.of(str(row.get("MontantVetuste", ""))) != intent.vetuste:
+                await self._terminal_abort(RowReadBackMismatch("MontantVetuste"))
+            ttc = intent.ht + intent.tva
+            try:
+                expected_rate = derive_vetuste_rate(intent.vetuste, ttc)
+            except VetusteRateDerivationUndefined:
+                expected_rate = None
+            if expected_rate is not None:
+                try:
+                    if Decimal(str(row.get("TauxVetuste", ""))) != expected_rate:
+                        await self._terminal_abort(RowReadBackMismatch("TauxVetuste"))
+                except Exception:
+                    await self._terminal_abort(RowReadBackMismatch("TauxVetuste"))
 
     # -- Native financial calculation -------------------------------------
 
@@ -784,10 +955,16 @@ class VerifiedMissionWriter:
         if self._writer_plan.repair_workflow is RepairWorkflow.MODE_NORMAL:
             await self._terminal_abort(
                 NativeCalculationUnconfirmed(
-                    "MODE_NORMAL native financial recalculation has no confirmed contract "
-                    "(PORTAL_ROW_WORKFLOWS.md 3.1)"
+                    "MODE_NORMAL native financial recalculation has no confirmed contract"
                 )
             )
+
+        await self._preflight_before_mutation()
+
+        try:
+            await self._page.evaluate(_DISPATCH_CHANGE_JS, "DevisTvaRecupI")
+        except Exception:
+            pass
 
         try:
             async with self._page.expect_response(
@@ -797,23 +974,18 @@ class VerifiedMissionWriter:
                 await self._page.evaluate("DevisCalculerMontantCharge()")
             response = await response_info.value
         except Exception as exc:
-            await self._terminal_abort(NativeCalculationMissing(f"no native-calculation response observed: {exc}"))
+            await self._terminal_abort(NativeCalculationMissing("no native-calculation response observed"))
 
         try:
             body = await response.json()
         except Exception as exc:
-            await self._terminal_abort(NativeCalculationMissing(f"native-calculation response body was not JSON: {exc}"))
+            await self._terminal_abort(NativeCalculationMissing("native-calculation response body was not JSON"))
 
         if body.get("state") != "success":
-            reason = body.get("reason")
-            # The mock's simulate=missing mode reports "no result was
-            # produced" (a distinct classification from an explicit
-            # calculation failure) via this reason tag, even though it
-            # still arrives as a normal HTTP response -- see
-            # mock_server.py's _simulate_native_calc docstring.
-            if reason == "MISSING_CALCULATION_RESULT":
-                await self._terminal_abort(NativeCalculationMissing(str(reason)))
-            await self._terminal_abort(NativeCalculationFailed(str(reason)))
+            reason = _map_reason_code(body.get("reason"))
+            if body.get("reason") == "MISSING_CALCULATION_RESULT":
+                await self._terminal_abort(NativeCalculationMissing(reason))
+            await self._terminal_abort(NativeCalculationFailed(reason))
 
         if "calculation_version" not in body or "expected" not in body:
             await self._terminal_abort(
@@ -821,12 +993,17 @@ class VerifiedMissionWriter:
             )
 
         try:
+            version = _require_valid_calculation_version(body["calculation_version"])
+        except ValueError as exc:
+            await self._terminal_abort(NativeCalculationMalformed("calculation_version is not a valid positive integer"))
+
+        try:
             expected = parse_financial_summary(body["expected"])
         except WriteAborted as exc:
             await self._terminal_abort(exc)
 
         try:
-            self._ledger.record_trigger(int(body["calculation_version"]), expected)
+            self._ledger.record_trigger(version, expected)
         except NativeCalculationStale as exc:
             await self._terminal_abort(exc)
 
@@ -837,17 +1014,25 @@ class VerifiedMissionWriter:
             raise NativeCalculationMalformed("financial summary DOM read was unstable (torn read)")
         return parse_financial_summary(first)
 
-    async def verify_financial_summary(self) -> FinancialSummary:
+    async def read_financial_summary(self) -> Tuple[FinancialSummary, TvaRecuperableContext]:
         self._ensure_open()
         try:
-            observed = await self._read_financial_summary_dom()
+            summary = await self._read_financial_summary_dom()
+            checked = await self._page.evaluate(_READ_TVA_RECUPERABLE_TOGGLE_JS)
         except WriteAborted as exc:
             await self._terminal_abort(exc)
+        except Exception as exc:
+            await self._terminal_abort(NativeCalculationMalformed("could not read the financial summary DOM"))
+        return summary, TvaRecuperableContext(checked=bool(checked))
+
+    async def verify_financial_summary(self) -> FinancialSummary:
+        self._ensure_open()
+        summary, _ = await self.read_financial_summary()
         try:
-            self._ledger.verify_fresh(observed)
+            self._ledger.verify_fresh(summary)
         except WriteAborted as exc:
             await self._terminal_abort(exc)
-        return observed
+        return summary
 
     # -- lifecycle --------------------------------------------------------
 
@@ -870,14 +1055,21 @@ def _validate_write_contract(contract: RouteContract, allowed_host: str, workflo
     if contract.host != allowed_host:
         raise ValueError("write/native-recalc contract host must equal allowed_host")
     if contract.capability not in ("row_write", "native_recalc"):
-        raise ValueError(f"write/native-recalc contract capability is invalid: {contract.capability!r}")
+        raise ValueError("write/native-recalc contract capability is invalid")
     if is_permanently_blocked(contract.route):
         raise ValueError("write/native-recalc contract targets a permanently blocked route")
     if contract.workflow != workflow_key:
         raise ValueError(
-            f"write/native-recalc contract must name the exact workflow {workflow_key!r} "
-            f"(never shared/None and never the other workflow); got {contract.workflow!r}"
+            "write/native-recalc contract must name the exact workflow "
+            "(never shared/None and never the other workflow)"
         )
+
+
+async def _fetch_rows_during_construction(page, allowed_host: str, read_rows_route: str) -> list:
+    url = f"http://{allowed_host}{read_rows_route}"
+    result = await page.evaluate(_FETCH_JSON_JS, [url, {}])
+    data = result.get("data", []) if isinstance(result, dict) else []
+    return list(data) if isinstance(data, list) else []
 
 
 async def open_verified_writer(
@@ -911,10 +1103,16 @@ async def open_verified_writer(
     search_page_matches = [c for c in read_contracts if c.method == "GET" and c.operation_type == "search_page"]
     if len(search_page_matches) != 1:
         raise ValueError(
-            f"exactly one reviewed GET read contract with operation_type='search_page' is required "
-            f"(found {len(search_page_matches)})"
+            "exactly one reviewed GET read contract with operation_type='search_page' is required"
         )
     search_page_route = search_page_matches[0].route
+
+    read_rows_matches = [c for c in read_contracts if c.method == "POST" and c.operation_type == "read_rows"]
+    if len(read_rows_matches) != 1:
+        raise ValueError(
+            "exactly one reviewed POST read contract with operation_type='read_rows' is required"
+        )
+    read_rows_route = read_rows_matches[0].route
 
     controller = WriterPolicyController(
         search_read_contracts=read_contracts,
@@ -924,6 +1122,7 @@ async def open_verified_writer(
     abort_handle = AbortOnlyHandle(controller)
 
     context = await open_guarded_context_for_writer(browser, controller, allowed_host, context_options)
+    pec_row_map: dict = {}
     try:
         page = await context.new_page()
         await page.goto(f"http://{allowed_host}{search_page_route}")
@@ -952,6 +1151,21 @@ async def open_verified_writer(
         observed_workflow = await detect_observed_workflow(page)
         require_workflow_agreement(writer_plan.repair_workflow, observed_workflow)
 
+        if writer_plan.repair_workflow is RepairWorkflow.GARAGE_CONVENTIONNE:
+            rows = await _fetch_rows_during_construction(page, allowed_host, read_rows_route)
+            resolved_ids: set = set()
+            for intent in writer_plan.row_intents:
+                matches = [r for r in rows if str(r.get("IdRubrique")) == intent.rubrique_id.value]
+                if len(matches) != 1:
+                    raise RowAmbiguous("preflight did not find exactly one existing row for a planned rubrique")
+                id_devis_det = matches[0].get("IdDevisDet")
+                if not isinstance(id_devis_det, int) or isinstance(id_devis_det, bool):
+                    raise RowMismatch("preflight resolved a malformed IdDevisDet")
+                if id_devis_det in resolved_ids:
+                    raise RowAmbiguous("preflight resolved a duplicate IdDevisDet across planned rubriques")
+                resolved_ids.add(id_devis_det)
+                pec_row_map[intent.rubrique_id.value] = id_devis_det
+
         controller.activate_write_once()
     except Exception:
         controller.abort_deny_all()
@@ -963,7 +1177,10 @@ async def open_verified_writer(
         context,
         page,
         abort_handle,
+        lease_handle,
         expected_identity,
         writer_plan,
         allowed_host,
+        read_rows_route,
+        pec_row_map,
     )

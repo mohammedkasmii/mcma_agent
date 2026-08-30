@@ -283,6 +283,14 @@ def _simulate_native_calc(workflow: str, payload: dict) -> dict:
         return {"state": "error", "reason": "MISSING_CALCULATION_RESULT"}
 
     if workflow == "GARAGE_CONVENTIONNE" and simulate == "malformed":
+        # A real calculation attempt happened (its own generation still
+        # advances) -- only the RESULT is malformed. Using an
+        # un-advanced (possibly still-zero, on a fresh writer's very
+        # first trigger) version here would make
+        # _require_valid_calculation_version reject it before the
+        # malformed `expected` value is ever even parsed, masking the
+        # intended failure classification behind an unrelated one.
+        obs["calculation_version"][workflow] += 1
         expected = _compute_pec_financial_summary(payload)
         malformed = dict(expected)
         malformed["total_ttc"] = "not-a-number"
@@ -294,6 +302,7 @@ def _simulate_native_calc(workflow: str, payload: dict) -> dict:
         }
 
     if workflow == "GARAGE_CONVENTIONNE" and simulate == "incomplete":
+        obs["calculation_version"][workflow] += 1
         expected = _compute_pec_financial_summary(payload)
         incomplete = dict(expected)
         del incomplete["base_indemnite"]
@@ -908,6 +917,16 @@ def _render_mission_page(workflow: str | None = None, identity: dict | None = No
     (not just hides it) so a real browser's document.querySelector can
     distinguish "workflow section absent" from "present but invisible" --
     needed for INC-09A's workflow-detection gate (mcma.portal.mission).
+    For "normal" specifically, the leftover `style="display:none;"` on
+    #sectionModeNormal (present in the always-both-sections HTML_TEMPLATE,
+    where Mode Normal starts hidden pending #VehRepareI) is ALSO removed:
+    Mode Normal is now the sole/active workflow being rendered, not a
+    hidden alternative -- a real Playwright click needs the element to
+    actually be visible (found the hard way: a real-Chromium proof timed
+    out clicking Ajouter under the un-fixed display:none). Detection via
+    document.querySelector is unaffected either way (hidden elements are
+    still found by it), so this fix does not change 09A's own accepted
+    workflow-detection proof, which never asserted visibility.
 
     `identity` (INC-09B amendment #2 fix) substitutes the rendered
     IdMission/IdSinistre__I/MatriculeVeh/header-text -- defaults to the
@@ -922,6 +941,9 @@ def _render_mission_page(workflow: str | None = None, identity: dict | None = No
     html = html.replace("__REF_SINISTRE__", str(identity["ref_sinistre"]))
     if workflow == "normal":
         html = _strip_section(html, "sectionGarageConventionne")
+        html = html.replace(
+            '<div id="sectionModeNormal" style="display:none;">', '<div id="sectionModeNormal">'
+        )
     elif workflow == "conventionne":
         html = _strip_section(html, "sectionModeNormal")
     return html

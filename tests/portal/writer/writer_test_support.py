@@ -93,13 +93,37 @@ PEC_ROW_WRITE_CONTRACT = RouteContract(
     workflow="GARAGE_CONVENTIONNE",
 )
 
+NORMAL_READ_ROWS_CONTRACT = RouteContract(
+    host=ALLOWED_HOST,
+    route="/SinAuto_MCMA/expertise/gestionExpert/listeRapportDefDet",
+    method="POST",
+    query_fields=frozenset(),
+    content_type="application/x-www-form-urlencoded",
+    body_fields=frozenset(),
+    capability="read",
+    operation_type="read_rows",
+    workflow="MODE_NORMAL",
+)
+
+PEC_READ_ROWS_CONTRACT = RouteContract(
+    host=ALLOWED_HOST,
+    route="/SinAuto_MCMA/expertise/gestiongarage/listeDevisDet",
+    method="POST",
+    query_fields=frozenset(),
+    content_type="application/x-www-form-urlencoded",
+    body_fields=frozenset(),
+    capability="read",
+    operation_type="read_rows",
+    workflow="GARAGE_CONVENTIONNE",
+)
+
 PEC_NATIVE_RECALC_CONTRACT = RouteContract(
     host=ALLOWED_HOST,
     route="/_mock/pec/native_calculation",
     method="POST",
     query_fields=frozenset(),
     content_type="application/json",
-    body_fields=frozenset({"total_ttc", "franchise", "vetuste", "remise", "part_resp", "simulate"}),
+    body_fields=frozenset({"total_ttc", "total_tva", "franchise", "vetuste", "remise", "part_resp", "simulate"}),
     capability="native_recalc",
     operation_type="native_recalc",
     workflow="GARAGE_CONVENTIONNE",
