@@ -14,8 +14,8 @@ class Settings:
     retention, subnet allowlist) are added here as typed fields with
     fail-closed defaults — never as bare stringly-typed flags."""
 
-    # Placeholder location; INC-10 finalizes it per DATA_MODEL.md §9 (outside
-    # any served directory).
+    # DATA_MODEL.md §9: outside any served directory (mcma.web/static are
+    # served; "var" is not).
     db_path: Path = Path("var") / "mcma.sqlite3"
 
     # The API binds loopback until INC-18 introduces TLS-only LAN serving.
