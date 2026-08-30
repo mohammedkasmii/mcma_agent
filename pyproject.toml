@@ -60,6 +60,17 @@ source_modules = ["mcma.core", "mcma.domain", "mcma.mapping", "mcma.planning"]
 forbidden_modules = ["playwright", "sqlite3", "fastapi", "httpx", "requests"]
 
 [[tool.importlinter.contracts]]
+# INC-11 correction (disclosed): allow_indirect_imports=true added. Without
+# it, import-linter's "forbidden" contract checks the FULL transitive
+# closure (its documented default), so mcma.execution calling INTO
+# mcma.portal's own typed API (e.g. open_verified_writer) would itself be
+# flagged as "importing playwright" -- which would make the layered
+# architecture the roadmap requires (execution pairs plans with portal
+# capabilities) structurally impossible to express. The actual intent
+# ("only mcma.portal may import playwright *directly*, i.e. write
+# Playwright calls itself") is exactly what allow_indirect_imports=true
+# preserves: a direct `import playwright` anywhere outside mcma.portal
+# still breaks this contract; calling mcma.portal's own functions does not.
 name = "Single owner: only mcma.portal imports playwright"
 type = "forbidden"
 source_modules = [
@@ -67,8 +78,14 @@ source_modules = [
     "mcma.persistence", "mcma.execution", "mcma.notifications", "mcma.app",
 ]
 forbidden_modules = ["playwright"]
+allow_indirect_imports = "true"
 
 [[tool.importlinter.contracts]]
+# INC-11 correction (disclosed): same allow_indirect_imports=true fix,
+# first triggered by mcma.execution.lease legitimately calling
+# mcma.persistence.leases.acquire_lease() (execution.lease.py -> sqlite3
+# transitively, per import-linter's own default). Direct `import sqlite3`
+# outside mcma.persistence is still forbidden.
 name = "Single owner: only mcma.persistence imports sqlite3"
 type = "forbidden"
 source_modules = [
@@ -76,8 +93,13 @@ source_modules = [
     "mcma.portal", "mcma.execution", "mcma.notifications", "mcma.app",
 ]
 forbidden_modules = ["sqlite3"]
+allow_indirect_imports = "true"
 
 [[tool.importlinter.contracts]]
+# INC-11 correction (disclosed): same fix, pre-applied for INC-16/17
+# (mcma.app will legitimately call into mcma.execution/mcma.persistence,
+# both outside mcma.app, without importing fastapi itself anywhere but
+# mcma.app.*). Direct `import fastapi` outside mcma.app is still forbidden.
 name = "Single owner: only mcma.app imports fastapi"
 type = "forbidden"
 source_modules = [
@@ -85,6 +107,7 @@ source_modules = [
     "mcma.persistence", "mcma.portal", "mcma.execution", "mcma.notifications",
 ]
 forbidden_modules = ["fastapi"]
+allow_indirect_imports = "true"
 
 [[tool.importlinter.contracts]]
 name = "persistence/portal may import only domain and core"
