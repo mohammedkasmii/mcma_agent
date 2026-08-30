@@ -62,6 +62,17 @@ Only `portal` constructs BrowserContexts and capabilities (`LoginCapability`, `R
 `VerifiedMissionWriter`). No other module receives a raw context or a general write handle. `execution` orchestrates
 by calling `portal`'s explicit methods; it cannot issue arbitrary portal requests.
 
+**Explicit portal surface (no generic writes):** `portal` exposes **only** these explicit, workflow-typed operations:
+`read_row`, `add_normal_row` (Mode Normal Ajouter lifecycle), `edit_conventionne_row` (PEC pencil lifecycle),
+`verify_row`, `trigger_native_recalc` (workflow-specific native financial calculation), `read_financial_summary`, and
+`verify_financial_summary`. There is **no generic `write_row`** and **no generic request method** — nothing outside
+these named operations can reach the portal (`docs/architecture/PORTAL_ROW_WORKFLOWS.md`).
+
+**RepairWorkflow placement:** `RepairWorkflow` (`MODE_NORMAL` | `GARAGE_CONVENTIONNE`) is a pure enum in the
+`domain`/`planning` context. `ProposedPlan` carries `repair_workflow` as structural, **capability-neutral** plan data
+(included in the canonical serialization and `plan_hash`); it grants no write capability and holds no DRY_RUN/EXECUTE
+authorization. `AuthorizedExecution` belongs to `execution` (below).
+
 **Lease ownership (correction #5):** `execution` acquires the per-account lease **through `persistence`** and passes the
 resulting **`LeaseHandle`** into `portal`'s capability constructors. `portal` **does not import `persistence`/sqlite3**
 and **does not reacquire** the lock — this removes the previous self-deadlock (writer acquiring a lease then opening a

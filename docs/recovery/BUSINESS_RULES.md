@@ -78,7 +78,7 @@ Supplied mapping for rubriques 19–24 (component identity × operation type):
 - **Neither workflow may write `MontantChargeSocietaire` or `MontantChargeMutuelle`.**
 - For detailed workflow separation and mandatory financial verification steps, refer to `docs/architecture/PORTAL_ROW_WORKFLOWS.md`.
 
-**Current-code contradiction:** `browser/mode_normal.py:122-144` writes both fields (`MontantChargeMutuelle = MontantReparation`, `MontantChargeSocietaire = '0'`). This is prohibited under B.3. `mode_conventionne` already defers to native calc and writes neither. Recorded as F6 in `KNOWN_FAILURES.md`.
+**Current-code contradiction (baseline classification):** `browser/mode_normal.py:122-144` writes both fields (`MontantChargeMutuelle = MontantReparation`, `MontantChargeSocietaire = '0'`) — the **Mode Normal baseline is unsafe: a prohibited direct charge-split overwrite** under B.3. The **PEC baseline is partially aligned**: `mode_conventionne` delegates calculation to SinAuto and does not directly write the split, but it does not prove native-trigger completion or perform exact financial-summary verification, so it is **not fully target-compliant** until those are proven. Full target compliance in both workflows requires native trigger + read-back + exact verification before `READY_FOR_HUMAN_REVIEW`. Recorded as F6 in `KNOWN_FAILURES.md`.
 
 ### B.4 Out-of-catalogue rubrique identifiers
 

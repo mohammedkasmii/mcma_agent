@@ -68,3 +68,67 @@ The portal-facing surface the agent depends on: URLs, DOM selectors and HTTP end
 - `install_safety_policy(page, enabled)` registers `page.route(pattern, block_handler)` for each glob (`safety_interceptor.py:41-42`), installed once at `main.py:210` when `TEST_MODE` is true.
 - **Blocked requests are fulfilled with `status=200, body='{"state":"success",...}'`** (`:35-39`) — i.e. **fail open**: a blocked write is indistinguishable from a success to any read-back verification.
 - Routes bind to the single `page`, not the `context` (`:25,42`) — a popup/new tab/`context.new_page()` is unrouted. Patterns are bare-suffix globs (a query-string or path variant could evade them). *(Inference on evasion; the fail-open and page-scope facts are verified.)*
+
+## 10. Target row-write contract (supersedes baseline behavior; source of truth: `docs/architecture/PORTAL_ROW_WORKFLOWS.md`)
+
+Sections 1–9 above record the **recovered baseline** — how the code at `0290fe9` actually behaved, including its unsafe
+behaviors. This section records the **target contract** the rebuild implements instead. Where the two disagree, the
+baseline is historical evidence only, never a license.
+
+**Charge-split evidence classification:** the baseline directly addressed `#MontantChargeMutuelle` and
+`#MontantChargeSocietaire` (`browser/mode_normal.py:122-144`), so those field selectors are **recovered/observed
+evidence that the summary fields exist**. That historical direct overwrite was **unsafe and remains permanently
+prohibited**: in the target contract **neither workflow may directly write the charge-mutuelle or charge-sociétaire
+fields**; both workflows must trigger the SinAuto-native calculation and verify the financial summary before
+`READY_FOR_HUMAN_REVIEW`. Reviewed row-level `createRapportDefDet` (Mode Normal) / `updateDevisDet` (PEC) persistence
+is allowed; dossier-level final `Enregistrer`/`Valider`/`Clôturer`/GED/delete actions remain permanently prohibited and
+human-controlled.
+
+### 10.1 Mode Normal (target)
+
+1. Verify mission identity and the observed repair workflow.
+2. Ensure `#VehRepareI` exposes the table.
+3. Initially empty/add-row lifecycle.
+4. For every approved RowOp:
+   - click Ajouter;
+   - wait for one temporary row;
+   - select the exact `#IdRubrique`;
+   - fill `#MontantHT` and `#Taxe`;
+   - dispatch the required focus/input/keyup/change/blur behavior;
+   - click the column-7 checkmark exactly once;
+   - await and validate `createRapportDefDet`;
+   - wait for the redraw;
+   - discard stale DOM references;
+   - relocate the persisted row;
+   - verify the exact rubrique/HT/TVA read-back;
+   - only then continue.
+5. Trigger and verify the workflow-specific native financial calculation. *(The exact Mode Normal native trigger,
+   readiness signal, and summary read-back contract are UNCONFIRMED and mandatory G5 preconditions —
+   `docs/architecture/PORTAL_ROW_WORKFLOWS.md` §3.1.)*
+6. Stop at `READY_FOR_HUMAN_REVIEW`.
+
+### 10.2 Garage Conventionné / PEC (target)
+
+1. Verify mission identity and the observed repair workflow.
+2. `#DevisDetTable` is read-only original-quote evidence.
+3. Edit only `#DevisDetTableVal` inside `#blocDevisValide`.
+4. Before the first mutation, preflight-match every planned rubrique to exactly one existing row.
+5. Never click Ajouter.
+6. For every approved RowOp:
+   - relocate the exact row after each redraw;
+   - click its column-7 pencil;
+   - wait for edit mode;
+   - fill validated HT/TVA/vétusté fields;
+   - dispatch the required events;
+   - verify the calculated TTC when available;
+   - click the column-7 checkmark exactly once;
+   - await and validate `updateDevisDet`;
+   - wait for the redraw;
+   - discard stale DOM references;
+   - relocate and verify the exact read-back.
+7. Trigger `DevisCalculerMontantCharge` and verify the PEC summary.
+8. Never click `#DEVISDET_Btn` or invoke `garageModifierValDevis`.
+9. Stop at `READY_FOR_HUMAN_REVIEW`.
+
+The detailed step semantics, evidence levels, and failure behavior live in `docs/architecture/PORTAL_ROW_WORKFLOWS.md`;
+this section is the recovery-side pointer, not a second authority.

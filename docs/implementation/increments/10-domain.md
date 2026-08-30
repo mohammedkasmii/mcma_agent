@@ -116,6 +116,14 @@
 - **Target modules/files introduced:** `mapping/wexia.py` (typed input model + normalization boundary; structured
   `item_type`/`operation_type`/`labor_type_id` first), `planning/plan.py` (`ProposedPlan`, `RowOp`, `ExpectedIdentity`,
   `plan_hash`), `planning/registry.py` (`WorkflowRegistry`). Tests under `tests/planning/`.
+- **Repair-workflow invariants (G1 — `PORTAL_ROW_WORKFLOWS.md`, `WORKFLOW_STATE_MODEL.md` §2):**
+  - `RepairWorkflow` is a typed domain enum: `{MODE_NORMAL, GARAGE_CONVENTIONNE}`.
+  - `ProposedPlan.repair_workflow` carries it as capability-neutral structural plan data.
+  - **Two deterministic builders** — one per repair workflow — registered under distinct registry names.
+  - `repair_workflow` is **included in the canonical serialization and `plan_hash`** (two otherwise-identical plans with
+    different workflows hash differently).
+  - Plans contain **no DRY_RUN/EXECUTE authorization** (no `mode`/`read_only`; `repair_workflow` is not authorization).
+  - **Both builders and their registry names are tested.**
 - **DB migration impact:** none.
 - **Dependency/config impact:** pydantic (already present) for the typed boundary.
 - **Feature flags/adapters:** none (no run path yet).
@@ -127,12 +135,16 @@
   - `test_expected_identity_requires_registration_plate` (mandatory; ref/idSinistre at least one).
   - `test_rowop_has_no_charge_mutuelle_field`.
   - `test_reform_and_conflicting_modes_fail_closed` (carry over baseline fail-closed cases).
+  - `test_plan_hash_includes_repair_workflow` (same rows, different `repair_workflow` → different `plan_hash`).
+  - builder/registry tests: both deterministic builders exist, are registered under their distinct names, and each
+    produces a plan whose `repair_workflow` matches its registry entry.
 - **Initial failing-test expectation:** all fail (modules absent).
 - **Mock/fixtures:** sanitized Wexia JSON fixtures (no PII).
 - **Implementation steps:** typed input model → normalization boundary → deterministic plan builder (stable sort by
   rubrique_id then first source pointer) → `plan_hash` (sha256 of canonical serialization) → registry.
 - **Acceptance criteria:** determinism proven; plan is pure data; `ExpectedIdentity` enforces mandatory registration;
-  any `NeedsReview` yields a non-writeable plan.
+  any `NeedsReview` yields a non-writeable plan; `repair_workflow` typed, hashed, capability-neutral, and covered by the
+  builder/registry tests above.
 - **Safe offline verification:** `python -m pytest tests/planning -v`.
 - **Safety gates:** **G1** (domain+planning pure, deterministic, fail-closed) — phase gate to Phase 2.
 - **Expected git-diff scope:** `mapping/*`, `planning/*`, `tests/planning/*`.

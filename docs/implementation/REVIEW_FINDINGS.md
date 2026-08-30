@@ -102,6 +102,23 @@ corrected in the documents named above.
 | C9 | SSE/auth ownership: injected `Authorizer` in INC-15; real authenticated authz + revocation in INC-17 (no circular dep) | ACCEPTED | INC-15, INC-17 |
 | C10 | Reporting cleanup: `4a3483cb` = approved Phase 3 revision (not HEAD); remove local-auth-vs-AD and BitLocker-vs-SQLCipher as "unresolved"; keep real portal row-contract confirmation as a genuine G5 requirement; update this file | ACCEPTED | README, REVIEW_FINDINGS (this section) |
 
+## I. Phase-5 recovered owner clarification (Normal/PEC row workflows) — RESOLVED in documentation
+A recovered owner clarification superseded the earlier generic row-write design, and the documentation set was aligned
+accordingly (`PORTAL_ROW_WORKFLOWS.md` is the source of truth):
+
+- The **generic `write_row` was insufficient**: Mode Normal and Garage Conventionné/PEC use **structurally different
+  row lifecycles** (Normal = Ajouter/add-row with `createRapportDefDet`; PEC = pencil/edit-row with `updateDevisDet`,
+  no Ajouter, all-row exact preflight before the first mutation). The portal surface is now the explicit set
+  `read_row` / `add_normal_row` / `edit_conventionne_row` / `verify_row` / `trigger_native_recalc` /
+  `read_financial_summary` / `verify_financial_summary` (`MODULE_BOUNDARIES.md` §4).
+- **Native financial calculation and exact financial-summary verification are mandatory in both workflows** before
+  `READY_FOR_HUMAN_REVIEW`; neither workflow may directly write the charge-mutuelle/charge-sociétaire fields; a normal
+  runtime verification failure is deterministically `WRITE_ABORTED` (`WORKFLOW_STATE_MODEL.md` §4).
+- **Mode Normal's exact native trigger, readiness signal, and summary read-back contract remain a genuine G5
+  confirmation item** (`PORTAL_ROW_WORKFLOWS.md` §3.1) — they are recorded as UNCONFIRMED, not guessed.
+- **No INC-06 implementation was performed during this correction** — this was a documentation-only alignment; the
+  increment sequence and gates are unchanged.
+
 ## Decided (no longer "unresolved")
 - **Auth backend:** **local auth now, with an `AuthProvider` seam** for a future Windows-AD provider — decided (ADR-0008,
   INC-16). Not an open question.

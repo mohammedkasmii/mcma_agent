@@ -16,7 +16,7 @@ Columns for every table below: **Primary** (exactly one) · **Supporting** · **
 | INV-5 human final validation | INC-12 | INC-23 | readiness-terminal (`observed_finalizations`≠job) | G3/G5 | `mcma/execution` | Preserved/re-asserted |
 | INV-6 fail-closed mapping (+exact rubrique) | INC-04 | INC-05, INC-09 | fail-closed props; exact-IdRubrique | G1/G2 | `mcma/domain`,`mcma/portal` | Planned |
 | INV-7 Decimal, no negative TVA | INC-04 | — | negative-TVA-fails-closed | G1 | `mcma/domain` | Planned |
-| INV-8 charge-mutuelle native-only | INC-09 | — | charge-mutuelle-never-written | G2 | `mcma/portal` | Planned |
+| INV-8 charge-mutuelle native-only | INC-09 | INC-12, INC-23 | never-directly-written **+** native-triggered **+** exact-summary-verified before readiness | G2/G5 | `mcma/portal`,`mcma/execution` | Planned |
 | INV-9 relance not mutated | INC-14 | — | extraction-read-only | N/A | `mcma/notifications` | Preserved/re-asserted |
 | INV-10 secrets/PII | INC-13 | INC-19, INC-20, INC-21 | vault/logs/xss/at-rest | G3/G-PDR | `mcma/portal`,`mcma/persistence` | Planned |
 | INV-11 API authn / no LAN exposure | INC-16 | INC-17, INC-18 | auth/authz/TLS | G4 | `mcma/app` | Planned |
@@ -29,7 +29,7 @@ Columns for every table below: **Primary** (exactly one) · **Supporting** · **
 | F3 first-row mission fallback | INC-09 | — | first-row-rejected | G2 | `mcma/portal` | Planned |
 | F4 sole-candidate fallback | INC-09 | — | zero/multiple fail-closed | G2 | `mcma/portal` | Planned |
 | F5 partial matches → writes | INC-09 | — | partial-match fail-closed | G2 | `mcma/portal` | Planned |
-| F6 forced charge-mutuelle | INC-09 | INC-00, INC-22 | never-written; baseline path removed | G2 | `mcma/portal` | Planned |
+| F6 forced charge-mutuelle | INC-09 | INC-00, INC-22 | never-directly-written + native-triggered + exact-summary-verified; baseline path removed | G2 | `mcma/portal` | Planned |
 | F7 duplicate checkmark | INC-09 | — | single-write-no-duplicate | G2 | `mcma/portal` | Planned |
 | F8 fail-open interceptor | INC-07 | — | abort-not-fake200 | G2 | `mcma/portal` | Planned |
 | F9 page-scoped interception | INC-07 | — | context-scoped | G2 | `mcma/portal` | Planned |
@@ -77,7 +77,7 @@ Columns for every table below: **Primary** (exactly one) · **Supporting** · **
 |---|---|---|---|---|---|---|
 | B.1 three-origin | INC-04 | — | three-origin 1/2/3 | G1 | `mcma/domain` | Planned |
 | B.2 glass 19–24 | INC-04 | — | component×operation; fail-closed | G1 | `mcma/domain` | Planned |
-| B.3 charge mutuelle native | INC-09 | INC-04 | never-written | G2 | `mcma/portal` | Planned |
+| B.3 charge mutuelle native | INC-09 | INC-04, INC-12, INC-23 | never-directly-written + native-triggered + exact-summary-verified before readiness | G2/G5 | `mcma/portal`,`mcma/execution` | Planned |
 | B.4 out-of-catalogue fail-closed | INC-04 | — | fail-closed | G1 | `mcma/domain` | Planned |
 | B.5 mission identity two-tier | INC-09 | — | two-tier + registration mandatory | G2 | `mcma/portal` | Planned |
 | B.6 negative TVA fail-closed | INC-04 | — | INVALID_TAX_ALLOCATION | G1 | `mcma/domain` | Planned |
@@ -159,6 +159,16 @@ baseline item is **CC** (Preserved/re-asserted).
 
 The three baseline **CC** items (18 Decimal money; INV-5 human-final-validation; INV-9 relance-not-mutated) are preserved
 and re-asserted by tests in INC-04 / INC-12 / INC-14 respectively.
+
+## 6a. Explicit Normal/PEC workflow contracts (traced separately)
+| Item | Primary | Supporting | Test/evidence | Gate | Target module | Status |
+|---|---|---|---|---|---|---|
+| `RepairWorkflow` typed + `ProposedPlan.repair_workflow` in canonical serialization/`plan_hash`; two deterministic builders + registry names tested | INC-05 | INC-04 | plan-hash-includes-workflow; builder/registry tests | G1 | `mcma/domain`,`mcma/planning` | Planned |
+| Mode Normal row persistence contract: `createRapportDefDet` (Ajouter lifecycle only; never used in PEC) | INC-09 | INC-06, INC-23 | complete-Normal-lifecycle mock test; cross-workflow use rejected | G2/G5 | `mcma/portal` | Planned |
+| PEC row persistence contract: `updateDevisDet` (pencil lifecycle only; no Ajouter; all-row exact preflight before first mutation; never used in Normal) | INC-09 | INC-06, INC-23 | complete-PEC-lifecycle mock test; preflight fail-closed; cross-workflow use rejected | G2/G5 | `mcma/portal` | Planned |
+| Workflow agreement: parent DRY_RUN/EXECUTE same `repair_workflow`; observed portal workflow == `ExecutablePlanData.repair_workflow` before any write; mismatch fails closed pre-mutation | INC-12 | INC-09 | workflow-mismatch rejection tests | G2/G3 | `mcma/execution`,`mcma/portal` | Planned |
+| Mandatory native trigger + exact financial-summary verification in both workflows (Mode Normal native contract = G5 confirmation item) | INC-09 | INC-12, INC-23 | native-verification-mandatory; missing/stale/mismatch blocks readiness | G2/G5 | `mcma/portal`,`mcma/execution` | Planned |
+| Deterministic VERIFYING failure: native calc failed/stale/missing or summary mismatch → `WRITE_ABORTED`; crash/restart in VERIFYING → `INTERRUPTED_NEEDS_HUMAN_REVIEW`, never auto-resumed | INC-12 | INC-09 | VERIFYING-failure + restart-reconciliation tests | G3 | `mcma/execution` | Planned |
 
 ## 7. Completeness statement
 - **No orphans (proven by the fully-columned tables above):** §1 lists all 11 INV, §2 lists **F1..F33 individually**, §3

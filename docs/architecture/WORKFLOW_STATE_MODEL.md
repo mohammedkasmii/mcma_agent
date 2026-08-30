@@ -47,6 +47,7 @@ stateDiagram-v2
   WRITING --> VERIFYING
   WRITING --> WRITE_ABORTED
   VERIFYING --> READY_FOR_HUMAN_REVIEW
+  VERIFYING --> WRITE_ABORTED: native calculation/summary mismatch
   NEEDS_REVIEW --> [*]
   IDENTITY_FAILED --> [*]
   WRITE_ABORTED --> [*]
@@ -60,6 +61,13 @@ no `mode`/`read_only`). EXECUTE authorization forms an `ApprovedPlanReference` a
 retained input (`DATA_MODEL.md` §4a) and matching `plan_hash`/`input_hash`, an `ExecutablePlanData` (still pure data). The
 `execution` module then pairs it with a live writer as `AuthorizedExecution` (`MODULE_BOUNDARIES.md` §4) — `domain` never
 references a portal capability. The `mode` (DRY_RUN|EXECUTE) lives on `AutomationJob`; no field inside a plan can unlock writes.
+
+**Repair-workflow agreement (structural context, not authorization):** `repair_workflow`
+(`MODE_NORMAL` | `GARAGE_CONVENTIONNE`) is typed plan data, included in the canonical serialization and `plan_hash`.
+A parent DRY_RUN and its EXECUTE job must reference the **same** `repair_workflow` — a mismatch is rejected at execution
+authorization. Before any write, the **observed portal repair workflow must equal `ExecutablePlanData.repair_workflow`**;
+a mismatch **fails closed before the first mutation**. `repair_workflow` is **not** execution authorization — only the
+separate EXECUTE authorization (`ApprovedPlanReference` → `ExecutablePlanData` → `AuthorizedExecution`) unlocks writes.
 
 ## 3. Lease lifetime (decision #5)
 - **PLANNING is pure and holds no lease** (no portal, no session).
@@ -84,8 +92,12 @@ For each `RowOp`:
 5. **atomic commit:** `automation_jobs` transition + `audit_events` + `event_outbox` in one SQLite transaction.
 Any mismatch at step 4, or a lost fence at step 3 → stop, `WRITE_ABORTED`, no further writes.
 
-After all rows are written and verified, the workflow transitions to **VERIFYING**.
-In **VERIFYING**, the agent must trigger the native financial calculation and read/verify the resulting financial summary (`MontantChargeMutuelle`, `MontantChargeSocietaire`, TTC, TVA, etc.). This mandatory calculation verification must succeed before the final transition to `READY_FOR_HUMAN_REVIEW`. Any failure or mismatch here stops the workflow in `WRITE_ABORTED` or `INTERRUPTED_NEEDS_HUMAN_REVIEW`.
+After all row writes and read-backs succeed, the workflow transitions **WRITING → VERIFYING**.
+In **VERIFYING**, the agent must trigger the workflow-specific native financial calculation and read/verify the resulting financial summary (charge mutuelle, charge sociétaire, TTC, TVA, etc. — the agent never writes these fields; `docs/architecture/PORTAL_ROW_WORKFLOWS.md` §3). The outcome is **deterministic — no operator- or config-dependent choice**:
+
+- **VERIFYING → READY_FOR_HUMAN_REVIEW** only when the native calculation **and** the exact financial-summary verification both succeed.
+- **VERIFYING → WRITE_ABORTED** when the native calculation fails, is stale, or is missing, or when the financial summary mismatches the verified expectation. This is a normal-runtime failure outcome; no further writes occur.
+- **`INTERRUPTED_NEEDS_HUMAN_REVIEW` is reached only through crash/restart reconciliation** (§7): a crash/restart while the stored status is `VERIFYING` becomes `INTERRUPTED_NEEDS_HUMAN_REVIEW` and is **never automatically resumed**. A live, uninterrupted run never enters that state from `VERIFYING`.
 
 ## 5. TOCTOU (decision #2)
 Identity is verified when the writer opens the mission **and re-verified immediately before the first write and after

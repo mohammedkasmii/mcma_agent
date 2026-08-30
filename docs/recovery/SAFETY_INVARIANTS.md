@@ -60,11 +60,11 @@ Required (`BUSINESS_RULES.md` B.1–B.4): ordinary parts map only by origin (1/2
 - **Required (`BUSINESS_RULES.md` B.6):** no line may have negative TVA; do not silently clamp; either deterministic non-negative redistribution preserving TVA/TTC to 0.01 MAD, or fail closed with `NEEDS_REVIEW: INVALID_TAX_ALLOCATION`; **no 0.05 MAD tolerance**.
 - Current code: per-line TVA at `:646` is unguarded and can go negative with no fail-closed path — **violates B.6**. See `KNOWN_FAILURES.md` F17.
 
-## INV-8 — Charge mutuelle: native calculation authoritative; agent must not write it — **VIOLATED (Mode Normal)**
+## INV-8 — Charge mutuelle: native calculation authoritative; agent must not write it — **VIOLATED (Mode Normal) / PARTIALLY HOLDS (PEC)**
 
-Required (`BUSINESS_RULES.md` B.3): the portal-native calculation is authoritative in **both** workflows; **neither workflow may write `MontantChargeSocietaire` or `MontantChargeMutuelle`**. Native triggering AND verification are mandatory in both workflows (refer to `PORTAL_ROW_WORKFLOWS.md`); this is independent of final save (final save stays blocked/human regardless).
+Required (`BUSINESS_RULES.md` B.3): the portal-native calculation is authoritative in **both** workflows; **neither workflow may write `MontantChargeSocietaire` or `MontantChargeMutuelle`**. Native triggering AND verification are mandatory in both workflows (refer to `docs/architecture/PORTAL_ROW_WORKFLOWS.md`); this is independent of final save (final save stays blocked/human regardless).
 
-- Mode Normal writes both fields (`browser/mode_normal.py:122-144`) — **prohibited**. Mode Conventionné writes neither (relies on native `DevisCalculerMontantCharge()` `:354-387`) — compliant. See `KNOWN_FAILURES.md` F6.
+- Mode Normal writes both fields (`browser/mode_normal.py:122-144`) — **unsafe, prohibited direct charge-split overwrite**. Mode Conventionné (PEC) is **partially aligned**: it delegates calculation to native `DevisCalculerMontantCharge()` (`:354-387`) and does not directly write the split, but it does not prove native-trigger completion or perform exact financial-summary verification, so it is **not fully target-compliant**. Full compliance in both workflows requires native trigger + read-back + exact verification before `READY_FOR_HUMAN_REVIEW`. See `KNOWN_FAILURES.md` F6.
 
 ## INV-9 — Relance / notification data must not be mutated — **HOLDS**
 
@@ -93,7 +93,7 @@ Required (`BUSINESS_RULES.md` B.10): server-side employee authentication, secure
 | INV-5 Human final validation | HOLDS (caveat) |
 | INV-6 Three-origin mapping fails closed | **VIOLATED / PARTIALLY VIOLATED** |
 | INV-7 Decimal money, no negative TVA | **PARTIALLY HOLDS** |
-| INV-8 Charge mutuelle native-authoritative, not written | **VIOLATED (Mode Normal)** |
+| INV-8 Charge mutuelle native-authoritative, not written | **VIOLATED (Mode Normal) / PARTIALLY HOLDS (PEC)** |
 | INV-9 Relance not mutated | HOLDS |
 | INV-10 Secrets not exposed | PARTIAL |
 | INV-11 API authn / no LAN session exposure | **VIOLATED** |

@@ -49,8 +49,9 @@ Each workflow lists its trigger, step sequence with `file:line` evidence, side e
   5. `fill_main_form` (`main.py:216`).
   6. Detect mode via live DOM (`main.py:219-231`): `fill_garage_conventionne` (conventionné) or `fill_mode_normal` (normal). **Both write row-level data to the portal.**
   7. `page.pause()` for human review (`main.py:244`) — occurs **after** row writes.
-- **Side effects:** **row-level writes** (`updateDevisDet`, `createRapportDefDet`) that are **not** network-blocked. Final saves (`Enregistrer`/`Valider`/`Clôture`/GED) are not clicked and are blocked.
-- **Target Behavior:** The target architecture uses explicit `ExecutablePlanData` driving two typed execution workflows (`add_normal_row` / `edit_conventionne_row`), and requires mandatory financial verification before stopping at `READY_FOR_HUMAN_REVIEW`. Refer to `docs/architecture/PORTAL_ROW_WORKFLOWS.md`.
+- **Side effects:** **row-level writes** (`updateDevisDet`, `createRapportDefDet`) that are **not** network-blocked. In Mode Normal the baseline additionally performs the **prohibited direct charge-split overwrite** (`MontantChargeMutuelle`/`MontantChargeSocietaire`, `KNOWN_FAILURES.md` F6). Final saves (`Enregistrer`/`Valider`/`Clôture`/GED) are not clicked and are blocked.
+- **Baseline classification (charge split):** Mode Normal baseline is **unsafe** (direct overwrite, permanently prohibited). PEC baseline is **partially aligned** — it delegates calculation to SinAuto and does not directly write the split — but is **not fully target-compliant** until native-trigger completion and exact financial-summary verification are proven (`BUSINESS_RULES.md` B.3).
+- **Target Behavior:** The target architecture uses explicit `ExecutablePlanData` driving two typed execution workflows (`add_normal_row` / `edit_conventionne_row`), and requires mandatory native financial recalculation **plus exact financial-summary verification** in both workflows before stopping at `READY_FOR_HUMAN_REVIEW`. Refer to `docs/architecture/PORTAL_ROW_WORKFLOWS.md`.
 
 ## W5 — Employee action tracking (dashboard)
 

@@ -132,17 +132,24 @@ live-write gate, reachable after endpoint-contract confirmation. INC-00 precedes
 - **Gate 0 (after INC-01):** the proof test shows a subprocess and a headless Chromium cannot reach the production host.
   No browser code merges before this passes. (RELEASE_GATES G0.)
 - **Gate 1 (after INC-05):** domain + planning are pure (import-linter green), deterministic (`plan_hash` stable), and
-  fail-closed on every unknown/ambiguous case. (G1.)
+  fail-closed on every unknown/ambiguous case; the repair workflow is typed (`RepairWorkflow`) and included in plan
+  hashing, and both deterministic builders/registry entries are test-covered
+  (`docs/architecture/PORTAL_ROW_WORKFLOWS.md`). (G1.)
 - **Gate 2 (after INC-09):** dry-run cannot construct a writer; final endpoints abort; unknown requests fail closed;
-  identity mismatch/zero/multiple fail closed; exact-IdRubrique enforced; charge-mutuelle never written — all proven
-  against the mock server, **live writes still disabled**. (G2.)
+  identity mismatch/zero/multiple fail closed; exact-IdRubrique enforced; charge-mutuelle never directly written; the
+  exact Mode Normal and PEC workflow lifecycles pass against the mock; the observed workflow must agree with the
+  executable plan (mismatch fails closed); native financial verification is mandatory and a failed/stale calculation
+  prevents readiness; final dossier actions blocked — all proven against the mock server, **live writes still
+  disabled**. (G2.)
 - **Gate 3 (after INC-13):** durable jobs survive crash-recovery deterministically; leases + OS mutex enforce single
   writer; vault fails closed on decrypt/binding failure. (G3.)
 - **Gate 4 (after INC-18):** TLS-only; authenticated, per-account-authorized API; server-derived audit. (G4.)
-- **Gate 5 (INC-23):** endpoint-contract confirmed against approved evidence. **A `VerifiedMissionWriter` can be
-  constructed only when valid, approved `confirmed_row_ops` records exist for the exact deployed commit and every G5
-  requirement passes** — live-write authorization is data-driven, not a flip/boolean/flag. Performed only under the
-  supervised canary procedure with human final validation still mandatory. (G5 — the live-write gate.)
+- **Gate 5 (INC-23):** endpoint-contract confirmed against approved evidence — including the exact Mode Normal native
+  trigger + summary-verification contract (currently UNCONFIRMED, `docs/architecture/PORTAL_ROW_WORKFLOWS.md` §3.1) and
+  the exact PEC row/native contracts. **A `VerifiedMissionWriter` can be constructed only when valid, approved
+  `confirmed_row_ops` records exist for the exact deployed commit and every G5 requirement passes** — live-write
+  authorization is data-driven, not a flip/boolean/flag. Performed only under the supervised canary procedure with human
+  final validation still mandatory. (G5 — the live-write gate.)
 
 ## Deviations from ADR-0010 (with justification)
 ADR-0010's ordered list is followed. Two clarifications, not deviations:

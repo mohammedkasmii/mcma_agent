@@ -85,7 +85,8 @@ Status legend: **verified** (confirmed in code) · **partial** (implemented with
 - Strict `Decimal` + `ROUND_HALF_UP` + last-line tax remainder allocation (`wexia_mapper.py:109-125,638-664`); ±0.01 assertions (`:671-676`). Floats appear only at the portal JS boundary (inherent). Latent: per-line TVA can go negative (`:646`).
 
 ### Charge mutuelle — **broken (forced overwrite)**
-- `browser/mode_normal.py:122-144` sets `MontantChargeMutuelle = repair total` and `MontantChargeSocietaire = '0'` after native calc, discarding the portal split. **Authoritative decision:** portal-native calculation is authoritative in **both** workflows; neither workflow may write `MontantChargeSocietaire` or `MontantChargeMutuelle`; native triggering AND verification are mandatory in both workflows (refer to `PORTAL_ROW_WORKFLOWS.md`); independent of final save. See `BUSINESS_RULES.md` B.3.
+- `browser/mode_normal.py:122-144` sets `MontantChargeMutuelle = repair total` and `MontantChargeSocietaire = '0'` after native calc, discarding the portal split. **Authoritative decision:** portal-native calculation is authoritative in **both** workflows; neither workflow may write `MontantChargeSocietaire` or `MontantChargeMutuelle`; native triggering AND verification are mandatory in both workflows (refer to `docs/architecture/PORTAL_ROW_WORKFLOWS.md`); independent of final save. See `BUSINESS_RULES.md` B.3.
+- **Baseline classification:** Mode Normal baseline is **unsafe — a prohibited direct charge-split overwrite**. The PEC baseline (`mode_conventionne`) is **partially aligned** — it delegates calculation to SinAuto and does not directly write the split — but is **not fully target-compliant** until native-trigger completion and exact financial-summary verification are proven. Full compliance in both workflows requires trigger + read-back + verification before `READY_FOR_HUMAN_REVIEW`.
 
 ## Notifications, dashboard, API
 

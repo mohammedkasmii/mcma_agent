@@ -30,7 +30,7 @@ Baseline noncompliance is **expected** — it is the Phase 4 migration backlog, 
 | 16 | Verify-after-write | execution | WORKFLOW_STATE_MODEL | 0003 | integration | NI |
 | 17 | Fail-closed mapping | domain,mapping | DOMAIN_MODEL | 0002 | property (NeedsReview) | PC |
 | 18 | Decimal monetary calculations | domain | DOMAIN_MODEL | 0002 | property (money) | CC |
-| 19 | Native portal charge-mutuelle | domain,portal | SAFETY_MODEL,DOMAIN_MODEL | 0002 | safety (never-written) | CN |
+| 19 | Native portal charge-mutuelle | domain,portal | SAFETY_MODEL,DOMAIN_MODEL,PORTAL_ROW_WORKFLOWS | 0002 | safety (never directly written **+** mandatory native trigger + summary verification) | CN |
 | 20 | SQLite WAL persistence | persistence | DATA_MODEL | 0005 | repo contract | NI |
 | 21 | Transactional event outbox | persistence | DATA_MODEL | 0005 | outbox atomicity | NI |
 | 22 | Claim identity account_id+idSinistre | persistence,domain | DATA_MODEL | 0006 | uniqueness/NOT NULL | NI |
@@ -63,7 +63,7 @@ Baseline noncompliance is **expected** — it is the Phase 4 migration backlog, 
 | INV-5 human final validation | WORKFLOW_STATE_MODEL §6 | 0002 | CC |
 | INV-6 three-origin fail-closed mapping | DOMAIN_MODEL | 0002 | PC |
 | INV-7 Decimal, no negative TVA | DOMAIN_MODEL §5 | 0002 | PC |
-| INV-8 charge-mutuelle native-only | SAFETY_MODEL §6 | 0002 | CN |
+| INV-8 charge-mutuelle native-only (never directly written **+** mandatory native trigger + verification) | SAFETY_MODEL §6, PORTAL_ROW_WORKFLOWS §3 | 0002 | CN |
 | INV-9 relance not mutated | (no write contract) | 0004 | CC |
 | INV-10 secrets/PII not exposed | DATA_MODEL §9, SAFETY_MODEL §7 | 0005/0007 | CN |
 | INV-11 API authn / no LAN exposure | API_CONTRACTS | 0008 | CN |
@@ -74,7 +74,7 @@ Baseline noncompliance is **expected** — it is the Phase 4 migration backlog, 
 | F1,F2,F10 preview writes / unblocked row endpoints | capability separation + allowlist (0003/0004) | CN |
 | F3,F4,F5 wrong-mission selection/identity | identity gate (0003) | CN |
 | F6 forced charge-mutuelle | native-only (0002) | CN |
-| F7 duplicate checkmark | single explicit write_row + verify | CN |
+| F7 duplicate checkmark | workflow-specific explicit row lifecycles (`add_normal_row` / `edit_conventionne_row`), one checkmark per row + exact read-back verify (`PORTAL_ROW_WORKFLOWS.md`) | CN |
 | F8 fail-open interceptor | abort not fake-200 (0004) | CN |
 | F9 page-scoped interception | context-level route (0004) | CN |
 | F11 mapping_status unused | plan NeedsReview blocks writes (0002) | CN |
@@ -113,6 +113,16 @@ classification, human finalization). All are reflected in the documents cited ab
 | 7 | F12 truthful readiness; F16 exact-IdRubrique row selection | WORKFLOW_STATE_MODEL §6, SAFETY_MODEL §4a, ADR-0004 | 0004 | F12/F16 safety tests | CN |
 | 8 | Egress protection before collection + OS/CI + subprocess/browser proof | TEST_STRATEGY §1 | 0010 | subprocess+Chromium cannot reach prod host | CN |
 | 9 | Secure local-only admin bootstrap; per-account authz; archive-not-delete | API_CONTRACTS §2/§3, DATA_MODEL §2, THREAT_MODEL T18/T19 | 0008 | bootstrap loopback-only; cross-account denial | CN |
+
+## 5a. Explicit Normal/PEC workflow contracts (G1 alignment) — where applied
+| Item | Module(s) | Document(s) | Planned test | Gate |
+|---|---|---|---|---|
+| Mode Normal Ajouter lifecycle (`add_normal_row`; `createRapportDefDet` only) | `portal`,`execution` | PORTAL_ROW_WORKFLOWS §1, MODULE_BOUNDARIES §4 | complete-Normal-lifecycle mock test (TEST_STRATEGY §2) | G2 |
+| PEC pencil lifecycle (`edit_conventionne_row`; `updateDevisDet` only; no Ajouter; all-row exact preflight) | `portal`,`execution` | PORTAL_ROW_WORKFLOWS §2, MODULE_BOUNDARIES §4 | complete-PEC-lifecycle mock test (TEST_STRATEGY §2) | G2 |
+| `RepairWorkflow` typed; `ProposedPlan.repair_workflow` in canonical serialization + `plan_hash`; two deterministic builders | `domain`,`planning` | DOMAIN_MODEL §6, WORKFLOW_STATE_MODEL §2, MODULE_BOUNDARIES §4 | plan-hash-includes-workflow; builder/registry tests | G1 |
+| Workflow agreement: parent DRY_RUN/EXECUTE same `repair_workflow`; observed workflow == `ExecutablePlanData.repair_workflow` before any write; mismatch fails closed pre-mutation | `execution`,`portal` | WORKFLOW_STATE_MODEL §2, PORTAL_ROW_WORKFLOWS §5 | workflow-mismatch fail-closed tests | G2 |
+| Mandatory native trigger (`trigger_native_recalc`) + `read_financial_summary` + `verify_financial_summary` in both workflows | `portal`,`execution` | PORTAL_ROW_WORKFLOWS §3, WORKFLOW_STATE_MODEL §4 | native-verification-mandatory; missing/stale/mismatch blocks readiness | G2 (mock) / G5 (real contracts) |
+| Deterministic VERIFYING failure: native calc failed/stale/missing or summary mismatch → `WRITE_ABORTED`; crash in VERIFYING → `INTERRUPTED_NEEDS_HUMAN_REVIEW` (never auto-resumed) | `execution` | WORKFLOW_STATE_MODEL §4/§7 | VERIFYING-failure transition tests | G2/G3 |
 
 ## 6. Final consistency round (dependency purity & structural safety) — where applied
 | # | Correction | Documents | ADR | Planned test | Baseline |

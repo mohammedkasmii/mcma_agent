@@ -61,6 +61,24 @@ Tests drive only `mock_server`/fixtures; any real-portal connection fails loudly
   "READY/Verified/Prêt" label is set only after a real check passes, never from file existence or a `finally` block
   (F12, correction #7); **portal never re-acquires the lease / never imports persistence** (import contract) and on
   heartbeat loss the write context is closed (correction #5).
+- **Explicit workflow-lifecycle tests (Normal/PEC — `PORTAL_ROW_WORKFLOWS.md`):** planned tests explicitly cover:
+  - the **complete Mode Normal Ajouter lifecycle** (Ajouter → temporary row → exact `#IdRubrique` → HT/Taxe → events →
+    checkmark → `createRapportDefDet` → redraw → relocate → exact read-back);
+  - the **complete PEC pencil lifecycle** (relocate → column-7 pencil → edit mode → validated HT/TVA/vétusté → events →
+    TTC check → checkmark → `updateDevisDet` → redraw → relocate → exact read-back);
+  - **one checkmark click per row** (never a duplicate — F7);
+  - **`createRapportDefDet` only for Mode Normal** and **`updateDevisDet` only for PEC** (the cross pairing is rejected);
+  - **no Ajouter action in PEC**;
+  - **all-row exact preflight matching before PEC's first mutation** (every planned rubrique matches exactly one existing
+    row before anything is mutated);
+  - an **observed repair-workflow mismatch fails closed** before the first mutation;
+  - a **parent DRY_RUN/EXECUTE repair-workflow mismatch is rejected** at execution authorization;
+  - **`repair_workflow` participates in the canonical serialization and `plan_hash`**;
+  - **native financial calculation is required in both workflows**;
+  - a **missing, stale, or mismatched financial summary blocks readiness** (VERIFYING → WRITE_ABORTED, never READY);
+  - **charge-mutuelle/charge-sociétaire fields are absent from `RowOp` and never directly written**;
+  - **final dossier endpoints remain permanently blocked** (Enregistrer/Valider/Clôturer/GED/`#DEVISDET_Btn`/
+    `garageModifierValDevis`/PEC delete).
 - **Characterization tests** pinning current mapper/notification output before refactor (regression guard).
 - **Integration** against an **extended `mock_server`** that adds the notification surface and the row-op endpoints the
   current mock lacks (`docs/recovery/PORTAL_CONTRACT.md` §8), plus contract fixtures for each reviewed request tuple.
@@ -80,4 +98,5 @@ budget in CI and an extended budget nightly. The socket guard makes the whole su
 
 ## 5. Coverage goals (safety-first)
 100% of: the interceptor/allowlist/final-block, the identity gate, dry-run-has-no-writer, negative-TVA fail-closed, and
-charge-mutuelle-never-written. These are the invariants whose regression would be most damaging.
+the charge-mutuelle invariant in **both** halves — never-directly-written **and** mandatory native trigger + exact
+financial-summary verification before readiness. These are the invariants whose regression would be most damaging.

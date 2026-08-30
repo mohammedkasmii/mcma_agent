@@ -54,10 +54,20 @@ Garage Conventionné provides a read-only table (`#DevisDetTable`) of the garage
 After all row operations are completed and verified, the agent **must** trigger SinAuto's native financial summary calculation. The automation must **never** invent or force its own charge-mutuelle split. Neither workflow may directly write charge-mutuelle or charge-sociétaire. Both workflows must trigger SinAuto-native calculation and verify the resulting financial summary before `READY_FOR_HUMAN_REVIEW`.
 
 ### 3.1 Mode Normal
-- **Confirmed Selectors**: [UNCONFIRMED - MUST BE DISCOVERED/CONFIRMED AS G5 PRECONDITION]
-- Do **not** guess or apply PEC-only `#Devis...` selectors to Mode Normal.
-- Trigger the native calculation logic (exact function/event [UNCONFIRMED]).
-- Read and verify all relevant fields (exact selectors [UNCONFIRMED]).
+
+Evidence is classified at two distinct levels — do not conflate them:
+
+- **Recovered/observed baseline field selectors (known to exist):** `#MontantChargeMutuelle` and
+  `#MontantChargeSocietaire`. These selectors are known to exist because the baseline code directly addressed them
+  (`browser/mode_normal.py:122-144`). That historical **direct overwrite was unsafe and remains permanently
+  prohibited** — the selectors are evidence of the summary fields' existence, never a license to write them.
+- **Still UNCONFIRMED for Mode Normal — mandatory G5 preconditions:**
+  - the exact SinAuto-native function or event contract that performs the correct financial recalculation;
+  - the timing/readiness signal proving the calculation completed;
+  - the exact reliable summary read-back/verification contract.
+
+Do **not** guess these missing details. Do **not** apply PEC-only `#Devis...` selectors or
+`DevisCalculerMontantCharge()` to Mode Normal unless separately confirmed for Mode Normal.
 
 ### 3.2 Garage Conventionné / PEC
 - **Confirmed Selectors**: `#DevisTvaRecupI`, `#DevisMontantChargeMutuelle`, `#DevisMontantChargeSocietaire`.
@@ -87,3 +97,8 @@ The agent must never click, invoke, or dispatch to:
 ## 5. Failure Behavior
 
 Any mismatch between the detected and planned `repair_workflow`, any unexpected read-back, any ambiguous row match, or any failure to trigger native financial recalculation must immediately fail closed and abort the execution, preserving the dossier for human intervention.
+
+Workflow agreement is enforced at three points:
+- A parent DRY_RUN job and its EXECUTE job must reference the **same** `repair_workflow`; a mismatch is rejected at execution authorization.
+- The observed portal repair workflow must equal `ExecutablePlanData.repair_workflow` **before any write**; a mismatch fails closed **before the first mutation**.
+- `repair_workflow` is structural context only — it is never execution authorization (DRY_RUN vs EXECUTE is authorized separately).
