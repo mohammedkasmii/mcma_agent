@@ -1,0 +1,17 @@
+{
+  "phantom_endpoints_intentionally_absent": ["createDevisDet"],
+  "phantom_note": "createDevisDet appears in the legacy interceptor block list (browser/safety_interceptor.py:12) but has no counterpart in the real portal (docs/recovery/PORTAL_CONTRACT.md §8). It is intentionally not registered in the mock.",
+  "sentinel_behavior_note": "Every entry below is a meaningful sentinel in the mock: it records an attempted hit, returns a deliberate failure response, and never mutates the mission/dossier into a finalized state. Future safety tests (INC-07+) must be able to assert its hit count remains zero when the interceptor is engaged.",
+  "final_endpoints": [
+    {"endpoint_name": "garageModifierValDevis", "route": "/SinAuto_MCMA/expertise/gestiongarage/garageModifierValDevis", "method": "POST", "evidence_status": "RECOVERED_BASELINE_EVIDENCE", "eligible_for_live_allowlist": false, "classification": "PERMANENTLY_PROHIBITED"},
+    {"endpoint_name": "validerDevis", "route": "/SinAuto_MCMA/expertise/gestiongarage/validerDevis", "method": "POST", "evidence_status": "RECOVERED_BASELINE_EVIDENCE", "eligible_for_live_allowlist": false, "classification": "PERMANENTLY_PROHIBITED"},
+    {"endpoint_name": "deleteDevisDet", "route": "/SinAuto_MCMA/expertise/gestionexpert/deleteDevisDet", "method": "POST", "evidence_status": "RECOVERED_BASELINE_EVIDENCE", "eligible_for_live_allowlist": false, "classification": "PERMANENTLY_PROHIBITED"},
+    {"endpoint_name": "expertCloturerMission", "route": "/SinAuto_MCMA/expertise/gestionExpert/expertCloturerMission", "method": "POST", "evidence_status": "RECOVERED_BASELINE_EVIDENCE", "eligible_for_live_allowlist": false, "classification": "PERMANENTLY_PROHIBITED"},
+    {"endpoint_name": "cloturerMission", "route": "/SinAuto_MCMA/expertise/gestionExpert/cloturerMission", "method": "POST", "evidence_status": "RECOVERED_BASELINE_EVIDENCE", "eligible_for_live_allowlist": false, "classification": "PERMANENTLY_PROHIBITED"},
+    {"endpoint_name": "enregistrerMission", "route": "/SinAuto_MCMA/expertise/gestionExpert/enregistrerMission", "method": "POST", "evidence_status": "RECOVERED_BASELINE_EVIDENCE", "eligible_for_live_allowlist": false, "classification": "PERMANENTLY_PROHIBITED"},
+    {"endpoint_name": "expertEnregistrerMission", "route": "/SinAuto_MCMA/expertise/gestionExpert/expertEnregistrerMission", "method": "POST", "evidence_status": "RECOVERED_BASELINE_EVIDENCE", "eligible_for_live_allowlist": false, "classification": "PERMANENTLY_PROHIBITED"},
+    {"endpoint_name": "ajouterDocument", "route": "/SinAuto_MCMA/gestion/GED/ajouterDocument", "method": "POST", "evidence_status": "RECOVERED_BASELINE_EVIDENCE", "eligible_for_live_allowlist": false, "classification": "PERMANENTLY_PROHIBITED"},
+    {"endpoint_name": "deleteDocument", "route": "/SinAuto_MCMA/gestion/GED/deleteDocument", "method": "POST", "evidence_status": "RECOVERED_BASELINE_EVIDENCE", "eligible_for_live_allowlist": false, "classification": "PERMANENTLY_PROHIBITED"},
+    {"endpoint_name": "cloturerTraitement", "route": "/SinAuto_MCMA/expertise/gestionExpert/cloturerTraitement", "method": "POST", "evidence_status": "RECOVERED_BASELINE_EVIDENCE", "eligible_for_live_allowlist": false, "classification": "PERMANENTLY_PROHIBITED"}
+  ]
+}

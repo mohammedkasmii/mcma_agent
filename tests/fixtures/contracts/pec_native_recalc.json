@@ -1,0 +1,19 @@
+{
+  "workflow": "GARAGE_CONVENTIONNE",
+  "function_name": "DevisCalculerMontantCharge",
+  "execution_context": "confirmed PEC client-side JavaScript function; the recovered baseline documents no real HTTP endpoint behind it",
+  "evidence_status": "RECOVERED_BASELINE_EVIDENCE",
+  "g5_live_contract_status": "UNCONFIRMED",
+  "eligible_for_live_allowlist": false,
+  "mock_route": true,
+  "mock_http_mirror_route": "/_mock/pec/native_calculation",
+  "mock_http_mirror_note": "Invented purely for headless (non-Playwright) INC-06 test coverage of calculation/verification mechanics; it is not a confirmed live network endpoint and must never be treated as one or added to any live allowlist.",
+  "confirmed_summary_selectors": [
+    "#DevisTvaRecupI",
+    "#DevisMontantChargeMutuelle",
+    "#DevisMontantChargeSocietaire"
+  ],
+  "capability": "native_recalc",
+  "simulate_modes": ["success", "stale", "missing", "failed", "mismatch"],
+  "notes": "This entry records recovered baseline evidence only (the confirmed PEC client-side function name and its known summary selectors). It is NOT a G5-approved live contract. G5 still requires separate agency contract capture, comparison against approved evidence, approval metadata, deployed-commit binding (confirmed_row_ops), and passing safety-suite evidence before any live use (docs/implementation/RELEASE_GATES.md G5)."
+}

@@ -1,0 +1,14 @@
+{
+  "workflow": "SHARED",
+  "endpoint_name": "login_and_session_markers",
+  "evidence_status": "RECOVERED_BASELINE_EVIDENCE",
+  "g5_live_contract_status": "UNCONFIRMED",
+  "eligible_for_live_allowlist": false,
+  "mock_route": true,
+  "capability": "auth",
+  "logged_in_markers": ["#formRecherche", "#ReferenceCie", "#Matricule", "a[href*='logout']"],
+  "logged_out_markers": ["input[name='login']", "#login", "#password", "expert_.phtml"],
+  "login_route": "/SinAuto_MCMA/front/Login/login",
+  "mission_search_route": "/SinAuto_MCMA/expertise/frontexpert/",
+  "notes": "docs/recovery/PORTAL_CONTRACT.md §2/§3; groundwork for INC-08/09, no capability code exists yet. Recorded as recovered baseline evidence, not a G5-approved contract."
+}

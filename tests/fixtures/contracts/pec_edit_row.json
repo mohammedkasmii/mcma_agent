@@ -1,0 +1,23 @@
+{
+  "workflow": "GARAGE_CONVENTIONNE",
+  "endpoint_name": "updateDevisDet",
+  "observed_route": "/SinAuto_MCMA/expertise/gestionexpert/updateDevisDet",
+  "method": "POST",
+  "evidence_status": "RECOVERED_BASELINE_EVIDENCE",
+  "g5_live_contract_status": "UNCONFIRMED",
+  "eligible_for_live_allowlist": false,
+  "mock_route": true,
+  "capability": "row_write",
+  "operation_type": "edit_row",
+  "payload_shape": {
+    "IdDevisDet": "int (exact match required against exactly one preflighted row; zero/multiple/unknown fails closed)",
+    "MontantHTValide": "decimal-string",
+    "TaxeValide": "decimal-string",
+    "MontantTTCValide": "decimal-string",
+    "TauxVetusteValide": "decimal-string",
+    "MontantVetusteValide": "decimal-string",
+    "SubmissionNonce": "string (one per checkmark click; duplicate submission fails closed)"
+  },
+  "prohibited_payload_fields": ["DevisMontantChargeMutuelle", "DevisMontantChargeSocietaire"],
+  "notes": "This entry records recovered baseline evidence only (the endpoint name and shape the legacy automation drove; browser/mode_conventionne.py, mirrored offline by mock_server.py for INC-06 tests). It is NOT a G5-approved live contract. G5 still requires separate agency contract capture, comparison against approved evidence, approval metadata, deployed-commit binding (confirmed_row_ops), and passing safety-suite evidence before any live use (docs/implementation/RELEASE_GATES.md G5)."
+}

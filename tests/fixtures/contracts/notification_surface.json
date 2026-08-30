@@ -1,0 +1,15 @@
+{
+  "workflow": "SHARED",
+  "endpoint_name": "getAlerte",
+  "observed_route": "/SinAuto_MCMA/expertise/notification/getAlerte/CodeAlerte/{code}",
+  "method": "POST",
+  "evidence_status": "RECOVERED_BASELINE_EVIDENCE",
+  "g5_live_contract_status": "UNCONFIRMED",
+  "eligible_for_live_allowlist": false,
+  "mock_route": true,
+  "capability": "read",
+  "operation_type": "notification_read",
+  "payload_shape": {"length": "string(int)", "iDisplayLength": "string(int)"},
+  "response_shape": {"data": "list", "iTotalRecords": "int", "iTotalDisplayRecords": "int"},
+  "notes": "Read-only surface (docs/recovery/PORTAL_CONTRACT.md §7); recorded as recovered baseline evidence, not a G5-approved contract of any kind."
+}

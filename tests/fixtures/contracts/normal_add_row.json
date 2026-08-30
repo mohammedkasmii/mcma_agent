@@ -1,0 +1,23 @@
+{
+  "workflow": "MODE_NORMAL",
+  "endpoint_name": "createRapportDefDet",
+  "observed_route": "/SinAuto_MCMA/expertise/gestionExpert/createRapportDefDet",
+  "method": "POST",
+  "evidence_status": "RECOVERED_BASELINE_EVIDENCE",
+  "g5_live_contract_status": "UNCONFIRMED",
+  "eligible_for_live_allowlist": false,
+  "mock_route": true,
+  "capability": "row_write",
+  "operation_type": "add_row",
+  "payload_shape": {
+    "IdRubrique": "string",
+    "MontantHT": "decimal-string",
+    "Taxe": "decimal-string",
+    "MontantTTC": "decimal-string",
+    "TauxVetuste": "decimal-string",
+    "MontantVetuste": "decimal-string",
+    "TempRowId": "string (client-generated, one per Ajouter click; duplicate submission fails closed)"
+  },
+  "prohibited_payload_fields": ["MontantChargeMutuelle", "MontantChargeSocietaire"],
+  "notes": "This entry records recovered baseline evidence only (the endpoint name and shape the legacy automation drove; browser/mode_normal.py, mirrored offline by mock_server.py for INC-06 tests). It is NOT a G5-approved live contract. G5 still requires separate agency contract capture, comparison against approved evidence, approval metadata, deployed-commit binding (confirmed_row_ops), and passing safety-suite evidence before any live use (docs/implementation/RELEASE_GATES.md G5)."
+}

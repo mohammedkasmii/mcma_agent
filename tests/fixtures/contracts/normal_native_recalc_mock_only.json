@@ -1,0 +1,17 @@
+{
+  "workflow": "MODE_NORMAL",
+  "evidence_status": "UNCONFIRMED_LIVE_CONTRACT",
+  "g5_live_contract_status": "UNCONFIRMED",
+  "eligible_for_live_allowlist": false,
+  "mock_only": true,
+  "mock_route": true,
+  "live_selector": null,
+  "live_endpoint": null,
+  "mock_http_route": "/_mock/normal/native_calculation",
+  "known_summary_field_selectors_recovered_baseline": [
+    "#MontantChargeMutuelle",
+    "#MontantChargeSocietaire"
+  ],
+  "simulate_modes": ["success", "stale", "missing", "failed", "mismatch"],
+  "notes": "The exact SinAuto-native trigger, readiness signal, and summary read-back contract for Mode Normal remain UNCONFIRMED and are a mandatory G5 precondition (docs/architecture/PORTAL_ROW_WORKFLOWS.md §3.1). This mock-only hook exists solely for offline INC-06 test coverage of calculation/verification mechanics. It must never be described as a confirmed live selector or endpoint, must never enter any live allowlist, and PEC-only selectors/functions (#Devis..., DevisCalculerMontantCharge) must never be applied to Mode Normal."
+}
