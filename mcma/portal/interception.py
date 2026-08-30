@@ -20,6 +20,7 @@ created from that context are covered by the same policy automatically
 
 from __future__ import annotations
 
+import traceback
 from typing import TYPE_CHECKING, Sequence
 
 from mcma.portal.canonical import canonicalize_request
@@ -74,16 +75,43 @@ def _make_route_handler(contracts: Sequence[RouteContract], allowed_host: str):
     fall-through continue()."""
 
     async def handler(route: "Route") -> None:
+        request = route.request
+        # --- TEMPORARY CI-ONLY DIAGNOSTICS (investigating CI run 33316988633;
+        # 5/5 amendment-7 proofs failing with net::ERR_FAILED on an ALLOWED
+        # navigation). Capture-print-reraise only: this does not change what
+        # exception propagates or when, so it does not change pass/fail
+        # outcomes -- it only makes the failure visible in CI logs. Remove
+        # once the confirmed root cause is fixed.
+        print(
+            f"[DIAG intercept] url={request.url!r} method={request.method!r} "
+            f"resource_type={getattr(request, 'resource_type', None)!r}"
+        )
         try:
-            canonical = _canonical_or_none(route.request)
+            canonical = _canonical_or_none(request)
             decision = evaluate_request(canonical, contracts, allowed_host)
         except Exception:
+            print(f"[DIAG intercept] EXCEPTION during descriptor/decision for {request.url!r}:")
+            traceback.print_exc()
             await route.abort()
             return
+        print(f"[DIAG intercept] canonical={canonical!r} decision={decision!r} url={request.url!r}")
         if decision is Decision.ALLOW:
-            await route.continue_()
+            try:
+                await route.continue_()
+                print(f"[DIAG intercept] continue_() returned normally for {request.url!r}")
+            except Exception:
+                print(f"[DIAG intercept] continue_() RAISED for {request.url!r}:")
+                traceback.print_exc()
+                raise
         else:
-            await route.abort()
+            try:
+                await route.abort()
+                print(f"[DIAG intercept] abort() returned normally for {request.url!r}")
+            except Exception:
+                print(f"[DIAG intercept] abort() RAISED for {request.url!r}:")
+                traceback.print_exc()
+                raise
+        # --- END TEMPORARY DIAGNOSTICS ---
 
     return handler
 
