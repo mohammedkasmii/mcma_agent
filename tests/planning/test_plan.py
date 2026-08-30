@@ -210,11 +210,59 @@ def test_negative_subtotal_or_depreciation_fails_closed():
         _build(raw)
 
 def test_proposed_plan_with_zero_steps_not_writeable():
-    # Structural invariant: A ProposedPlan with zero steps must never be writeable
     identity = ExpectedIdentity(registration=RegistrationPlate("11A11"), id_sinistre=IdSinistre("1"))
     from mcma.planning.plan import Provenance
     prov = Provenance(input_hash="1", plan_hash="2", builder_version="3")
-    # Even directly constructed, it's not writeable if it has 0 steps (and we enforce this by adding a review reason or throwing)
-    # The requirement: "A ProposedPlan with zero steps must never be writeable, including direct construction."
-    # So we should modify ProposedPlan.__post_init__ or property
-    pass
+
+    plan = ProposedPlan(
+        expected_identity=identity,
+        steps=(),
+        needs_review=(),
+        provenance=prov,
+    )
+    assert plan.is_writeable is False
+
+def test_rowop_source_pointers_invariants():
+    from mcma.core.money import Money
+    from mcma.domain.values import RubriqueId
+    with pytest.raises(ValueError, match="requires at least one source pointer"):
+        RowOp(RubriqueId("1"), Money.ZERO, Money.ZERO, Money.ZERO, source_pointers=())
+    with pytest.raises(ValueError, match="cannot be empty"):
+        RowOp(RubriqueId("1"), Money.ZERO, Money.ZERO, Money.ZERO, source_pointers=("",))
+    op = RowOp(RubriqueId("1"), Money.ZERO, Money.ZERO, Money.ZERO, source_pointers=("ptr",))
+    assert op.source_pointers == ("ptr",)
+
+def test_explicit_rubrique_versus_semantic_classification():
+    """Explicit ID alone cannot provide missing semantic evidence and conflicting explicit ID fails closed."""
+    # original ordinary part + explicit 4 -> NeedsReview
+    raw = _input()
+    line = raw["chiffrages"][0]["lignes_pieces"][0]
+    line["is_original"] = True
+    line["mcma_rubric_id"] = "4"
+    plan = _build(raw)
+    assert not plan.is_writeable
+    assert any(r.reason.value == "UNKNOWN_RUBRIC_ID" for r in plan.needs_review)
+
+    # original ordinary part + explicit 13 -> NeedsReview
+    raw["chiffrages"][0]["lignes_pieces"][0]["mcma_rubric_id"] = "13"
+    plan = _build(raw)
+    assert not plan.is_writeable
+
+    # original ordinary part + explicit 1 -> accepted
+    raw["chiffrages"][0]["lignes_pieces"][0]["mcma_rubric_id"] = "1"
+    plan = _build(raw)
+    assert plan.is_writeable
+
+    # corroborated pare-brise replacement + explicit 22 -> accepted
+    raw = _input()
+    line = raw["chiffrages"][0]["lignes_pieces"][0]
+    line["item_name"] = "pare-brise"
+    line["operation_type"] = "remplacement"
+    line["mcma_rubric_id"] = "22"
+    plan = _build(raw)
+    assert plan.is_writeable
+
+    # pare-brise replacement + explicit 20 -> NeedsReview
+    raw["chiffrages"][0]["lignes_pieces"][0]["mcma_rubric_id"] = "20"
+    plan = _build(raw)
+    assert not plan.is_writeable

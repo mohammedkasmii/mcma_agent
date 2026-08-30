@@ -70,9 +70,11 @@ timeout --signal=TERM --kill-after=30 "$OVERALL_TIMEOUT" \
     LANG="C.UTF-8" \
     MCMA_NETNS_NAME="$NS" \
     PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME_DIR/.cache/ms-playwright}" \
-  bash -c "
-    set -euo pipefail
-    [[ \"\$(id -u)\" -ne 0 ]] || { echo 'FATAL: pytest would run as root'; exit 16; }
-    cd '$REPO_ROOT'
-    exec '$PYTHON_BIN' -m pytest tests/ -v
-  "
+    bash -c "
+      set -euo pipefail
+      [[ \"\$(id -u)\" -ne 0 ]] || { echo 'FATAL: pytest would run as root'; exit 16; }
+      cd '$REPO_ROOT'
+      '$PYTHON_BIN' -m pytest tests/ -v
+      echo 'Running import-linter (lint-imports)'
+      '$PYTHON_BIN' -m uv run --frozen lint-imports
+    "

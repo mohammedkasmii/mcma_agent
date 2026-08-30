@@ -11,10 +11,20 @@ from mcma.domain.values import RubriqueId
 
 
 def test_colle_25_kit_26_kit_vitre_27():
-    assert classify_colle("colle parebrise") == RubriqueId("25")
-    assert classify_colle("mastic") == RubriqueId("25")
-    assert classify_colle("kit colle pare-brise") == RubriqueId("26")
-    assert classify_colle("KIT COLLE VITRE") == RubriqueId("27")
+    assert classify_colle("colle parebrise") == Mapped(RubriqueId("25"))
+    assert classify_colle("mastic") == Mapped(RubriqueId("25"))
+    assert classify_colle("kit colle pare-brise") == Mapped(RubriqueId("26"))
+    assert classify_colle("KIT COLLE VITRE") == Mapped(RubriqueId("27"))
+    assert classify_colle("kit colle lunette arriere") == Mapped(RubriqueId("26"))
+
+    # generic “kit colle” → NeedsReview
+    result = classify_colle("kit colle")
+    assert isinstance(result, NeedsReview)
+
+    # conflicting kit component → NeedsReview
+    result = classify_colle("kit colle pare-brise vitre")
+    assert isinstance(result, NeedsReview)
+
     assert classify_colle("aile avant") is None
     assert classify_colle("") is None
 

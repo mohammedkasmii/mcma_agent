@@ -253,6 +253,7 @@ def _family_from_structured_val(val: str) -> Optional[LabourFamily]:
 def classify_labour_line(
     operation_type: Optional[str],
     labor_type_id: Optional[str],
+    item_type: Optional[str],
     text: Optional[str]
 ) -> MapResult:
     """Structured field decides; free text may only VALIDATE, never override.
@@ -263,16 +264,24 @@ def classify_labour_line(
 
     has_structured_val = False
     structured_families = set()
+    unknown_structured = False
     for val in (operation_type, labor_type_id):
         if val and str(val).strip():
             has_structured_val = True
             fam = _family_from_structured_val(val)
             if fam:
                 structured_families.add(fam)
+            else:
+                unknown_structured = True
 
-    if has_structured_val:
+    is_structured_item = normalize_text(item_type) in ("labor", "labour")
+
+    if unknown_structured:
+        return NeedsReview(ReasonCode.UNKNOWN_LABOUR, detail=f"unknown structured fields: {operation_type=} {labor_type_id=}")
+
+    if is_structured_item or has_structured_val:
         if not structured_families:
-            return NeedsReview(ReasonCode.UNKNOWN_LABOUR, detail=f"unknown structured fields: {operation_type=} {labor_type_id=}")
+            return NeedsReview(ReasonCode.UNKNOWN_LABOUR, detail="item_type=labour but no valid family in operation/labor fields")
         if len(structured_families) > 1:
             return NeedsReview(
                 ReasonCode.CONTRADICTORY_LABOUR,
@@ -302,15 +311,23 @@ def classify_labour_line(
 # Colle / kits (25/26/27) and out-of-catalogue (B.4)
 # ---------------------------------------------------------------------------
 
-def classify_colle(description: Optional[str]) -> Optional[RubriqueId]:
+def classify_colle(description: Optional[str]) -> Optional[MapResult]:
     # Word-boundary matching: 'collecteur'/'recollee' must never classify as
     # glue (G1 review H6).
     words = set(normalize_text(description).split())
     if not words or ("colle" not in words and "mastic" not in words):
         return None
     if "kit" in words:
-        return RubriqueId("27") if "vitre" in words else RubriqueId("26")
-    return RubriqueId("25")
+        components = _components_in(normalize_text(description))
+        if not components:
+            return NeedsReview(ReasonCode.AMBIGUOUS_GLASS, detail="kit colle without component")
+        if len(components) > 1:
+            return NeedsReview(ReasonCode.AMBIGUOUS_GLASS, detail="kit colle with conflicting components")
+        comp = next(iter(components))
+        if comp is GlassComponent.VITRE:
+            return Mapped(RubriqueId("27"))
+        return Mapped(RubriqueId("26"))
+    return Mapped(RubriqueId("25"))
 
 
 _PEINTURE_MATERIAL_PHRASES = (

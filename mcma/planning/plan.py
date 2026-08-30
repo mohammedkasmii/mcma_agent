@@ -21,7 +21,7 @@ from typing import Optional, Sequence, Tuple
 
 from mcma.core.money import Money
 from mcma.domain.normalize import normalize_text
-from mcma.domain.results import Mapped, NeedsReview, tva_allocation_result
+from mcma.domain.results import Mapped, NeedsReview, ReasonCode, tva_allocation_result
 from mcma.domain.rubriques import (
     classify_colle,
     classify_glass_line,
@@ -234,34 +234,40 @@ def _select_chiffrage(chiffrages):
 def _classify_piece(line):
     """Classification order: explicit id → structured labour → colle → glass →
     ordinary part (origin only)."""
-    if line.mcma_rubric_id:
-        result = resolve_explicit_rubrique(line.mcma_rubric_id)
-        if isinstance(result, NeedsReview):
-            return result
-        # Explicit ID cannot silently override ordinary part if not valid for it.
-        # "An ordinary part cannot use explicit mcma_rubric_id to select 4-6, 10-11 or 13-15."
-        is_ordinary_rubric = result.value.value in {"1", "2", "3"}
-        is_mechanical_electrical_painting = result.value.value in {"4", "5", "6", "10", "11", "13", "14", "15"}
-        if is_mechanical_electrical_painting:
-            # We must fail closed if this is an ordinary part, but how do we know?
-            # If it's not glass, colle, or labour, it's an ordinary part.
-            pass
-        return result
     if line.is_labour:
-        return classify_labour_line(
+        sem_result = classify_labour_line(
             operation_type=line.operation_type,
             labor_type_id=line.labor_type_id,
+            item_type=line.item_type,
             text=f"{line.item_name} {line.notes}",
         )
-    colle = classify_colle(line.item_name)
-    if colle is not None:
-        return Mapped(colle)
-    peinture = classify_peinture_materials(line.item_name)
-    if peinture is not None:
-        return Mapped(peinture)
-    if has_glass_signal(f"{line.item_name} {line.operation_type or ''} {line.notes}"):
-        return classify_glass_line(line.item_name, line.operation_type or line.notes)
-    return classify_ordinary_part(part_type=line.part_type, is_original=line.is_original)
+    else:
+        colle = classify_colle(line.item_name)
+        if colle is not None:
+            sem_result = colle
+        else:
+            peinture = classify_peinture_materials(line.item_name)
+            if peinture is not None:
+                sem_result = Mapped(peinture)
+            elif has_glass_signal(f"{line.item_name} {line.operation_type or ''} {line.notes}"):
+                sem_result = classify_glass_line(line.item_name, line.operation_type or line.notes)
+            else:
+                sem_result = classify_ordinary_part(part_type=line.part_type, is_original=line.is_original)
+
+    if line.mcma_rubric_id:
+        explicit_result = resolve_explicit_rubrique(line.mcma_rubric_id)
+        if isinstance(explicit_result, NeedsReview):
+            return explicit_result
+        if isinstance(sem_result, NeedsReview):
+            return sem_result
+        if explicit_result.value != sem_result.value:
+            return NeedsReview(
+                ReasonCode.UNKNOWN_RUBRIC_ID,
+                detail=f"explicit rubric conflicts with semantic classification (explicit={explicit_result.value.value}, semantic={sem_result.value.value})"
+            )
+        return explicit_result
+
+    return sem_result
 
 
 def build_mission_normal_plan(typed_input) -> ProposedPlan:
@@ -329,6 +335,7 @@ def build_mission_normal_plan(typed_input) -> ProposedPlan:
         result = classify_labour_line(
             operation_type=line.operation_type,
             labor_type_id=line.labor_type_id,
+            item_type="labor", # lines from lignes_mo intrinsically have item_type="labor"
             text=f"{line.operation_type or ''} {line.notes}",
         )
         if isinstance(result, NeedsReview):

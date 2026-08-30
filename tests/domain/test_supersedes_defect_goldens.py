@@ -43,7 +43,7 @@ def test_domain_supersedes_defect_goldens():
     assert classify_glass_line("PARE-BRISE", "remplacement") == Mapped(RubriqueId("22"))
 
     # F15: 'module electronique' never classifies as labour via 'mo' substring.
-    result = classify_labour_line(operation_type=None, labor_type_id=None, text="module electronique")
+    result = classify_labour_line(operation_type=None, labor_type_id=None, item_type=None, text="module electronique")
     assert isinstance(result, NeedsReview)
     assert result.reason is ReasonCode.UNKNOWN_LABOUR
 
