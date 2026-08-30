@@ -1,0 +1,15 @@
+{
+  "workflow": "SHARED",
+  "endpoint_name": "mission_index_navigation",
+  "purpose": "The GET route the INC-09A real-Chromium proofs navigate to before searching/scraping identity.",
+  "observed_route": "/SinAuto_MCMA/expertise/gestionexpert/index",
+  "method": "GET",
+  "evidence_status": "MOCK_ONLY",
+  "g5_live_contract_status": "UNCONFIRMED",
+  "eligible_for_live_allowlist": false,
+  "mock_only": true,
+  "mock_route": true,
+  "capability": "read",
+  "operation_type": "mission_page",
+  "notes": "docs/recovery/PORTAL_CONTRACT.md attests a 'Mission open link' as a CLICKED selector pattern (a[href*='gotoMission'], a[title*='Mission expertise'], div.text-blue a, a.btn-primary -- PORTAL_CONTRACT.md line 27), never a literal navigable path. No line in PORTAL_CONTRACT.md cites '/SinAuto_MCMA/expertise/gestionexpert/index' as a confirmed real-portal route -- it is an INC-06 mock-server convention only. Classified MOCK_ONLY/UNCONFIRMED for that reason, same as INC-08's login_page_navigation_mock_only.json and read_search_page_navigation_mock_only.json."
+}

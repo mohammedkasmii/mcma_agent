@@ -44,16 +44,19 @@ from mcma.portal.mission import (
     search_exactly_one,
 )
 from mcma.portal.session import open_guarded_context
+from mission_test_support import (
+    ALLOWED_HOST,
+    MISSION_INDEX_CONTRACT,
+    MISSION_INDEX_WORKFLOW_QUERY_CONTRACT,
+    READ_LIST_MISSIONS_CONTRACT,
+)
 
-# Reuses the SAME host every contract in tests/portal/capabilities/
-# capabilities_test_support.py is built for (the INC-08 CI incident: two
-# independently-defined host literals silently diverging). This file adds
-# its own contracts below rather than importing that module's private
-# constants across a test directory (the same anti-collision discipline
-# applied throughout INC-06/07/08).
-PROOF_HOST = "127.0.0.1"
-PROOF_PORT = 8080
-ALLOWED_HOST = f"{PROOF_HOST}:{PROOF_PORT}"
+# ALLOWED_HOST is imported, never redefined here -- the CI run 33317487676
+# lesson (INC-08): two independently-defined host literals silently
+# diverging made every contract fail to match. PROOF_HOST/PROOF_PORT are
+# derived FROM the single shared value, not the other way around.
+PROOF_HOST, _proof_port_str = ALLOWED_HOST.split(":", 1)
+PROOF_PORT = int(_proof_port_str)
 BASE_URL = f"http://{ALLOWED_HOST}"
 
 pytestmark = [pytest.mark.egress_proof, pytest.mark.requires_egress_isolation]
@@ -106,10 +109,12 @@ def test_search_zero_candidates_fails_closed_with_matching_plate_as_positive_con
 async def _search_zero_then_matching():
     from playwright.async_api import async_playwright
 
-    contracts = ()  # no interception contract needed: page.evaluate's fetch
-    # target (listeMissions) is exercised directly; this proof is about
-    # search_exactly_one's own logic against real network responses, not
-    # about interception (already proven in INC-07/08).
+    # A guarded context installed with an EMPTY contract tuple denies
+    # EVERYTHING, including the page load itself (CI run 33319654003) -- a
+    # test cannot "opt out" of interception by declaring itself not about
+    # the guard. This proof both navigates (needs MISSION_INDEX_CONTRACT)
+    # and fetches listeMissions (needs READ_LIST_MISSIONS_CONTRACT).
+    contracts = (MISSION_INDEX_CONTRACT, READ_LIST_MISSIONS_CONTRACT)
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
@@ -146,10 +151,14 @@ def test_workflow_detection_returns_normal_and_conventionne_correctly(live_mock_
 async def _detect_both_directions():
     from playwright.async_api import async_playwright
 
+    # Both ?workflow=normal and ?workflow=conventionne canonicalize to the
+    # SAME query_fields={"workflow"} shape (evaluate_request compares field
+    # NAMES, not values) -- one contract covers both navigations below.
+    contracts = (MISSION_INDEX_WORKFLOW_QUERY_CONTRACT,)
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            context = await open_guarded_context(browser, (), ALLOWED_HOST)
+            context = await open_guarded_context(browser, contracts, ALLOWED_HOST)
             page = await context.new_page()
 
             await page.goto(f"{BASE_URL}/SinAuto_MCMA/expertise/gestionexpert/index?workflow=normal")
@@ -177,10 +186,11 @@ def test_identity_verifies_on_match_and_fails_closed_on_mismatch(live_mock_serve
 async def _identity_match_then_mismatch():
     from playwright.async_api import async_playwright
 
+    contracts = (MISSION_INDEX_CONTRACT,)
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            context = await open_guarded_context(browser, (), ALLOWED_HOST)
+            context = await open_guarded_context(browser, contracts, ALLOWED_HOST)
             page = await context.new_page()
             await page.goto(f"{BASE_URL}/SinAuto_MCMA/expertise/gestionexpert/index")
 

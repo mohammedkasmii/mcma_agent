@@ -1,0 +1,16 @@
+{
+  "workflow": "SHARED",
+  "endpoint_name": "mission_index_workflow_query",
+  "purpose": "The GET route+query variant used only to force the mock into rendering exactly one workflow's DOM section, for the INC-09A workflow-detection proof.",
+  "observed_route": "/SinAuto_MCMA/expertise/gestionexpert/index",
+  "method": "GET",
+  "query_fields": ["workflow"],
+  "evidence_status": "MOCK_ONLY",
+  "g5_live_contract_status": "UNCONFIRMED",
+  "eligible_for_live_allowlist": false,
+  "mock_only": true,
+  "mock_route": true,
+  "capability": "read",
+  "operation_type": "mission_page_workflow_probe",
+  "notes": "The ?workflow= query parameter is INC-09A mock-only test infrastructure (mock_server.py's _render_mission_page docstring), invented for this increment's own offline testing -- it is definitionally not a confirmed live contract of any kind. Distinct RouteContract from mission_index_navigation_mock_only.json because evaluate_request compares query_fields by exact set equality: a bare '/index' request and an '/index?workflow=...' request canonicalize to different query_fields and therefore need two separate reviewed contracts."
+}
