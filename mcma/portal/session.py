@@ -10,7 +10,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Sequence
 
 from mcma.portal.contracts import RouteContract
-from mcma.portal.interception import hardened_context_options, install_portal_guard
+from mcma.portal.interception import (
+    WriterPolicyController,
+    hardened_context_options,
+    install_phased_portal_guard,
+    install_portal_guard,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from playwright.async_api import Browser, BrowserContext
@@ -36,4 +41,24 @@ async def open_guarded_context(
     options = hardened_context_options(context_options)
     context = await browser.new_context(**options)
     await install_portal_guard(context, frozen_contracts, allowed_host)
+    return context
+
+
+async def open_guarded_context_for_writer(
+    browser: "Browser",
+    controller: WriterPolicyController,
+    allowed_host: str,
+    context_options: dict | None = None,
+) -> "BrowserContext":
+    """INC-09B: opens one BrowserContext for mcma.portal.writer, hardens
+    its creation options, and installs the phased (explicit-state-machine)
+    guard bound to an ALREADY-CONSTRUCTED WriterPolicyController -- the
+    controller (and the validated/frozen write-contract tuple it holds)
+    must exist before this is ever called, since amendment #1 requires the
+    complete row_write/native_recalc contract tuple to be validated and
+    frozen before any BrowserContext is created. `open_guarded_context`
+    above is completely unaffected by this addition."""
+    options = hardened_context_options(context_options)
+    context = await browser.new_context(**options)
+    await install_phased_portal_guard(context, controller, allowed_host)
     return context

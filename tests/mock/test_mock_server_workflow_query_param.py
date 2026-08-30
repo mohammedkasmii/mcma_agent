@@ -46,14 +46,52 @@ def test_workflow_conventionne_removes_normal_section_entirely(client):
     assert 'id="sectionModeNormal"' not in html
 
 
-def test_deep_link_route_also_accepts_the_workflow_parameter(client):
+def test_deep_link_route_renders_the_synthetic_missions_own_workflow_and_ignores_workflow_param(client):
+    """INC-09B amendment #2 (blocker #2) REQUIRED change, disclosed here:
+    the deep-link route no longer accepts a `?workflow=` override at all
+    (unlike the bare /index route above, whose own override is unchanged
+    09A test infrastructure) -- the rendered workflow is now looked up
+    deterministically from which synthetic mission the id in the URL
+    names. The id in this route is id_mission (532805 for the PEC
+    mission), not id_sinistre (534660) -- see get_mission_deep_link's
+    docstring for exactly why. A `?workflow=` query string is accepted but
+    has no effect, since this route does not read it at all."""
     resp = client.get(
-        "/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/534660/rubrique/gestionexpert-index",
+        "/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/532805/rubrique/gestionexpert-index",
         params={"workflow": "normal"},
+    )
+    html = resp.text
+    assert _has_element(html, "DevisDetTableVal")
+    assert not _has_element(html, "tableRapportDet")
+
+
+def test_deep_link_route_with_the_synthetic_normal_mission_id_renders_normal_only(client):
+    resp = client.get(
+        "/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/612001/rubrique/gestionexpert-index"
     )
     html = resp.text
     assert _has_element(html, "tableRapportDet")
     assert not _has_element(html, "DevisDetTableVal")
+
+
+def test_deep_link_route_with_unrecognized_id_returns_404_with_no_identity_or_workflow_dom(client):
+    resp = client.get(
+        "/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/999999/rubrique/gestionexpert-index"
+    )
+    assert resp.status_code == 404
+    html = resp.text
+    assert 'id="IdMission"' not in html
+    assert 'id="IdSinistre__I"' not in html
+    assert 'id="MatriculeVeh"' not in html
+    assert not _has_element(html, "tableRapportDet")
+    assert not _has_element(html, "DevisDetTableVal")
+
+
+def test_deep_link_route_with_non_integer_id_returns_404(client):
+    resp = client.get(
+        "/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/not-a-number/rubrique/gestionexpert-index"
+    )
+    assert resp.status_code == 404
 
 
 def test_matricule_veh_field_present_with_expected_value(client):

@@ -1,0 +1,27 @@
+{
+  "workflow": "GARAGE_CONVENTIONNE",
+  "purpose": "The nine PORTAL_ROW_WORKFLOWS.md 3.2 financial-summary fields VerifiedMissionWriter reads/verifies after triggering DevisCalculerMontantCharge().",
+  "evidence_status": "MIXED -- see confirmed_fields/mock_only_fields below",
+  "g5_live_contract_status": "UNCONFIRMED",
+  "eligible_for_live_allowlist": false,
+  "mock_only": true,
+  "capability": "native_recalc",
+  "confirmed_fields": {
+    "montant_charge_mutuelle": "#DevisMontantChargeMutuelle -- CONFIRMED_RECOVERED_PEC_DOM_EVIDENCE (browser/mode_normal.py:122-144 historically addressed it directly; that direct write is permanently prohibited, the selector's existence is the recovered evidence)",
+    "montant_charge_societaire": "#DevisMontantChargeSocietaire -- CONFIRMED_RECOVERED_PEC_DOM_EVIDENCE, same basis"
+  },
+  "mock_only_fields": {
+    "total_tva": "[data-mock-only-total-tva] -- PORTAL_ROW_WORKFLOWS.md 3.2 names \"total TVA\" as a required read/verify field but no confirmed live selector exists anywhere in recovered evidence",
+    "total_ttc": "[data-mock-only-total-ttc] -- named \"total TTC\", no confirmed selector",
+    "vetuste": "[data-mock-only-vetuste-total] -- named \"vétusté\", no confirmed selector",
+    "franchise": "[data-mock-only-franchise] -- named \"franchise\", no confirmed selector",
+    "remise": "[data-mock-only-remise] -- named \"remise\", no confirmed selector",
+    "montant_arrete": "[data-mock-only-montant-arrete] -- named \"montant arrêté\", no confirmed selector",
+    "base_indemnite": "[data-mock-only-base-indemnite] -- named \"base indemnité\", no confirmed selector"
+  },
+  "not_a_summary_field": {
+    "DevisTvaRecupI": "#DevisTvaRecupI is confirmed (PORTAL_ROW_WORKFLOWS.md 3.2) but is an INPUT TOGGLE the trigger step may dispatch a change event on, not a read/verify summary value -- excluded from FinancialSummary for that reason."
+  },
+  "verification_adapter_note": "For this strictly loopback-only INC-09B implementation, mock_server.py's /_mock/pec/native_calculation response carries an `expected` FinancialSummary (all nine fields) and a `calculation_version`, computed with exact Decimal/HALF_UP arithmetic -- this arithmetic relating the nine fields is ITSELF mock-only/unconfirmed, never claimed as the real portal's formula. VerifiedMissionWriter.verify_financial_summary() compares that `expected` value against an INDEPENDENT, later, fresh DOM read (never the same value read twice). A non-loopback/live version of this mechanism does not exist and is not implemented -- mcma.portal.writer._require_loopback_host structurally refuses any non-loopback allowed_host before a browser is ever created, so this code cannot run against a real portal host at all. Live selector/readiness/response-contract confirmation for the seven mock_only fields remains a G5 blocker.",
+  "notes": "This entry records the exact per-field evidence classification for FinancialSummary (mcma/portal/writer.py). It is NOT a G5-approved live contract for any field. G5 still requires separate agency contract capture, comparison against approved evidence, approval metadata, deployed-commit binding, and passing safety-suite evidence before any live use (docs/implementation/RELEASE_GATES.md G5)."
+}

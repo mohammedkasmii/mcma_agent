@@ -22,6 +22,7 @@ Access via:
     http://127.0.0.1:8080/SinAuto_MCMA/expertise/gestionexpert/index
 """
 
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from urllib.parse import parse_qsl
 
 import uvicorn
@@ -176,10 +177,91 @@ def _to_float(value, default=0.0):
         return default
 
 
+_CENT = Decimal("0.01")
+
+
+def _to_decimal(value, default: str = "0.00") -> Decimal:
+    """Exact Decimal/HALF_UP parsing -- never float/parseFloat-equivalent
+    arithmetic for a monetary value (mirrors mcma.core.money.Money's own
+    convention). An unparseable/absent value defaults rather than raising:
+    the mock's calculation inputs are always caller-supplied strings from
+    an editable summary field, and a blank field means "zero", not a
+    request failure."""
+    try:
+        return Decimal(str(value)).quantize(_CENT, rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal(default)
+
+
+# INC-09B amendment #2: the nine PORTAL_ROW_WORKFLOWS.md 3.2 fields. The
+# first two are CONFIRMED_RECOVERED_PEC_DOM_EVIDENCE (#DevisMontant
+# ChargeMutuelle/#DevisMontantChargeSocietaire); the remaining seven are
+# MOCK_ONLY/UNCONFIRMED -- see
+# tests/fixtures/contracts/pec_financial_summary_mock_only.json. This
+# mock's own arithmetic relating them is ALSO MOCK_ONLY/UNCONFIRMED: it is
+# a plausible test fixture, never claimed as the real portal's formula.
+def _compute_pec_financial_summary(payload: dict) -> dict:
+    total_ttc = _to_decimal(payload.get("total_ttc"))
+    franchise = _to_decimal(payload.get("franchise"))
+    vetuste = _to_decimal(payload.get("vetuste"))
+    remise = _to_decimal(payload.get("remise"))
+    part_resp = _to_decimal(payload.get("part_resp"), "100.00")
+    total_tva = _to_decimal(payload.get("total_tva"))
+
+    charge_societaire = ((franchise * part_resp / Decimal("100")) + vetuste).quantize(
+        _CENT, rounding=ROUND_HALF_UP
+    )
+    charge_mutuelle_raw = total_ttc - charge_societaire - remise
+    charge_mutuelle = (charge_mutuelle_raw if charge_mutuelle_raw > 0 else Decimal("0.00")).quantize(
+        _CENT, rounding=ROUND_HALF_UP
+    )
+    base_indemnite = (total_ttc - vetuste).quantize(_CENT, rounding=ROUND_HALF_UP)
+    montant_arrete_raw = base_indemnite - franchise - remise
+    montant_arrete = (montant_arrete_raw if montant_arrete_raw > 0 else Decimal("0.00")).quantize(
+        _CENT, rounding=ROUND_HALF_UP
+    )
+
+    return {
+        "montant_charge_mutuelle": str(charge_mutuelle),
+        "montant_charge_societaire": str(charge_societaire),
+        "total_tva": str(total_tva),
+        "total_ttc": str(total_ttc),
+        "vetuste": str(vetuste),
+        "franchise": str(franchise),
+        "remise": str(remise),
+        "montant_arrete": str(montant_arrete),
+        "base_indemnite": str(base_indemnite),
+    }
+
+
 def _simulate_native_calc(workflow: str, payload: dict) -> dict:
+    """Unchanged legacy (INC-06) shape/behavior for MODE_NORMAL -- writer.py
+    never calls this endpoint for MODE_NORMAL (trigger_native_recalc()
+    always raises NativeCalculationUnconfirmed for it; see
+    mcma.portal.writer's module docstring), so this branch is retained
+    exactly as-is, still exercised only by tests/mock/*'s own pre-existing
+    coverage.
+
+    For GARAGE_CONVENTIONNE, the response is now a SUPERSET of the
+    original shape (INC-09B amendment #2): the original `summary`/`stale`
+    fields are preserved byte-for-byte for tests/mock/
+    test_mock_server_readiness_simulation.py and
+    test_mock_server_pec_workflow.py's own pre-existing "summary" shaped
+    assertions; `calculation_version`/`expected`/`apply_to_dom` are ADDED
+    for mcma.portal.writer's independent two-channel verification (an
+    HTTP-response-carried `expected` FinancialSummary compared against a
+    SEPARATE, later, fresh DOM read -- never the same value read twice).
+    Two new simulate modes are added for GARAGE_CONVENTIONNE only:
+    "malformed" (a field that will not parse as Money) and "incomplete"
+    (a required field is entirely absent) -- both distinct, fail-closed
+    classifications from "failed"/"missing"/"stale"/"mismatch"."""
     guard = _reject_if_charge_fields_present(payload, workflow)
     if guard is not None:
-        return {"state": "error", "reason": "DIRECT_CHARGE_FIELD_WRITE_REJECTED", "fields": sorted(ALL_CHARGE_FIELDS.intersection(payload.keys()))}
+        return {
+            "state": "error",
+            "reason": "DIRECT_CHARGE_FIELD_WRITE_REJECTED",
+            "fields": sorted(ALL_CHARGE_FIELDS.intersection(payload.keys())),
+        }
 
     obs = MOCK_STATE["observability"]
     obs["native_calculation_calls"][workflow] += 1
@@ -200,22 +282,53 @@ def _simulate_native_calc(workflow: str, payload: dict) -> dict:
     if simulate == "missing":
         return {"state": "error", "reason": "MISSING_CALCULATION_RESULT"}
 
-    obs["calculation_version"][workflow] += 1
-    version = obs["calculation_version"][workflow]
+    if workflow == "GARAGE_CONVENTIONNE" and simulate == "malformed":
+        expected = _compute_pec_financial_summary(payload)
+        malformed = dict(expected)
+        malformed["total_ttc"] = "not-a-number"
+        return {
+            "state": "success",
+            "calculation_version": obs["calculation_version"][workflow],
+            "expected": malformed,
+            "apply_to_dom": malformed,
+        }
+
+    if workflow == "GARAGE_CONVENTIONNE" and simulate == "incomplete":
+        expected = _compute_pec_financial_summary(payload)
+        incomplete = dict(expected)
+        del incomplete["base_indemnite"]
+        return {
+            "state": "success",
+            "calculation_version": obs["calculation_version"][workflow],
+            "expected": incomplete,
+            "apply_to_dom": incomplete,
+        }
 
     if simulate == "stale":
         previous = MOCK_STATE["financial_summary"][workflow]
+        version = obs["calculation_version"][workflow]
         if previous is None:
             previous = {
                 "charge_mutuelle": 0.0,
                 "charge_societaire": 0.0,
-                "calculation_version": version - 1,
+                "calculation_version": version,
             }
         stale_summary = dict(previous)
         stale_summary["stale"] = True
         MOCK_STATE["financial_summary"][workflow] = stale_summary
         MOCK_STATE["mismatch_injected"][workflow] = False
-        return {"state": "success", "stale": True, "summary": stale_summary}
+        expected = _compute_pec_financial_summary(payload) if workflow == "GARAGE_CONVENTIONNE" else None
+        result = {"state": "success", "stale": True, "summary": stale_summary}
+        if expected is not None:
+            # Deliberately does NOT advance calculation_version -- this is
+            # exactly what a fresh trigger should never look like.
+            result["calculation_version"] = version
+            result["expected"] = expected
+            result["apply_to_dom"] = expected
+        return result
+
+    obs["calculation_version"][workflow] += 1
+    version = obs["calculation_version"][workflow]
 
     computed = {
         "charge_mutuelle": charge_mut,
@@ -229,12 +342,30 @@ def _simulate_native_calc(workflow: str, payload: dict) -> dict:
         corrupted["charge_mutuelle"] = round(charge_mut + 1.0, 2)
         MOCK_STATE["financial_summary"][workflow] = corrupted
         MOCK_STATE["mismatch_injected"][workflow] = True
-        return {"state": "success", "summary": computed}
+        result = {"state": "success", "summary": computed}
+        if workflow == "GARAGE_CONVENTIONNE":
+            expected = _compute_pec_financial_summary(payload)
+            apply_to_dom = dict(expected)
+            apply_to_dom["montant_charge_mutuelle"] = str(
+                (Decimal(expected["montant_charge_mutuelle"]) + Decimal("1.00")).quantize(
+                    _CENT, rounding=ROUND_HALF_UP
+                )
+            )
+            result["calculation_version"] = version
+            result["expected"] = expected
+            result["apply_to_dom"] = apply_to_dom
+        return result
 
     # success
     MOCK_STATE["financial_summary"][workflow] = computed
     MOCK_STATE["mismatch_injected"][workflow] = False
-    return {"state": "success", "summary": computed}
+    result = {"state": "success", "summary": computed}
+    if workflow == "GARAGE_CONVENTIONNE":
+        expected = _compute_pec_financial_summary(payload)
+        result["calculation_version"] = version
+        result["expected"] = expected
+        result["apply_to_dom"] = expected
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -276,22 +407,22 @@ HTML_TEMPLATE = """
     <div class="navbar">SinAuto MCMA - Espace Gestion Expert (Local Offline Mock)</div>
 
     <div class="mission-header">
-        <span id="hdrRefSinistre"><b>Ref Sinistre:</b> MEX202648130</span>
+        <span id="hdrRefSinistre"><b>Ref Sinistre:</b> __REF_SINISTRE__</span>
         &nbsp;|&nbsp;
-        <span id="hdrMatricule"><b>Matricule:</b> 34602-B-7</span>
+        <span id="hdrMatricule"><b>Matricule:</b> __MATRICULE__</span>
         &nbsp;|&nbsp;
         <span class="badge-statut">DECLARE</span>
     </div>
 
     <form id="formExpertMission" onsubmit="return false;">
-        <input type="hidden" id="IdSinistre__I" value="534660">
-        <input type="hidden" id="IdMission" value="532805">
-        <input type="hidden" id="MatriculeVeh" value="34602-B-7">
+        <input type="hidden" id="IdSinistre__I" value="__ID_SINISTRE__">
+        <input type="hidden" id="IdMission" value="__ID_MISSION__">
+        <input type="hidden" id="MatriculeVeh" value="__MATRICULE__">
 
         <fieldset>
             <legend>Options</legend>
             <label><input type="checkbox" id="VehRepareI" checked> Vehicule Repare</label>
-            <label><input type="checkbox" id="TvaRecupI" checked> TVA Recuperable</label>
+            <label><input type="checkbox" id="DevisTvaRecupI" checked> TVA Recuperable</label>
         </fieldset>
 
         <!-- ================= GARAGE CONVENTIONNE / PEC ================= -->
@@ -316,18 +447,26 @@ __PEC_ORIGINAL_ROWS__
                 </table>
 
                 <div class="summary-box">
-                    <label>Devis TTC:</label> <input type="text" id="DevisMontantTTC" value="11200.00" readonly>
-                    <label>Devis TVA:</label> <input type="text" id="DevisMontantTVA" value="1866.67" readonly>
-                    <label>Vetuste Total:</label> <input type="text" id="DevisMontantVetusteTotal" value="0.00">
-                    <label>Franchise:</label> <input type="text" id="DevisMontantFranchise" value="0.00">
-                    <label>Remise:</label> <input type="text" id="DevisMontantRemise" value="0.00">
+                    <!-- INC-09B amendment #2: these five fields have NO confirmed live
+                         selector anywhere in recovered evidence (only #DevisTvaRecupI,
+                         #DevisMontantChargeMutuelle, #DevisMontantChargeSocietaire are
+                         confirmed). Exposed as unmistakably synthetic
+                         [data-mock-only-*] attributes -- never a plausible #Devis... id
+                         -- so they can never be mistaken for a recovered live selector. -->
+                    <label>Devis TTC (mock-only):</label> <input type="text" id="mockOnlyTotalTtc" data-mock-only-total-ttc="true" value="11200.00" readonly>
+                    <label>Devis TVA (mock-only):</label> <input type="text" id="mockOnlyTotalTva" data-mock-only-total-tva="true" value="1866.67" readonly>
+                    <label>Vetuste Total (mock-only):</label> <input type="text" id="mockOnlyVetusteTotal" data-mock-only-vetuste-total="true" value="0.00">
+                    <label>Franchise (mock-only):</label> <input type="text" id="mockOnlyFranchise" data-mock-only-franchise="true" value="0.00">
+                    <label>Remise (mock-only):</label> <input type="text" id="mockOnlyRemise" data-mock-only-remise="true" value="0.00">
+                    <label>Montant Arrete (mock-only):</label> <input type="text" id="mockOnlyMontantArrete" data-mock-only-montant-arrete="true" value="0.00" readonly>
+                    <label>Base Indemnite (mock-only):</label> <input type="text" id="mockOnlyBaseIndemnite" data-mock-only-base-indemnite="true" value="0.00" readonly>
                     <br><br>
                     <label>Charge Societaire:</label>
                     <input type="text" id="DevisMontantChargeSocietaire" value="0.00" disabled>
                     <label>Charge Mutuelle:</label>
                     <input type="text" id="DevisMontantChargeMutuelle" value="0.00" disabled>
-                    <div class="mock-only-note">DevisCalculerMontantCharge() is the confirmed PEC client-side function; its HTTP mirror (/_mock/pec/native_calculation) is mock-only test infrastructure, not a confirmed live network endpoint.</div>
-                    <select id="mockSimulatePec"><option value="success">success</option><option value="stale">stale</option><option value="missing">missing</option><option value="failed">failed</option><option value="mismatch">mismatch</option></select>
+                    <div class="mock-only-note">DevisCalculerMontantCharge() is the confirmed PEC client-side function; its HTTP mirror (/_mock/pec/native_calculation) is mock-only test infrastructure, not a confirmed live network endpoint. The response's `expected`/`apply_to_dom`/`calculation_version` fields are a strictly loopback-only, MOCK_ONLY verification adapter (INC-09B amendment #2) -- there is no live equivalent.</div>
+                    <select id="mockSimulatePec"><option value="success">success</option><option value="stale">stale</option><option value="missing">missing</option><option value="failed">failed</option><option value="malformed">malformed</option><option value="incomplete">incomplete</option><option value="mismatch">mismatch</option></select>
                 </div>
 
                 <div style="text-align:right; margin-top:10px;">
@@ -397,6 +536,73 @@ __PEC_ORIGINAL_ROWS__
         });
     }
 
+    // ---------------- INC-09B amendment #3: exact BigInt/HALF_UP
+    // arithmetic for every financial calculation this mock's own
+    // client-side JS performs. Never Number/parseFloat/Math.round/binary
+    // floating-point division on a monetary or percentage value. ----------
+
+    function parseMoneyToCents(str) {
+        if (typeof str !== "string") { throw new Error("not a string"); }
+        var s = str.trim();
+        var m = /^(-?)(\\d+)(?:\\.(\\d{1,2}))?$/.exec(s);
+        if (!m) { throw new Error("malformed monetary string: " + str); }
+        var sign = m[1] === "-" ? -1n : 1n;
+        var intPart = BigInt(m[2]);
+        var fracStr = (m[3] || "").padEnd(2, "0");
+        var fracPart = BigInt(fracStr);
+        return sign * (intPart * 100n + fracPart);
+    }
+
+    function centsToMoneyString(cents) {
+        var neg = cents < 0n;
+        var abs = neg ? -cents : cents;
+        var intPart = abs / 100n;
+        var fracPart = abs % 100n;
+        var fracStr = fracPart.toString().padStart(2, "0");
+        return (neg ? "-" : "") + intPart.toString() + "." + fracStr;
+    }
+
+    function halfUpDivideBigInt(numerator, denominator) {
+        if (denominator === 0n) { throw new Error("division by zero"); }
+        var quotient = numerator / denominator;
+        var remainder = numerator % denominator;
+        return quotient + (2n * remainder >= denominator ? 1n : 0n);
+    }
+
+    function recomputeNormalTtc(tempId) {
+        var ttcInput = document.getElementById("MontantTTC_" + tempId);
+        try {
+            var ht = parseMoneyToCents(document.getElementById("MontantHT_" + tempId).value || "0");
+            var taxe = parseMoneyToCents(document.getElementById("Taxe_" + tempId).value || "0");
+            ttcInput.value = centsToMoneyString(ht + taxe);
+        } catch (e) {
+            ttcInput.value = "";
+        }
+    }
+
+    function recomputePecDerived(id) {
+        var ttcInput = document.getElementById("MontantTTCValide_" + id);
+        var rateInput = document.getElementById("TauxVetusteValide_" + id);
+        try {
+            var ht = parseMoneyToCents(document.getElementById("MontantHTValide_" + id).value || "0");
+            var taxe = parseMoneyToCents(document.getElementById("TaxeValide_" + id).value || "0");
+            var ttcCents = ht + taxe;
+            ttcInput.value = centsToMoneyString(ttcCents);
+            var vetusteCents = parseMoneyToCents(document.getElementById("MontantVetusteValide_" + id).value || "0");
+            if (ttcCents === 0n) {
+                // Undefined derivation -- left blank, never coerced to "0.00".
+                rateInput.value = "";
+            } else {
+                var numerator = vetusteCents * 10000n; // amount/ttc*100, scaled for a 2dp percentage
+                var rateHundredths = halfUpDivideBigInt(numerator, ttcCents);
+                rateInput.value = centsToMoneyString(rateHundredths);
+            }
+        } catch (e) {
+            ttcInput.value = "";
+            rateInput.value = "";
+        }
+    }
+
     // ---------------- Mode Normal ----------------
     var normalTempCounter = 0;
 
@@ -421,6 +627,10 @@ __PEC_ORIGINAL_ROWS__
             var input = document.createElement("input");
             input.type = "text"; input.id = field + "_" + tempId; input.value = field === "MontantHT" || field === "Taxe" ? "" : "0.00";
             wireFieldEvents(input, "MODE_NORMAL", tempId, field);
+            if (field === "MontantHT" || field === "Taxe") {
+                input.addEventListener("input", function() { recomputeNormalTtc(tempId); });
+                input.addEventListener("change", function() { recomputeNormalTtc(tempId); });
+            }
             td.appendChild(input); tr.appendChild(td);
         });
 
@@ -525,15 +735,42 @@ __PEC_ORIGINAL_ROWS__
     function editRowTable2(id) {
         var tr = document.getElementById("row_val_" + id);
         tr.classList.add("tr-editing");
-        ["MontantHT", "Taxe", "TauxVetuste", "MontantVetuste"].forEach(function(f) {
+        ["MontantHT", "Taxe"].forEach(function(f) {
             var td = tr.querySelector(".col-" + f);
             var current = td.textContent;
             td.innerHTML = "";
             var input = document.createElement("input");
             input.type = "text"; input.id = f + "Valide_" + id; input.value = current;
             wireFieldEvents(input, "GARAGE_CONVENTIONNE", String(id), f);
+            input.addEventListener("input", function() { recomputePecDerived(id); });
+            input.addEventListener("change", function() { recomputePecDerived(id); });
             td.appendChild(input);
         });
+        // MontantTTCValide did not exist before INC-09B -- it is a
+        // readonly field derived from HT+Taxe (never directly filled by
+        // the writer), matching PORTAL_ROW_WORKFLOWS.md 2's "verify the
+        // computed #MontantTTCValide where exposed" step.
+        var ttcTd = tr.querySelector(".col-MontantTTC");
+        var ttcCurrent = ttcTd.textContent;
+        ttcTd.innerHTML = "";
+        var ttcInput = document.createElement("input");
+        ttcInput.type = "text"; ttcInput.id = "MontantTTCValide_" + id; ttcInput.readOnly = true; ttcInput.value = ttcCurrent;
+        ttcTd.appendChild(ttcInput);
+        ["TauxVetuste", "MontantVetuste"].forEach(function(f) {
+            var td = tr.querySelector(".col-" + f);
+            var current = td.textContent;
+            td.innerHTML = "";
+            var input = document.createElement("input");
+            input.type = "text"; input.id = f + "Valide_" + id; input.value = current;
+            if (f === "TauxVetuste") { input.readOnly = true; }
+            wireFieldEvents(input, "GARAGE_CONVENTIONNE", String(id), f);
+            if (f === "MontantVetuste") {
+                input.addEventListener("input", function() { recomputePecDerived(id); });
+                input.addEventListener("change", function() { recomputePecDerived(id); });
+            }
+            td.appendChild(input);
+        });
+        recomputePecDerived(id);
         var actionTd = tr.querySelector("td:last-child");
         actionTd.innerHTML = "";
         var check = document.createElement("a");
@@ -565,20 +802,29 @@ __PEC_ORIGINAL_ROWS__
 
     function DevisCalculerMontantCharge() {
         var payload = {
-            total_ttc: document.getElementById("DevisMontantTTC").value || "0",
-            franchise: document.getElementById("DevisMontantFranchise").value || "0",
-            vetuste: document.getElementById("DevisMontantVetusteTotal").value || "0",
-            remise: document.getElementById("DevisMontantRemise").value || "0",
+            total_ttc: document.getElementById("mockOnlyTotalTtc").value || "0",
+            total_tva: document.getElementById("mockOnlyTotalTva").value || "0",
+            franchise: document.getElementById("mockOnlyFranchise").value || "0",
+            vetuste: document.getElementById("mockOnlyVetusteTotal").value || "0",
+            remise: document.getElementById("mockOnlyRemise").value || "0",
             part_resp: "100",
             simulate: document.getElementById("mockSimulatePec").value
         };
         postJson("/_mock/pec/native_calculation", payload).then(function(res) {
-            if (res.state === "success" && res.summary) {
-                document.getElementById("DevisMontantChargeMutuelle").value = res.summary.charge_mutuelle;
-                document.getElementById("DevisMontantChargeSocietaire").value = res.summary.charge_societaire;
+            if (res.state === "success" && res.apply_to_dom) {
+                var applied = res.apply_to_dom;
+                document.getElementById("DevisMontantChargeMutuelle").value = applied.montant_charge_mutuelle;
+                document.getElementById("DevisMontantChargeSocietaire").value = applied.montant_charge_societaire;
+                document.getElementById("mockOnlyTotalTva").value = applied.total_tva;
+                document.getElementById("mockOnlyTotalTtc").value = applied.total_ttc;
+                document.getElementById("mockOnlyVetusteTotal").value = applied.vetuste;
+                document.getElementById("mockOnlyFranchise").value = applied.franchise;
+                document.getElementById("mockOnlyRemise").value = applied.remise;
+                if (applied.montant_arrete !== undefined) { document.getElementById("mockOnlyMontantArrete").value = applied.montant_arrete; }
+                if (applied.base_indemnite !== undefined) { document.getElementById("mockOnlyBaseIndemnite").value = applied.base_indemnite; }
                 logHUD("DevisCalculerMontantCharge() (" + payload.simulate + ") executed.");
             } else {
-                logHUD("DevisCalculerMontantCharge() FAILED: " + res.reason);
+                logHUD("DevisCalculerMontantCharge() " + (res.state === "success" ? "SUCCEEDED WITHOUT apply_to_dom" : "FAILED: " + res.reason));
             }
         });
     }
@@ -636,7 +882,19 @@ def _strip_section(html: str, section_id: str) -> str:
     return html[:start] + html[pos:]
 
 
-def _render_mission_page(workflow: str | None = None) -> str:
+# The baseline PEC mission's identity, preserved byte-for-byte as the
+# DEFAULT rendering for every caller that never passes `identity=` --
+# INC-09A's own accepted real-Chromium proofs navigate the bare
+# ?workflow= query route and depend on exactly these values.
+_DEFAULT_IDENTITY = {
+    "id_sinistre": "534660",
+    "id_mission": "532805",
+    "matricule": "34602-B-7",
+    "ref_sinistre": "MEX202648130",
+}
+
+
+def _render_mission_page(workflow: str | None = None, identity: dict | None = None) -> str:
     """`workflow` is MOCK-ONLY test infrastructure (INC-09A), never a
     confirmed live query parameter or contract -- see
     tests/fixtures/contracts/ for how every genuinely confirmed contract in
@@ -649,8 +907,19 @@ def _render_mission_page(workflow: str | None = None) -> str:
     "normal" or "conventionne" REMOVES the other section's markup entirely
     (not just hides it) so a real browser's document.querySelector can
     distinguish "workflow section absent" from "present but invisible" --
-    needed for INC-09A's workflow-detection gate (mcma.portal.mission)."""
+    needed for INC-09A's workflow-detection gate (mcma.portal.mission).
+
+    `identity` (INC-09B amendment #2 fix) substitutes the rendered
+    IdMission/IdSinistre__I/MatriculeVeh/header-text -- defaults to the
+    original fixed PEC identity so every pre-existing caller (including
+    the bare ?workflow= route used by 09A's own accepted tests) is
+    completely unaffected."""
+    identity = identity or _DEFAULT_IDENTITY
     html = HTML_TEMPLATE.replace("__PEC_ORIGINAL_ROWS__", _render_pec_original_rows())
+    html = html.replace("__ID_SINISTRE__", str(identity["id_sinistre"]))
+    html = html.replace("__ID_MISSION__", str(identity["id_mission"]))
+    html = html.replace("__MATRICULE__", str(identity["matricule"]))
+    html = html.replace("__REF_SINISTRE__", str(identity["ref_sinistre"]))
     if workflow == "normal":
         html = _strip_section(html, "sectionGarageConventionne")
     elif workflow == "conventionne":
@@ -670,9 +939,29 @@ def get_mission_page(workflow: str | None = None):
     return HTMLResponse(content=_render_mission_page(workflow))
 
 
-@app.get("/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/{id_sinistre}/rubrique/gestionexpert-index")
-def get_mission_deep_link(id_sinistre: str, workflow: str | None = None):
-    return HTMLResponse(content=_render_mission_page(workflow))
+@app.get("/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/{id_value}/rubrique/gestionexpert-index")
+def get_mission_deep_link(id_value: str):
+    """INC-09B amendment #2: mcma.portal.mission's accepted (09A)
+    open_candidate() substitutes candidate.id_mission into this route's
+    {id_sinistre}-named placeholder -- MissionCandidate has no id_sinistre
+    field at all, so the value that actually arrives here is id_mission,
+    despite the path segment's name. This mock's lookup is keyed on
+    id_mission for exactly that reason -- mission.py itself is unmodified.
+
+    No `?workflow=` override is accepted on this route (unlike the bare
+    /index route, whose own ?workflow= override is unchanged 09A test
+    infrastructure): the rendered workflow/identity is looked up
+    deterministically from which synthetic mission id_value names. An
+    unrecognized id returns 404 with NO identity or workflow DOM at all --
+    never the old "both sections" graceful-default fallback."""
+    try:
+        id_mission = int(id_value)
+    except ValueError:
+        return HTMLResponse(content="<html><body>Not Found</body></html>", status_code=404)
+    record = _SYNTHETIC_MISSIONS.get(id_mission)
+    if record is None:
+        return HTMLResponse(content="<html><body>Not Found</body></html>", status_code=404)
+    return HTMLResponse(content=_render_mission_page(workflow=record["workflow"], identity=record))
 
 
 @app.get("/SinAuto_MCMA/expertise/frontexpert")
@@ -730,20 +1019,58 @@ _FIXED_MISSION = {
     "ModeReparation": "GARAGE CONVENTIONNE",
 }
 
+# INC-09B amendment #2: a second synthetic mission whose own workflow is
+# Mode Normal, distinct id/plate/id_sinistre from the PEC mission above.
+# _FIXED_MISSION's id_mission (532805) is UNCHANGED, since 09A's own
+# accepted test asserts `candidate.id_mission == 532805` -- only a new
+# mission is ADDED, nothing existing is renumbered.
+_SYNTHETIC_NORMAL_MISSION = {
+    "IdMission": 612001,
+    "ReferenceMission": "3.MH.02.2026.00099",
+    "RefSinistre": "MEX202699001",
+    "Matricule": "77001-C-3",
+    "Societaire": "ATLAS ASSURANCE",
+    "ModeReparation": "MODE NORMAL",
+}
+
+# Keyed by IdMission (int) -- see get_mission_deep_link's docstring for why
+# the deep-link lookup must key on id_mission, not id_sinistre, given the
+# accepted (unmodified) mission.py's own substitution behavior.
+_SYNTHETIC_MISSIONS = {
+    _FIXED_MISSION["IdMission"]: {
+        "id_mission": _FIXED_MISSION["IdMission"],
+        "id_sinistre": "534660",
+        "matricule": _FIXED_MISSION["Matricule"],
+        "ref_sinistre": _FIXED_MISSION["RefSinistre"],
+        "workflow": "conventionne",
+    },
+    _SYNTHETIC_NORMAL_MISSION["IdMission"]: {
+        "id_mission": _SYNTHETIC_NORMAL_MISSION["IdMission"],
+        "id_sinistre": "699001",
+        "matricule": _SYNTHETIC_NORMAL_MISSION["Matricule"],
+        "ref_sinistre": _SYNTHETIC_NORMAL_MISSION["RefSinistre"],
+        "workflow": "normal",
+    },
+}
+
+_ALL_FIXED_MISSIONS = (_FIXED_MISSION, _SYNTHETIC_NORMAL_MISSION)
+
 
 @app.post("/SinAuto_MCMA/expertise/FrontExpert/listeMissions")
 async def mock_liste_missions(request: Request):
     """INC-09A: filters by Matricule so a non-matching search genuinely
     yields zero rows (needed for the exactly-one-search fail-closed proof;
-    docs/recovery/KNOWN_FAILURES.md F3-F5). A blank/omitted Matricule (or
-    the one matching plate) returns the fixed mission -- unchanged from
-    every prior increment's behavior, since no earlier test ever supplied a
-    non-matching Matricule to this route."""
+    docs/recovery/KNOWN_FAILURES.md F3-F5). A blank/omitted Matricule
+    returns EVERY fixed mission (unchanged 09A semantics, now extended to
+    both synthetic missions -- no accepted test ever supplied a blank
+    Matricule expecting exactly one row back). A matching Matricule
+    returns exactly that one mission."""
     form = await _read_form(request)
     matricule = (form.get("Matricule") or "").strip()
-    if matricule and matricule != _FIXED_MISSION["Matricule"]:
-        return JSONResponse({"data": []})
-    return JSONResponse({"data": [_FIXED_MISSION]})
+    if not matricule:
+        return JSONResponse({"data": list(_ALL_FIXED_MISSIONS)})
+    matches = [m for m in _ALL_FIXED_MISSIONS if m["Matricule"] == matricule]
+    return JSONResponse({"data": matches})
 
 
 @app.post("/SinAuto_MCMA/expertise/notification/getAlerte/CodeAlerte/{code}")

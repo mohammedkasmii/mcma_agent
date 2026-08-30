@@ -1,0 +1,17 @@
+{
+  "workflow": "SHARED",
+  "endpoint_name": "mission_open",
+  "purpose": "The dynamic, per-mission GET route mcma.portal.writer.open_verified_writer() authorizes exactly once (WriterPolicyController.authorize_exact_mission_route) after search resolves a MissionCandidate.",
+  "observed_route_template": "/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/{id_mission}/rubrique/gestionexpert-index",
+  "method": "GET",
+  "evidence_status": "MOCK_ONLY",
+  "g5_live_contract_status": "UNCONFIRMED",
+  "eligible_for_live_allowlist": false,
+  "mock_only": true,
+  "mock_route": true,
+  "capability": "read",
+  "operation_type": "mission_open",
+  "id_naming_note": "The path segment is literally named idSinistre, but mcma.portal.mission's accepted (09A) open_candidate() substitutes candidate.id_mission into it -- MissionCandidate has no id_sinistre field at all. The value that actually travels in this route is id_mission, not id_sinistre, despite the segment's name; mock_server.py's get_mission_deep_link keys its lookup on id_mission for exactly that reason. This is documented rather than silently worked around, and mission.py is not modified by INC-09B.",
+  "validation": "mcma.portal.writer._require_valid_mission_id rejects bool/float/non-positive/non-int candidate.id_mission before this route is ever constructed; WriterPolicyController.authorize_exact_mission_route independently re-validates host/method/capability/operation_type/no-body-fields/no-query-fields/exact-route-match/not-permanently-blocked on the constructed contract before admitting it.",
+  "notes": "This entry records the INC-06/09B mock server's own convention only. It is NOT a G5-approved live contract -- no real portal route naming or id semantics have been confirmed. G5 still requires separate agency contract capture, comparison against approved evidence, approval metadata, deployed-commit binding, and passing safety-suite evidence before any live use (docs/implementation/RELEASE_GATES.md G5)."
+}
