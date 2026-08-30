@@ -36,24 +36,4 @@ async def open_guarded_context(
     options = hardened_context_options(context_options)
     context = await browser.new_context(**options)
     await install_portal_guard(context, frozen_contracts, allowed_host)
-
-    # --- TEMPORARY CI-ONLY DIAGNOSTICS (investigating CI run 33316988633).
-    # Guarded with hasattr so the stub-based unit test suite (whose FakeContext
-    # has no .on()) is completely unaffected -- only a real Playwright
-    # BrowserContext (which does have .on()) gets this listener. Prints
-    # request.failure for every failed request on every page created in this
-    # context, from now on. Remove once the confirmed root cause is fixed.
-    if hasattr(context, "on"):
-        def _diag_register_page(page) -> None:
-            def _on_request_failed(request) -> None:
-                print(
-                    f"[DIAG requestfailed] url={request.url!r} method={request.method!r} "
-                    f"failure={getattr(request, 'failure', None)!r}"
-                )
-
-            page.on("requestfailed", _on_request_failed)
-
-        context.on("page", _diag_register_page)
-    # --- END TEMPORARY DIAGNOSTICS ---
-
     return context

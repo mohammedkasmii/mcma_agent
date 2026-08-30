@@ -20,7 +20,6 @@ created from that context are covered by the same policy automatically
 
 from __future__ import annotations
 
-import traceback
 from typing import TYPE_CHECKING, Sequence
 
 from mcma.portal.canonical import canonicalize_request
@@ -81,41 +80,24 @@ def _make_route_handler(contracts: Sequence[RouteContract], allowed_host: str):
 
     async def handler(route: "Route") -> None:
         request = route.request
-        # --- TEMPORARY CI-ONLY DIAGNOSTICS (investigating CI runs
-        # 33316988633/33317487676; kept for one more run per review
-        # sequencing, to observe a real-browser ALLOW+continue_() succeed for
-        # the first time in this project). Remove once CI confirms green.
-        print(
-            f"[DIAG intercept] url={request.url!r} method={request.method!r} "
-            f"resource_type={getattr(request, 'resource_type', None)!r}"
-        )
         try:
             canonical = _canonical_or_none(request)
             decision = evaluate_request(canonical, contracts, allowed_host)
         except Exception:
-            print(f"[DIAG intercept] EXCEPTION during descriptor/decision for {request.url!r}:")
-            traceback.print_exc()
-            await _abort_never_raising(route, request)
+            await _abort_never_raising(route)
             return
-        print(f"[DIAG intercept] canonical={canonical!r} decision={decision!r} url={request.url!r}")
-        # --- END TEMPORARY DIAGNOSTICS (the try/except below is the actual
-        # fix, not diagnostic-only; see mcma.portal.interception module docs) ---
         try:
             if decision is Decision.ALLOW:
                 await route.continue_()
-                print(f"[DIAG intercept] continue_() returned normally for {request.url!r}")
             else:
                 await route.abort(_POLICY_DENY_ERROR)
-                print(f"[DIAG intercept] abort() returned normally for {request.url!r}")
         except Exception:
-            print(f"[DIAG intercept] continue_()/abort() RAISED for {request.url!r} decision={decision!r}:")
-            traceback.print_exc()
-            await _abort_never_raising(route, request)
+            await _abort_never_raising(route)
 
     return handler
 
 
-async def _abort_never_raising(route: "Route", request) -> None:
+async def _abort_never_raising(route: "Route") -> None:
     """Best-effort fail-closed abort that itself never raises: whatever
     already went wrong, the handler coroutine must still return normally
     rather than let an exception escape (an escaped exception is exactly
@@ -124,8 +106,7 @@ async def _abort_never_raising(route: "Route", request) -> None:
     try:
         await route.abort(_POLICY_DENY_ERROR)
     except Exception:
-        print(f"[DIAG intercept] fallback abort() ALSO RAISED for {request.url!r}:")
-        traceback.print_exc()
+        pass
 
 
 async def _deny_websocket(ws_route: "WebSocketRoute") -> None:
