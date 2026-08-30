@@ -159,6 +159,12 @@ def has_glass_signal(text: Optional[str]) -> bool:
 
 def classify_glass_line(description: Optional[str], operation_hint: Optional[str]) -> MapResult:
     norm = f"{normalize_text(description)} {normalize_text(operation_hint)}".strip()
+    words = set(norm.split())
+    if any(token in words for token in ("moteur", "mecanisme", "leve")):
+        return NeedsReview(
+            ReasonCode.AMBIGUOUS_GLASS,
+            detail="physical component excluded from automatic glass mapping"
+        )
     components = _components_in(norm)
     operations = _operations_in(norm)
     if len(components) == 1 and len(operations) == 1:
@@ -231,8 +237,23 @@ def _explicit_labour_signals(norm: str) -> tuple[bool, set]:
     return marker, families
 
 
+def _family_from_structured_val(val: str) -> Optional[LabourFamily]:
+    norm = normalize_text(val)
+    if not norm:
+        return None
+    for family, tokens in _FAMILY_WORDS.items():
+        if any(token in norm for token in tokens):
+            return family
+    for family, tokens in _SELF_EXPLICIT.items():
+        if any(token in norm for token in tokens):
+            return family
+    return None
+
+
 def classify_labour_line(
-    structured_family: Optional[LabourFamily], text: Optional[str]
+    operation_type: Optional[str],
+    labor_type_id: Optional[str],
+    text: Optional[str]
 ) -> MapResult:
     """Structured field decides; free text may only VALIDATE, never override.
     Without a structured family, only explicit labour expressions classify;
@@ -240,7 +261,24 @@ def classify_labour_line(
     norm = normalize_text(text)
     marker, text_families = _explicit_labour_signals(norm)
 
-    if structured_family is not None:
+    has_structured_val = False
+    structured_families = set()
+    for val in (operation_type, labor_type_id):
+        if val and str(val).strip():
+            has_structured_val = True
+            fam = _family_from_structured_val(val)
+            if fam:
+                structured_families.add(fam)
+
+    if has_structured_val:
+        if not structured_families:
+            return NeedsReview(ReasonCode.UNKNOWN_LABOUR, detail=f"unknown structured fields: {operation_type=} {labor_type_id=}")
+        if len(structured_families) > 1:
+            return NeedsReview(
+                ReasonCode.CONTRADICTORY_LABOUR,
+                detail=f"conflicting structured fields: {sorted(f.value for f in structured_families)}"
+            )
+        structured_family = next(iter(structured_families))
         if marker and text_families and structured_family not in text_families:
             return NeedsReview(
                 ReasonCode.CONTRADICTORY_LABOUR,

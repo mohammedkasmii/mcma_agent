@@ -88,3 +88,16 @@ def test_depose_and_repose_are_not_remplacement():
     assert isinstance(result, NeedsReview)
     result = classify_glass_line("repose vitre", None)
     assert isinstance(result, NeedsReview)
+
+def test_composite_glass_false_positives_fail_closed():
+    """Physical components containing glass words (like moteur leve-vitre)
+    must fail closed with AMBIGUOUS_GLASS, never map to 19-24."""
+    for text in (
+        "moteur lève-vitre",
+        "mécanisme lève-vitre",
+        "moteur leve vitre avant",
+        "mecanisme leve vitre",
+    ):
+        result = classify_glass_line(text, "pose")
+        assert isinstance(result, NeedsReview), text
+        assert result.reason is ReasonCode.AMBIGUOUS_GLASS

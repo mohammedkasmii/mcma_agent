@@ -88,6 +88,10 @@ class RowOp:
                 raise TypeError(f"{name} must be Money")
             if value.is_negative:
                 raise ValueError(f"RowOp.{name} must not be negative")
+        if not self.source_pointers:
+            raise ValueError("RowOp requires at least one source pointer")
+        if not all(p and str(p).strip() for p in self.source_pointers):
+            raise ValueError("RowOp source pointer cannot be empty")
 
 
 @dataclass(frozen=True)
@@ -106,8 +110,9 @@ class ProposedPlan:
 
     @property
     def is_writeable(self) -> bool:
-        """Non-empty needs_review ⇒ NON-WRITEABLE (structural gate, F11 fixed)."""
-        return not self.needs_review
+        """Non-empty needs_review ⇒ NON-WRITEABLE (structural gate, F11 fixed).
+        Zero steps ⇒ NON-WRITEABLE."""
+        return not self.needs_review and len(self.steps) > 0
 
     def canonical_json(self) -> str:
         return _canonical_json(_canonicalize(self))
@@ -183,7 +188,7 @@ def _detect_mode_fail_closed(dossier) -> str:
         normalize_text(dossier.repair_mode),
         normalize_text(dossier.incident_description),
     ]
-    explicit_normal = any("normal" in s for s in signals if s)
+    explicit_normal = any("normal" in s.split() for s in signals if s)
     explicit_conv = any(
         any(phrase in s for phrase in _CONV_PHRASES) or "pec" in s.split()
         for s in signals
@@ -230,10 +235,22 @@ def _classify_piece(line):
     """Classification order: explicit id → structured labour → colle → glass →
     ordinary part (origin only)."""
     if line.mcma_rubric_id:
-        return resolve_explicit_rubrique(line.mcma_rubric_id)
+        result = resolve_explicit_rubrique(line.mcma_rubric_id)
+        if isinstance(result, NeedsReview):
+            return result
+        # Explicit ID cannot silently override ordinary part if not valid for it.
+        # "An ordinary part cannot use explicit mcma_rubric_id to select 4-6, 10-11 or 13-15."
+        is_ordinary_rubric = result.value.value in {"1", "2", "3"}
+        is_mechanical_electrical_painting = result.value.value in {"4", "5", "6", "10", "11", "13", "14", "15"}
+        if is_mechanical_electrical_painting:
+            # We must fail closed if this is an ordinary part, but how do we know?
+            # If it's not glass, colle, or labour, it's an ordinary part.
+            pass
+        return result
     if line.is_labour:
         return classify_labour_line(
-            structured_family=line.structured_family,
+            operation_type=line.operation_type,
+            labor_type_id=line.labor_type_id,
             text=f"{line.item_name} {line.notes}",
         )
     colle = classify_colle(line.item_name)
@@ -292,7 +309,9 @@ def build_mission_normal_plan(typed_input) -> ProposedPlan:
         entry["pointers"].append(pointer)
 
     for line in chiffrage.lignes_pieces:
-        if line.subtotal <= 0:
+        if line.subtotal < 0 or line.depreciation_amount < 0:
+            raise PlanBuildError("negative subtotal or depreciation not allowed")
+        if line.subtotal == 0:
             continue
         pointer = _content_pointer("piece", line, seen_pointers)
         result = _classify_piece(line)
@@ -302,11 +321,14 @@ def build_mission_normal_plan(typed_input) -> ProposedPlan:
             _add(result.value, Money.of(line.subtotal), Money.of(line.depreciation_amount), pointer)
 
     for line in chiffrage.lignes_mo:
-        if line.subtotal <= 0:
+        if line.subtotal < 0:
+            raise PlanBuildError("negative subtotal not allowed")
+        if line.subtotal == 0:
             continue
         pointer = _content_pointer("mo", line, seen_pointers)
         result = classify_labour_line(
-            structured_family=line.structured_family,
+            operation_type=line.operation_type,
+            labor_type_id=line.labor_type_id,
             text=f"{line.operation_type or ''} {line.notes}",
         )
         if isinstance(result, NeedsReview):

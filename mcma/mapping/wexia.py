@@ -10,36 +10,19 @@ mcma.planning (which consumes this model structurally, without importing it).
 from decimal import Decimal, InvalidOperation
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from mcma.domain.enums import LabourFamily
 from mcma.domain.normalize import normalize_text
-
-_LABOR_TYPE_FAMILY = (
-    (("carrosserie", "tolerie"), LabourFamily.TOLERIE_CARROSSERIE),
-    (("mecanique",), LabourFamily.MECANIQUE),
-    (("peinture",), LabourFamily.PEINTURE),
-    (("electrique", "electricite"), LabourFamily.ELECTRIQUE),
-    (("marbre",), LabourFamily.MARBRE),
-    (("parallelisme", "equilibrage", "geometrie"), LabourFamily.PARALLELISME_EQUILIBRAGE),
-)
-
-
-def _family_from_structured(value: Optional[str]) -> Optional[LabourFamily]:
-    norm = normalize_text(value)
-    if not norm:
-        return None
-    for tokens, family in _LABOR_TYPE_FAMILY:
-        if any(token in norm for token in tokens):
-            return family
-    return None
-
 
 def _to_decimal(value: Any) -> Decimal:
     if value is None or value == "":
         return Decimal("0")
     try:
-        return Decimal(str(value))
+        dec = Decimal(str(value))
+        if not dec.is_finite():
+            raise ValueError(f"not a finite decimal: {value!r}")
+        return dec
     except (InvalidOperation, ValueError) as exc:
         raise ValueError(f"not a decimal amount: {value!r}") from exc
 
@@ -80,10 +63,6 @@ class WexiaPieceLine(_Base):
             or self.labor_type_id is not None
         )
 
-    @property
-    def structured_family(self) -> Optional[LabourFamily]:
-        return _family_from_structured(self.labor_type_id)
-
 
 class WexiaMoLine(_Base):
     operation_type: Optional[str] = None
@@ -96,10 +75,6 @@ class WexiaMoLine(_Base):
     def _decimals(cls, v):
         return _to_decimal(v)
 
-    @property
-    def structured_family(self) -> Optional[LabourFamily]:
-        return _family_from_structured(self.labor_type_id)
-
 
 class WexiaChiffrage(_Base):
     id: Optional[str] = None
@@ -110,8 +85,8 @@ class WexiaChiffrage(_Base):
     total_cost: Optional[Decimal] = None
     tax_amount: Optional[Decimal] = None
     final_cost: Optional[Decimal] = None
-    lignes_pieces: List[WexiaPieceLine] = []
-    lignes_mo: List[WexiaMoLine] = []
+    lignes_pieces: List[WexiaPieceLine] = Field(default_factory=list)
+    lignes_mo: List[WexiaMoLine] = Field(default_factory=list)
 
     @field_validator("total_cost", "tax_amount", "final_cost", mode="before")
     @classmethod
@@ -141,9 +116,9 @@ class WexiaVehicule(_Base):
 
 
 class WexiaInput(_Base):
-    dossier: WexiaDossier = WexiaDossier()
-    vehicule: WexiaVehicule = WexiaVehicule()
-    chiffrages: List[WexiaChiffrage] = []
+    dossier: WexiaDossier = Field(default_factory=WexiaDossier)
+    vehicule: WexiaVehicule = Field(default_factory=WexiaVehicule)
+    chiffrages: List[WexiaChiffrage] = Field(default_factory=list)
 
     @property
     def registration_raw(self) -> Optional[str]:
