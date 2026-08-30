@@ -1,0 +1,51 @@
+{
+  "_comment": "SYNTHETIC fixture crafted to capture the F17 KNOWN DEFECT: the baseline's last-group TVA remainder goes negative (20% of the first group exceeds the total tax). No real data.",
+  "dossier": {
+    "claim_number": "SYN-0003",
+    "reference_number": "MCM99-99-99.TEST0003",
+    "mission_type": "normal",
+    "incident_date": "2024-08-01T00:00:00+00:00",
+    "first_registration_date": "2018-05-20",
+    "market_value": 60000,
+    "responsibility_rate": 100,
+    "insured_type": "societe",
+    "is_reform": false
+  },
+  "vehicule": {
+    "make": "SYNTH",
+    "model": "TVACAR",
+    "license_plate": "33333-C-33",
+    "first_registration_date": "2018-05-20",
+    "market_value": 60000
+  },
+  "assureur": {},
+  "observations_expert": {},
+  "missions": [],
+  "devis": [],
+  "chiffrages": [
+    {
+      "id": "CH-SYN-3",
+      "status": "approved",
+      "is_final": true,
+      "scenario_type": "repair",
+      "total_cost": 110,
+      "tax_amount": 5,
+      "final_cost": 115,
+      "estimated_days": 2,
+      "lignes_pieces": [
+        {
+          "item_type": "part",
+          "item_name": "pare-choc arriere",
+          "part_type": "original",
+          "subtotal": 100
+        }
+      ],
+      "lignes_mo": [
+        {
+          "operation_type": "main d'oeuvre carrosserie",
+          "subtotal": 10
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "dossier_reference": "MCM99-99-99.TEST0003",
+  "matricule": "33333-C-33",
+  "search_matricule": "33333",
+  "mode_reparation": "normal",
+  "selected_chiffrage_id": "CH-SYN-3",
+  "text_fields": {
+    "ReferenceDossier": "MCM99-99-99.TEST0003",
+    "DateMECVeh": "20/05/2018",
+    "NbreJourImmobilisation": "2",
+    "ValeurVenale": "60000",
+    "ValeurVenaleEstime": "60000",
+    "MontantReparation": "115.00",
+    "MontantTVA": "5.00"
+  },
+  "select_fields": {
+    "PartResponsabilite": "100"
+  },
+  "checkboxes": {
+    "VehRepareI": true,
+    "VehReformeI": false,
+    "TvaRecupI": true
+  },
+  "rubriques": [
+    {
+      "IdRubrique": "1",
+      "LibRubrique": "FOURNITURES CARROSSERIE (ORIGINES)",
+      "MontantHT": "100.00",
+      "Taxe": "20.00",
+      "MontantTTC": "120.00",
+      "TauxVetuste": "0.00",
+      "MontantVetuste": "0.00",
+      "source_pointers": [
+        "/chiffrages/0/lignes_pieces/0"
+      ]
+    },
+    {
+      "IdRubrique": "7",
+      "LibRubrique": "MAIN D'OEUVRE CARROSSERIE",
+      "MontantHT": "10.00",
+      "Taxe": "-15.00",
+      "MontantTTC": "-5.00",
+      "TauxVetuste": "0.00",
+      "MontantVetuste": "0.00",
+      "source_pointers": [
+        "/chiffrages/0/lignes_mo/0"
+      ]
+    }
+  ],
+  "documents": [],
+  "warnings": [],
+  "mapping_status": "ready"
+}

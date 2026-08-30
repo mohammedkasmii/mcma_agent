@@ -1,0 +1,37 @@
+{
+  "_comment": "SYNTHETIC sanitized fixture matching the shape produced by browser/notifications.py fetch_all_notifications. No real claimant data.",
+  "timestamp": "2026-01-01 00:00:00",
+  "total_categories": 1,
+  "total_alerts": 2,
+  "categories": [
+    {
+      "category_name": "MISSIONS EN ATTENTE",
+      "code_alerte": "SYN-CODE-1",
+      "count": 2,
+      "items": [
+        {
+          "reference": "MCM99-99-99.TEST0001",
+          "id_sinistre": "900001",
+          "date_survenance": "01/06/2024",
+          "societaire": "CLIENT SYNTHETIQUE UN",
+          "police": "POL-TEST-001",
+          "matricule": "11111-A-11",
+          "nature": "MATÉRIEL",
+          "statut": "DÉCLARÉ",
+          "direct_url": "/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/900001/rubrique/gestionexpert-index"
+        },
+        {
+          "reference": "MCM99-99-99.TEST0002",
+          "id_sinistre": "900002",
+          "date_survenance": "01/07/2024",
+          "societaire": "CLIENT SYNTHETIQUE DEUX",
+          "police": "POL-TEST-002",
+          "matricule": "22222-B-22",
+          "nature": "CORPOREL",
+          "statut": "EN COURS",
+          "direct_url": "/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/900002/rubrique/gestionexpert-index"
+        }
+      ]
+    }
+  ]
+}

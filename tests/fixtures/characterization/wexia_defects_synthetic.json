@@ -1,0 +1,64 @@
+{
+  "_comment": "SYNTHETIC fixture crafted to capture KNOWN-DEFECT baseline behavior (F13, F14, F15, F33, F11). No real data.",
+  "dossier": {
+    "claim_number": "SYN-0002",
+    "reference_number": "MCM99-99-99.TEST0002",
+    "mission_type": "normal",
+    "incident_date": "2024-07-01T00:00:00+00:00",
+    "first_registration_date": "2019-03-10",
+    "market_value": 80000,
+    "responsibility_rate": 100,
+    "insured_type": "location_voiture",
+    "is_reform": false
+  },
+  "vehicule": {
+    "make": "SYNTH",
+    "model": "DEFECTCAR",
+    "license_plate": "22222-B-22",
+    "first_registration_date": "2019-03-10",
+    "market_value": 80000
+  },
+  "assureur": {},
+  "observations_expert": {},
+  "missions": [],
+  "devis": [],
+  "chiffrages": [
+    {
+      "id": "CH-SYN-2",
+      "status": "approved",
+      "is_final": true,
+      "scenario_type": "repair",
+      "total_cost": 3000,
+      "tax_amount": 600,
+      "final_cost": 3600,
+      "estimated_days": 3,
+      "lignes_pieces": [
+        {
+          "item_type": "part",
+          "item_name": "PARE-BRISE",
+          "part_type": "original",
+          "subtotal": 1000
+        },
+        {
+          "item_type": "labor",
+          "item_name": "module electronique",
+          "subtotal": 500
+        },
+        {
+          "item_type": "part",
+          "item_name": "radiateur eau",
+          "part_type": "origine",
+          "subtotal": 800
+        },
+        {
+          "item_type": "part",
+          "item_name": "aile avant",
+          "part_type": "adaptable",
+          "mcma_rubric_id": "99",
+          "subtotal": 700
+        }
+      ],
+      "lignes_mo": []
+    }
+  ]
+}

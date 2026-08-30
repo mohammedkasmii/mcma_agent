@@ -1,0 +1,378 @@
+"""
+mcma.planning.plan — deterministic, capability-neutral plan types and the
+mission-normal plan builder (ADR-0002, DOMAIN_MODEL §6).
+
+ProposedPlan is PURE IMMUTABLE DATA: no `mode`, no `read_only`, no live
+capability, no charge-mutuelle field anywhere. Any NeedsReview makes the plan
+non-writeable. Same input (regardless of line order) yields identical steps,
+input_hash, and plan_hash.
+
+This module imports only mcma.domain / mcma.core (never mcma.mapping — the
+typed input is consumed structurally; `execution` wires the two at INC-12).
+"""
+
+import dataclasses
+import hashlib
+import json
+from dataclasses import dataclass
+from decimal import Decimal
+from enum import Enum
+from typing import Optional, Sequence, Tuple
+
+from mcma.core.money import Money
+from mcma.domain.normalize import normalize_text
+from mcma.domain.results import Mapped, NeedsReview, tva_allocation_result
+from mcma.domain.rubriques import (
+    classify_colle,
+    classify_glass_line,
+    classify_labour_line,
+    classify_ordinary_part,
+    classify_peinture_materials,
+    has_glass_signal,
+    resolve_explicit_rubrique,
+)
+from mcma.domain.values import IdSinistre, InsurerReference, RegistrationPlate, RubriqueId
+
+BUILDER_VERSION = "inc05-1"
+
+_CENT = Decimal("0.01")
+
+
+class PlanBuildError(ValueError):
+    """Fail-closed: the input cannot yield a plan at all (reform dossier,
+    conflicting explicit modes, missing identity, total mismatch)."""
+
+
+@dataclass(frozen=True)
+class ExpectedIdentity:
+    """Correction #4: registration is MANDATORY; at least one of insurer
+    reference / idSinistre is also required. A plate alone is insufficient."""
+
+    registration: RegistrationPlate
+    insurer_reference: Optional[InsurerReference] = None
+    id_sinistre: Optional[IdSinistre] = None
+
+    def __post_init__(self):
+        if not isinstance(self.registration, RegistrationPlate):
+            raise TypeError("ExpectedIdentity requires a RegistrationPlate")
+        if self.insurer_reference is not None and not isinstance(
+            self.insurer_reference, InsurerReference
+        ):
+            raise TypeError("insurer_reference must be an InsurerReference")
+        if self.id_sinistre is not None and not isinstance(self.id_sinistre, IdSinistre):
+            raise TypeError("id_sinistre must be an IdSinistre")
+        if self.insurer_reference is None and self.id_sinistre is None:
+            raise ValueError(
+                "ExpectedIdentity requires insurer_reference and/or id_sinistre "
+                "(a registration plate alone is insufficient)"
+            )
+
+
+@dataclass(frozen=True)
+class RowOp:
+    """One reviewed row operation. Structurally, no charge-mutuelle field can
+    ever exist here (B.3)."""
+
+    rubrique_id: RubriqueId
+    ht: Money
+    tva: Money
+    vetuste: Money
+    source_pointers: Tuple[str, ...]
+
+    def __post_init__(self):
+        if not isinstance(self.rubrique_id, RubriqueId):
+            raise TypeError("rubrique_id must be a RubriqueId")
+        for name in ("ht", "tva", "vetuste"):
+            value = getattr(self, name)
+            if not isinstance(value, Money):
+                raise TypeError(f"{name} must be Money")
+            if value.is_negative:
+                raise ValueError(f"RowOp.{name} must not be negative")
+
+
+@dataclass(frozen=True)
+class Provenance:
+    input_hash: str
+    plan_hash: str
+    builder_version: str
+
+
+@dataclass(frozen=True)
+class ProposedPlan:
+    expected_identity: ExpectedIdentity
+    steps: Tuple[RowOp, ...]
+    needs_review: Tuple[NeedsReview, ...]
+    provenance: Provenance
+
+    @property
+    def is_writeable(self) -> bool:
+        """Non-empty needs_review ⇒ NON-WRITEABLE (structural gate, F11 fixed)."""
+        return not self.needs_review
+
+    def canonical_json(self) -> str:
+        return _canonical_json(_canonicalize(self))
+
+
+# ---------------------------------------------------------------------------
+# Canonical serialization + hashes (deterministic by construction)
+# ---------------------------------------------------------------------------
+
+def _canonicalize(obj):
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {
+            f.name: _canonicalize(getattr(obj, f.name)) for f in dataclasses.fields(obj)
+        }
+    if isinstance(obj, Money):
+        return str(obj.amount)
+    if isinstance(obj, Decimal):
+        return str(obj)
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, (list, tuple)):
+        return [_canonicalize(item) for item in obj]
+    if isinstance(obj, dict):
+        return {str(k): _canonicalize(v) for k, v in sorted(obj.items(), key=lambda kv: str(kv[0]))}
+    if obj is None or isinstance(obj, (str, int, bool)):
+        return obj
+    # Anything else (float, set, arbitrary repr) is a nondeterminism hazard
+    # in the hash pipeline — refuse instead of stringifying (G1 review M6).
+    raise TypeError(f"non-canonicalizable type in plan data: {type(obj).__name__}")
+
+
+def _canonical_json(canonical) -> str:
+    return json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def compute_input_hash(typed_input) -> str:
+    """Order-insensitive over line lists: each chiffrage's lines are sorted by
+    their own canonical form before hashing, so shuffled input hashes alike."""
+    dumped = typed_input.model_dump(mode="json")
+    for chiffrage in dumped.get("chiffrages", []):
+        for key in ("lignes_pieces", "lignes_mo"):
+            lines = chiffrage.get(key) or []
+            chiffrage[key] = sorted(lines, key=lambda l: _canonical_json(_canonicalize(l)))
+    return _sha256(_canonical_json(_canonicalize(dumped)))
+
+
+def _content_pointer(prefix: str, line, seen: dict) -> str:
+    """Content-derived source pointer (index-free so line order cannot leak
+    into the plan); identical lines get stable occurrence suffixes."""
+    digest = _sha256(_canonical_json(_canonicalize(line.model_dump(mode="json"))))[:12]
+    occurrence = seen.get((prefix, digest), 0)
+    seen[(prefix, digest)] = occurrence + 1
+    return f"{prefix}:{digest}#{occurrence}"
+
+
+# ---------------------------------------------------------------------------
+# Mission-normal plan builder (pure function of typed input)
+# ---------------------------------------------------------------------------
+
+_CONV_PHRASES = ("conventionne", "garage conventionne")
+
+
+def _detect_mode_fail_closed(dossier) -> str:
+    """Explicit signals only; 'pec' matches as a standalone word (never inside
+    'inspection'/'respecter'); NO signal at all fails closed — the mode is
+    never silently defaulted (G1 review H1)."""
+    signals = [
+        normalize_text(dossier.mission_type),
+        normalize_text(dossier.repair_mode),
+        normalize_text(dossier.incident_description),
+    ]
+    explicit_normal = any("normal" in s for s in signals if s)
+    explicit_conv = any(
+        any(phrase in s for phrase in _CONV_PHRASES) or "pec" in s.split()
+        for s in signals
+        if s
+    )
+    if explicit_normal and explicit_conv:
+        raise PlanBuildError("conflicting explicit mission modes — fail closed")
+    if not explicit_normal and not explicit_conv:
+        raise PlanBuildError("no explicit mission-mode signal — fail closed")
+    return "conventionne" if explicit_conv else "normal"
+
+
+def _select_chiffrage(chiffrages):
+    """Deterministic, fail-closed selection (G1 review H2): a chiffrage is
+    used only when it is the unambiguous winner — never candidates[0] by
+    payload order."""
+    candidates = [
+        c
+        for c in chiffrages
+        if c.has_lines and "honoraire" not in normalize_text(c.scenario_type)
+        and "fee" not in normalize_text(c.scenario_type)
+    ]
+    if not candidates:
+        raise PlanBuildError("no detailed repair chiffrage — fail closed")
+    approved = [c for c in candidates if normalize_text(c.status) == "approved"]
+    if approved:
+        final = [c for c in approved if c.is_final]
+        pool = final or approved
+        if len(pool) > 1:
+            dumps = {_canonical_json(_canonicalize(c.model_dump(mode="json"))) for c in pool}
+            if len(dumps) > 1:
+                raise PlanBuildError(
+                    "multiple distinct approved chiffrages — explicit selection required, fail closed"
+                )
+        return pool[0]
+    if len(candidates) > 1:
+        raise PlanBuildError(
+            "multiple non-approved chiffrages and no approved winner — fail closed"
+        )
+    return candidates[0]
+
+
+def _classify_piece(line):
+    """Classification order: explicit id → structured labour → colle → glass →
+    ordinary part (origin only)."""
+    if line.mcma_rubric_id:
+        return resolve_explicit_rubrique(line.mcma_rubric_id)
+    if line.is_labour:
+        return classify_labour_line(
+            structured_family=line.structured_family,
+            text=f"{line.item_name} {line.notes}",
+        )
+    colle = classify_colle(line.item_name)
+    if colle is not None:
+        return Mapped(colle)
+    peinture = classify_peinture_materials(line.item_name)
+    if peinture is not None:
+        return Mapped(peinture)
+    if has_glass_signal(f"{line.item_name} {line.operation_type or ''} {line.notes}"):
+        return classify_glass_line(line.item_name, line.operation_type or line.notes)
+    return classify_ordinary_part(part_type=line.part_type, is_original=line.is_original)
+
+
+def build_mission_normal_plan(typed_input) -> ProposedPlan:
+    dossier = typed_input.dossier
+    if dossier.is_reform is None:
+        raise PlanBuildError("is_reform marker missing from the payload — fail closed")
+    if dossier.is_reform:
+        raise PlanBuildError("reform dossiers are excluded from automation — fail closed")
+    mode = _detect_mode_fail_closed(dossier)
+    if mode != "normal":
+        raise PlanBuildError(
+            f"mission mode {mode!r} is not handled by the mission_normal builder — fail closed"
+        )
+
+    plate_raw = typed_input.registration_raw
+    if not plate_raw or not str(plate_raw).strip():
+        raise PlanBuildError("registration plate is mandatory — fail closed")
+    reference = typed_input.primary_reference
+    id_sin = typed_input.id_sinistre_raw
+    if not reference and not id_sin:
+        raise PlanBuildError("insurer reference or idSinistre is required — fail closed")
+
+    identity = ExpectedIdentity(
+        registration=RegistrationPlate(str(plate_raw)),
+        insurer_reference=InsurerReference(str(reference)) if reference else None,
+        id_sinistre=IdSinistre(str(id_sin)) if id_sin else None,
+    )
+
+    chiffrage = _select_chiffrage(typed_input.chiffrages)
+    if chiffrage.total_cost is None or chiffrage.tax_amount is None:
+        raise PlanBuildError(
+            "chiffrage total_cost/tax_amount missing — absent is not zero, fail closed"
+        )
+
+    groups: dict = {}
+    reviews: list = []
+    seen_pointers: dict = {}
+
+    def _add(rubrique: RubriqueId, ht: Money, vetuste: Money, pointer: str):
+        entry = groups.setdefault(
+            rubrique.value, {"ht": Money.ZERO, "vetuste": Money.ZERO, "pointers": []}
+        )
+        entry["ht"] = entry["ht"] + ht
+        entry["vetuste"] = entry["vetuste"] + vetuste
+        entry["pointers"].append(pointer)
+
+    for line in chiffrage.lignes_pieces:
+        if line.subtotal <= 0:
+            continue
+        pointer = _content_pointer("piece", line, seen_pointers)
+        result = _classify_piece(line)
+        if isinstance(result, NeedsReview):
+            reviews.append(result)
+        else:
+            _add(result.value, Money.of(line.subtotal), Money.of(line.depreciation_amount), pointer)
+
+    for line in chiffrage.lignes_mo:
+        if line.subtotal <= 0:
+            continue
+        pointer = _content_pointer("mo", line, seen_pointers)
+        result = classify_labour_line(
+            structured_family=line.structured_family,
+            text=f"{line.operation_type or ''} {line.notes}",
+        )
+        if isinstance(result, NeedsReview):
+            reviews.append(result)
+        else:
+            _add(result.value, Money.of(line.subtotal), Money.ZERO, pointer)
+
+    if not groups and not reviews:
+        raise PlanBuildError(
+            "no plannable line survived filtering — an empty writeable plan is not allowed"
+        )
+
+    # Deterministic step order: rubrique_id (numeric), then first source pointer.
+    ordered = sorted(
+        groups.items(), key=lambda kv: (int(kv[0]), sorted(kv[1]["pointers"])[0])
+    )
+
+    # Totals check (fail closed; 0.01 MAD bound) — only meaningful when every
+    # line mapped; with reviews present the plan is non-writeable anyway.
+    if not reviews:
+        ht_sum = sum((entry["ht"].amount for _, entry in ordered), Decimal("0"))
+        target_ht = Money.of(chiffrage.total_cost).amount
+        if abs(ht_sum - target_ht) > _CENT:
+            raise PlanBuildError(
+                f"HT sum {ht_sum} differs from chiffrage total_cost {target_ht} by > 0.01"
+            )
+
+    line_hts = [entry["ht"] for _, entry in ordered]
+    tva_result = tva_allocation_result(line_hts, Money.of(chiffrage.tax_amount))
+    if isinstance(tva_result, NeedsReview):
+        reviews.append(tva_result)
+        tva_amounts: Sequence[Money] = [Money.ZERO] * len(ordered)
+    else:
+        tva_amounts = tva_result.value
+
+    steps = tuple(
+        RowOp(
+            rubrique_id=RubriqueId(rubrique_value),
+            ht=entry["ht"],
+            tva=tva,
+            vetuste=entry["vetuste"],
+            source_pointers=tuple(sorted(entry["pointers"])),
+        )
+        for (rubrique_value, entry), tva in zip(ordered, tva_amounts)
+    )
+
+    needs_review = tuple(sorted(reviews, key=lambda r: (r.reason.value, r.detail)))
+
+    input_hash = compute_input_hash(typed_input)
+    body = _canonical_json(
+        _canonicalize(
+            {
+                "expected_identity": identity,
+                "steps": list(steps),
+                "needs_review": list(needs_review),
+                "builder_version": BUILDER_VERSION,
+                "input_hash": input_hash,
+            }
+        )
+    )
+    provenance = Provenance(
+        input_hash=input_hash, plan_hash=_sha256(body), builder_version=BUILDER_VERSION
+    )
+    return ProposedPlan(
+        expected_identity=identity,
+        steps=steps,
+        needs_review=needs_review,
+        provenance=provenance,
+    )

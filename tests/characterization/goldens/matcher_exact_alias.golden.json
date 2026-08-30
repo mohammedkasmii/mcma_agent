@@ -1,0 +1,14 @@
+[
+  {
+    "IdRubrique": "7",
+    "target_label": "MAIN D'OEUVRE CARROSSERIE",
+    "target_index": 0,
+    "match_method": "exact_label ('main d oeuvre carrosserie')"
+  },
+  {
+    "IdRubrique": "17",
+    "target_label": "PASSAGE AU MARBRE",
+    "target_index": 1,
+    "match_method": "known_alias ('passage au marbre')"
+  }
+]

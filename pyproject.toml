@@ -1,7 +1,110 @@
-# INC-01: pytest configuration lives ONLY in this file.
-# (Packaging/dependency management via `uv` arrives at INC-03; nothing here
-# defines a build system yet.)
+# INC-03: project metadata + dependency pinning (uv) + import-linter contracts.
+# Pytest configuration lives ONLY in this file (no pytest.ini/setup.cfg).
 
+[project]
+name = "mcma-rebuild"
+version = "0.1.0"
+description = "MCMA SinAuto rebuild — mcma/ modular monolith (docs/architecture)"
+requires-python = ">=3.14"
+# Fully pinned; uv.lock adds hashes. Runtime set mirrors the baseline
+# requirements.txt (which stays untouched until INC-22 retirement).
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn==0.52.3",
+    "playwright==1.60.0",
+    "pymupdf==1.28.2",
+    "pydantic==2.13.4",
+    "requests==2.34.2",
+    "httpx==0.28.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-socket==0.7.0",
+    "import-linter==2.14",
+    "hypothesis==6.165.10",
+]
+
+[tool.uv]
+# Not an installable distribution yet; uv manages the environment/lock only.
+package = false
+
+# ---------------------------------------------------------------------------
+# Import contracts (MODULE_BOUNDARIES.md) — verified by `lint-imports` and
+# tests/contracts/test_import_boundaries.py. The legacy top-level modules
+# (core/browser/mapper/main/mock_server/...) are on a temporary allowlist:
+# they are NOT under root_packages, so no contract constrains them until
+# INC-22 retires them; mcma.* may never import them (one-way).
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_packages = ["mcma"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Layered one-way architecture (no cycles)"
+type = "layers"
+layers = [
+    "mcma.app",
+    "mcma.execution | mcma.notifications",
+    "mcma.persistence | mcma.portal",
+    "mcma.mapping | mcma.planning",
+    "mcma.domain",
+    "mcma.core",
+]
+
+[[tool.importlinter.contracts]]
+name = "Pure modules import no I/O libraries"
+type = "forbidden"
+source_modules = ["mcma.core", "mcma.domain", "mcma.mapping", "mcma.planning"]
+forbidden_modules = ["playwright", "sqlite3", "fastapi", "httpx", "requests"]
+
+[[tool.importlinter.contracts]]
+name = "Single owner: only mcma.portal imports playwright"
+type = "forbidden"
+source_modules = [
+    "mcma.core", "mcma.domain", "mcma.mapping", "mcma.planning",
+    "mcma.persistence", "mcma.execution", "mcma.notifications", "mcma.app",
+]
+forbidden_modules = ["playwright"]
+
+[[tool.importlinter.contracts]]
+name = "Single owner: only mcma.persistence imports sqlite3"
+type = "forbidden"
+source_modules = [
+    "mcma.core", "mcma.domain", "mcma.mapping", "mcma.planning",
+    "mcma.portal", "mcma.execution", "mcma.notifications", "mcma.app",
+]
+forbidden_modules = ["sqlite3"]
+
+[[tool.importlinter.contracts]]
+name = "Single owner: only mcma.app imports fastapi"
+type = "forbidden"
+source_modules = [
+    "mcma.core", "mcma.domain", "mcma.mapping", "mcma.planning",
+    "mcma.persistence", "mcma.portal", "mcma.execution", "mcma.notifications",
+]
+forbidden_modules = ["fastapi"]
+
+[[tool.importlinter.contracts]]
+name = "persistence/portal may import only domain and core"
+type = "forbidden"
+source_modules = ["mcma.persistence", "mcma.portal"]
+forbidden_modules = ["mcma.mapping", "mcma.planning"]
+
+[[tool.importlinter.contracts]]
+name = "mcma never imports a legacy baseline module"
+type = "forbidden"
+source_modules = ["mcma"]
+forbidden_modules = [
+    "core", "browser", "mapper", "main", "mock_server", "run_dossier",
+    "menu", "trigger", "auth_setup", "session_keeper", "get_notifications",
+    "garage_conventionne", "testsupport", "api", "portal", "workflows", "tools",
+]
+
+# ---------------------------------------------------------------------------
+# Pytest (INC-01 egress lockdown wiring — unchanged)
+# ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 # -p testsupport.egress_guard  -> pre-collection egress guard (custom layer)
 # --disable-socket/--allow-hosts -> pytest-socket defense-in-depth layer

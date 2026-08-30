@@ -1,0 +1,68 @@
+{
+  "dossier_reference": "MCM99-99-99.TEST0001",
+  "matricule": "11111-A-11",
+  "search_matricule": "11111",
+  "mode_reparation": "normal",
+  "selected_chiffrage_id": "CH-SYN-1",
+  "text_fields": {
+    "ReferenceDossier": "MCM99-99-99.TEST0001",
+    "DateMECVeh": "15/01/2020",
+    "Kilometrage": "50000",
+    "NbreJourImmobilisation": "5",
+    "ValeurVenale": "100000",
+    "ValeurVenaleEstime": "100000",
+    "MontantEpave": "10000",
+    "MontantReparation": "2400.00",
+    "MontantTVA": "400.00",
+    "ObservationMission": "Observation synthetique de test (aucune donnee reelle)."
+  },
+  "select_fields": {
+    "PartResponsabilite": "100"
+  },
+  "checkboxes": {
+    "VehRepareI": true,
+    "VehReformeI": false,
+    "TvaRecupI": true
+  },
+  "rubriques": [
+    {
+      "IdRubrique": "1",
+      "LibRubrique": "FOURNITURES CARROSSERIE (ORIGINES)",
+      "MontantHT": "1200.00",
+      "Taxe": "240.00",
+      "MontantTTC": "1440.00",
+      "TauxVetuste": "0.00",
+      "MontantVetuste": "0.00",
+      "source_pointers": [
+        "/chiffrages/0/lignes_pieces/0"
+      ]
+    },
+    {
+      "IdRubrique": "3",
+      "LibRubrique": "TOTAL PIECES OCCASIONS / RECUPERABLES",
+      "MontantHT": "300.00",
+      "Taxe": "60.00",
+      "MontantTTC": "360.00",
+      "TauxVetuste": "0.00",
+      "MontantVetuste": "0.00",
+      "source_pointers": [
+        "/chiffrages/0/lignes_pieces/1"
+      ]
+    },
+    {
+      "IdRubrique": "7",
+      "LibRubrique": "MAIN D'OEUVRE CARROSSERIE",
+      "MontantHT": "500.00",
+      "Taxe": "100.00",
+      "MontantTTC": "600.00",
+      "TauxVetuste": "0.00",
+      "MontantVetuste": "0.00",
+      "source_pointers": [
+        "/chiffrages/0/lignes_mo/0"
+      ]
+    }
+  ],
+  "documents": [],
+  "warnings": [],
+  "mapping_status": "ready"
+}

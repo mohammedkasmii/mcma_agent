@@ -1,0 +1,310 @@
+"""
+mcma.domain.rubriques — catalog + corrected classification rules
+(BUSINESS_RULES B.1/B.2/B.4/B.7, DOMAIN_MODEL §3):
+
+- three-origin rule: ordinary parts map ONLY by origin to 1/2/3 — the
+  classifier structurally cannot see a description, so keyword inference of
+  4-6/10-11/13-15 (F33) is impossible;
+- glass: component identity x operation -> 19-24, both required, ambiguity or
+  conflict fails closed (F13);
+- labour: structured-first; explicit labour expressions only; no unrestricted
+  'mo' substring (F15); generic family words alone insufficient;
+- colle/kits: 25/26/27;
+- out-of-catalogue rubric id fails closed (F14).
+"""
+
+from typing import Optional
+
+from mcma.domain.enums import GlassComponent, GlassOperation, LabourFamily, Origin
+from mcma.domain.normalize import normalize_text
+from mcma.domain.results import Mapped, MapResult, NeedsReview, ReasonCode
+from mcma.domain.values import RubriqueId
+
+RUBRIQUE_CATALOG: dict[str, str] = {
+    "1": "FOURNITURES CARROSSERIE (ORIGINES)",
+    "2": "FOURNITURES CARROSSERIE (ADAPTABLES)",
+    "3": "TOTAL PIECES OCCASIONS / RECUPERABLES",
+    "4": "FOURNITURES MECANIQUE (ORIGINES)",
+    "5": "FOURNITURES MECANIQUE (ADAPTABLES)",
+    "6": "FOURNITURES MECANIQUE (RECUPERABLES)",
+    "7": "MAIN D'OEUVRE CARROSSERIE",
+    "8": "MAIN D'OEUVRE MECANIQUE",
+    "9": "MONTANT TOTAL",
+    "10": "PEINTURE (ORIGINES)",
+    "11": "PEINTURE (ADAPTABLES)",
+    "12": "MAIN D'OEUVRE PEINTURE",
+    "13": "ELECTRIQUE (D'ORIGINE)",
+    "14": "ELECTRIQUE (ADAPTABLES)",
+    "15": "ELECTRIQUE (RECUPERABLES)",
+    "16": "PEINTURES ET INGREDIENTS",
+    "17": "PASSAGE AU MARBRE",
+    "18": "PARALLELISME ET EQUILIBRAGE",
+    "19": "REPARATION VITRE",
+    "20": "REMPLACEMENT VITRE",
+    "21": "REPARATION PARE-BRISE",
+    "22": "REMPLACEMENT PARE-BRISE",
+    "23": "REPARATION LUNETTE ARRIERE",
+    "24": "REMPLACEMENT LUNETTE ARRIERE",
+    "25": "COLLE",
+    "26": "KIT COLLE PARE-BRISE ET LUNETTE ARRIERE",
+    "27": "KIT COLLE VITRE",
+    "28": "MAIN D'OEUVRE ELECTRIQUE",
+}
+
+
+# ---------------------------------------------------------------------------
+# Three-origin rule (B.1)
+# ---------------------------------------------------------------------------
+
+_ORIGIN_ALIASES = {
+    Origin.ORIGINAL: {"original", "origine", "oem", "neuf", "neuve", "new"},
+    Origin.ADAPTABLE: {"adaptable", "equivalent", "aftermarket"},
+    Origin.RECOVERED: {"recuperation", "recuperable", "occasion", "used"},
+}
+
+_ORIGIN_RUBRIQUE = {
+    Origin.ORIGINAL: RubriqueId("1"),
+    Origin.ADAPTABLE: RubriqueId("2"),
+    Origin.RECOVERED: RubriqueId("3"),
+}
+
+
+def classify_ordinary_part(part_type: Optional[str], is_original: Optional[bool]) -> MapResult:
+    """Origin ONLY — deliberately takes no description/system hint so no
+    keyword inference into 4-6/10-11/13-15 is possible. Unknown, missing, or
+    contradictory origin signals fail closed."""
+    normalized = normalize_text(part_type) if part_type else ""
+    from_part_type = None
+    for origin, aliases in _ORIGIN_ALIASES.items():
+        if normalized in aliases:
+            from_part_type = origin
+            break
+
+    if from_part_type is None and normalized:
+        return NeedsReview(ReasonCode.UNKNOWN_PART_ORIGIN, detail=f"part_type={part_type!r}")
+    if is_original is True and from_part_type in (Origin.ADAPTABLE, Origin.RECOVERED):
+        return NeedsReview(
+            ReasonCode.UNKNOWN_PART_ORIGIN,
+            detail=f"is_original=True contradicts part_type={part_type!r}",
+        )
+    if is_original is False and from_part_type is Origin.ORIGINAL:
+        return NeedsReview(
+            ReasonCode.UNKNOWN_PART_ORIGIN,
+            detail=f"is_original=False contradicts part_type={part_type!r}",
+        )
+    origin = from_part_type or (Origin.ORIGINAL if is_original is True else None)
+    if origin is None:
+        return NeedsReview(ReasonCode.UNKNOWN_PART_ORIGIN, detail="no origin signal")
+    return Mapped(_ORIGIN_RUBRIQUE[origin])
+
+
+# ---------------------------------------------------------------------------
+# Glass (B.2) — component x operation, both required, fail closed otherwise
+# ---------------------------------------------------------------------------
+
+_COMPONENT_TOKENS = {
+    GlassComponent.VITRE: ("vitre", "glace", "deflecteur"),
+    GlassComponent.PARE_BRISE: ("pare brise", "parebrise"),
+    GlassComponent.LUNETTE_ARRIERE: ("lunette arriere", "lunette ar"),
+}
+
+_OPERATION_TOKENS = {
+    GlassOperation.REPARATION: ("reparation", "resine", "impact"),
+    GlassOperation.REMPLACEMENT: ("remplacement", "pose"),
+}
+
+_GLASS_MATRIX = {
+    (GlassComponent.VITRE, GlassOperation.REPARATION): RubriqueId("19"),
+    (GlassComponent.VITRE, GlassOperation.REMPLACEMENT): RubriqueId("20"),
+    (GlassComponent.PARE_BRISE, GlassOperation.REPARATION): RubriqueId("21"),
+    (GlassComponent.PARE_BRISE, GlassOperation.REMPLACEMENT): RubriqueId("22"),
+    (GlassComponent.LUNETTE_ARRIERE, GlassOperation.REPARATION): RubriqueId("23"),
+    (GlassComponent.LUNETTE_ARRIERE, GlassOperation.REMPLACEMENT): RubriqueId("24"),
+}
+
+
+def glass_rubrique(component: GlassComponent, operation: GlassOperation) -> RubriqueId:
+    return _GLASS_MATRIX[(component, operation)]
+
+
+def _components_in(norm: str) -> set:
+    return {
+        component
+        for component, tokens in _COMPONENT_TOKENS.items()
+        if any(token in norm for token in tokens)
+    }
+
+
+def _operations_in(norm: str) -> set:
+    # Word-boundary matching only: 'depose'/'repose' (removal/refit) must
+    # never substring-match 'pose' (G1 review H7 — same lesson as F15).
+    words = set(norm.split())
+    return {
+        operation
+        for operation, tokens in _OPERATION_TOKENS.items()
+        if any(token in words for token in tokens)
+    }
+
+
+def detect_glass_component(text: Optional[str]) -> Optional[GlassComponent]:
+    components = _components_in(normalize_text(text))
+    return next(iter(components)) if len(components) == 1 else None
+
+
+def has_glass_signal(text: Optional[str]) -> bool:
+    """True when ANY glass-component token is present (including ambiguous
+    multi-component text, which must route to the fail-closed glass path)."""
+    return bool(_components_in(normalize_text(text)))
+
+
+def classify_glass_line(description: Optional[str], operation_hint: Optional[str]) -> MapResult:
+    norm = f"{normalize_text(description)} {normalize_text(operation_hint)}".strip()
+    components = _components_in(norm)
+    operations = _operations_in(norm)
+    if len(components) == 1 and len(operations) == 1:
+        return Mapped(glass_rubrique(next(iter(components)), next(iter(operations))))
+    return NeedsReview(
+        ReasonCode.AMBIGUOUS_GLASS,
+        detail=f"components={sorted(c.value for c in components)} "
+        f"operations={sorted(o.value for o in operations)}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Labour (B.7) — structured-first; explicit expressions only
+# ---------------------------------------------------------------------------
+
+_LABOUR_RUBRIQUE = {
+    LabourFamily.TOLERIE_CARROSSERIE: RubriqueId("7"),
+    LabourFamily.MECANIQUE: RubriqueId("8"),
+    LabourFamily.PEINTURE: RubriqueId("12"),
+    LabourFamily.ELECTRIQUE: RubriqueId("28"),
+    LabourFamily.MARBRE: RubriqueId("17"),
+    LabourFamily.PARALLELISME_EQUILIBRAGE: RubriqueId("18"),
+}
+
+# Self-explicit dedicated operations (marker AND family at once).
+_SELF_EXPLICIT = {
+    LabourFamily.MARBRE: ("marbre",),
+    LabourFamily.PARALLELISME_EQUILIBRAGE: ("parallelisme", "equilibrage", "geometrie"),
+}
+
+# Body-repair verbs implying tolerie/carrosserie labour by themselves.
+_BODY_VERBS = ("debosselage", "redressage")
+# Generic labour operation verbs: mark labour but still need a family word.
+_GENERIC_LABOUR_VERBS = ("montage", "demontage", "depose", "pose")
+
+_FAMILY_WORDS = {
+    LabourFamily.TOLERIE_CARROSSERIE: ("carrosserie", "tolerie"),
+    LabourFamily.MECANIQUE: ("mecanique",),
+    LabourFamily.PEINTURE: ("peinture",),
+    LabourFamily.ELECTRIQUE: ("electrique", "electricite"),
+}
+
+
+def labour_rubrique(family: LabourFamily) -> RubriqueId:
+    return _LABOUR_RUBRIQUE[family]
+
+
+def _explicit_labour_signals(norm: str) -> tuple[bool, set]:
+    """Returns (has_explicit_labour_marker, families named by the text).
+    'mo' matches ONLY as a standalone word — never as a substring (F15)."""
+    words = norm.split()
+    families: set = set()
+    for family, tokens in _SELF_EXPLICIT.items():
+        if any(token in norm for token in tokens):
+            families.add(family)
+
+    marker = bool(families)
+    if "main d oeuvre" in norm or "mo" in words:
+        marker = True
+    if any(verb in words for verb in _GENERIC_LABOUR_VERBS):
+        marker = True
+    if any(verb in words for verb in _BODY_VERBS):
+        marker = True
+        families.add(LabourFamily.TOLERIE_CARROSSERIE)
+
+    if marker:
+        for family, tokens in _FAMILY_WORDS.items():
+            if any(token in norm for token in tokens):
+                families.add(family)
+    return marker, families
+
+
+def classify_labour_line(
+    structured_family: Optional[LabourFamily], text: Optional[str]
+) -> MapResult:
+    """Structured field decides; free text may only VALIDATE, never override.
+    Without a structured family, only explicit labour expressions classify;
+    generic family words alone are insufficient. Ambiguity fails closed."""
+    norm = normalize_text(text)
+    marker, text_families = _explicit_labour_signals(norm)
+
+    if structured_family is not None:
+        if marker and text_families and structured_family not in text_families:
+            return NeedsReview(
+                ReasonCode.CONTRADICTORY_LABOUR,
+                detail=f"structured={structured_family.value} text={sorted(f.value for f in text_families)}",
+            )
+        return Mapped(labour_rubrique(structured_family))
+
+    if not marker:
+        return NeedsReview(ReasonCode.UNKNOWN_LABOUR, detail=f"no explicit labour signal in {text!r}")
+    if len(text_families) == 1:
+        return Mapped(labour_rubrique(next(iter(text_families))))
+    if len(text_families) > 1:
+        return NeedsReview(
+            ReasonCode.CONTRADICTORY_LABOUR,
+            detail=f"families={sorted(f.value for f in text_families)}",
+        )
+    return NeedsReview(ReasonCode.UNKNOWN_LABOUR, detail=f"labour marker without family in {text!r}")
+
+
+# ---------------------------------------------------------------------------
+# Colle / kits (25/26/27) and out-of-catalogue (B.4)
+# ---------------------------------------------------------------------------
+
+def classify_colle(description: Optional[str]) -> Optional[RubriqueId]:
+    # Word-boundary matching: 'collecteur'/'recollee' must never classify as
+    # glue (G1 review H6).
+    words = set(normalize_text(description).split())
+    if not words or ("colle" not in words and "mastic" not in words):
+        return None
+    if "kit" in words:
+        return RubriqueId("27") if "vitre" in words else RubriqueId("26")
+    return RubriqueId("25")
+
+
+_PEINTURE_MATERIAL_PHRASES = (
+    "peintures et ingredients",
+    "peinture et ingredients",
+    "produit de peinture",
+    "produits de peinture",
+)
+
+
+def classify_peinture_materials(description: Optional[str]) -> Optional[RubriqueId]:
+    """Painting materials/products/ingredients → 16 (DOMAIN_MODEL §3). A bare
+    'peinture' is NOT sufficient; physical painting-related parts stay on the
+    origin path (1/2/3) and 10/11 are never produced."""
+    norm = normalize_text(description)
+    if not norm:
+        return None
+    if any(phrase in norm for phrase in _PEINTURE_MATERIAL_PHRASES):
+        return RubriqueId("16")
+    words = set(norm.split())
+    if "ingredient" in words or "ingredients" in words:
+        return RubriqueId("16")
+    return None
+
+
+# Rubrique 9 (MONTANT TOTAL) is an aggregate row — never a line target
+# (G1 review M3).
+_LINE_ASSIGNABLE_RUBRIQUES = frozenset(RUBRIQUE_CATALOG) - {"9"}
+
+
+def resolve_explicit_rubrique(raw_id) -> MapResult:
+    candidate = str(raw_id or "").strip()
+    if candidate in _LINE_ASSIGNABLE_RUBRIQUES:
+        return Mapped(RubriqueId(candidate))
+    return NeedsReview(ReasonCode.UNKNOWN_RUBRIC_ID, detail=f"mcma_rubric_id={raw_id!r}")

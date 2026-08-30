@@ -4,3 +4,7 @@
 # layer is the CI network namespace — see ci/no-egress.md).
 pytest==9.1.1
 pytest-socket==0.7.0
+# INC-03/04 (G1 batch): import contracts + property-based testing + uv tooling
+import-linter==2.14
+hypothesis==6.165.10
+uv==0.12.7

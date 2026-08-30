@@ -1,0 +1,61 @@
+{
+  "dossier": {
+    "claim_number": "SYN-0001",
+    "reference_number": "MCM99-99-99.TEST0001",
+    "mission_type": "normal",
+    "incident_description": "MODE NORMAL",
+    "incident_date": "2024-06-01T00:00:00+00:00",
+    "first_registration_date": "2020-01-15",
+    "market_value": 100000,
+    "salvage_value": 10000,
+    "mileage_km": 50000,
+    "responsibility_rate": 100,
+    "insured_type": "societe",
+    "is_reform": false
+  },
+  "vehicule": {
+    "make": "SYNTH",
+    "model": "TESTCAR",
+    "license_plate": "11111-A-11",
+    "first_registration_date": "2020-01-15",
+    "market_value": 100000
+  },
+  "assureur": {},
+  "observations_expert": {
+    "texte": "Observation synthetique de test (aucune donnee reelle)."
+  },
+  "missions": [],
+  "devis": [],
+  "chiffrages": [
+    {
+      "id": "CH-SYN-1",
+      "status": "approved",
+      "is_final": true,
+      "scenario_type": "repair",
+      "total_cost": 2000,
+      "tax_amount": 400,
+      "final_cost": 2400,
+      "estimated_days": 5,
+      "lignes_pieces": [
+        {
+          "item_type": "part",
+          "item_name": "pare-choc avant",
+          "part_type": "original",
+          "subtotal": 1200
+        },
+        {
+          "item_type": "part",
+          "item_name": "porte laterale",
+          "part_type": "occasion",
+          "subtotal": 300
+        }
+      ],
+      "lignes_mo": [
+        {
+          "operation_type": "main d'oeuvre carrosserie",
+          "subtotal": 500
+        }
+      ]
+    }
+  ]
+}
