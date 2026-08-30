@@ -26,6 +26,7 @@ import uvicorn
 
 import mock_server
 from capabilities_test_support import (
+    ALLOWED_HOST,
     AUTH_LOGIN_CONTRACT,
     AUTH_LOGIN_PAGE_CONTRACT,
     READ_NORMAL_ROWS_CONTRACT,
@@ -35,9 +36,16 @@ from capabilities_test_support import (
 from mcma.portal.capabilities import SessionMaterial, open_login_session, open_reader
 from mcma.portal.session import open_guarded_context
 
-PROOF_HOST = "127.0.0.1"
-PROOF_PORT = 18765
-ALLOWED_HOST = f"{PROOF_HOST}:{PROOF_PORT}"
+# CI run 33317487676 regression: this file previously defined its OWN
+# PROOF_HOST/PROOF_PORT/ALLOWED_HOST literal, independent of the host every
+# contract in capabilities_test_support is built for. The two host values
+# silently diverged (:8080 vs :18765), so no contract could ever match a
+# real request and every one of these 5 tests failed unconditionally. The
+# live server MUST be served on exactly the same host:port ALLOWED_HOST
+# names -- ALLOWED_HOST is imported, never redefined here (see
+# test_host_consistency.py for the permanent regression test).
+PROOF_HOST, _proof_port_str = ALLOWED_HOST.split(":", 1)
+PROOF_PORT = int(_proof_port_str)
 BASE_URL = f"http://{ALLOWED_HOST}"
 
 pytestmark = [pytest.mark.egress_proof, pytest.mark.requires_egress_isolation]

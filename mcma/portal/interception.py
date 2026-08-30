@@ -68,20 +68,23 @@ def _canonical_or_none(request):
         return None
 
 
+_POLICY_DENY_ERROR = "blockedbyclient"  # distinguishes a deliberate guard
+# denial from a generic transport failure in every future log/devtools trace.
+
+
 def _make_route_handler(contracts: Sequence[RouteContract], allowed_host: str):
     """Returns the actual context.route() handler. Any exception anywhere in
     this function -- descriptor extraction, decision evaluation, an
-    unexpectedly broken `contracts` argument -- results in abort(), never a
+    unexpectedly broken `contracts` argument, or continue_()/abort() itself
+    raising -- results in abort(), never an escaped exception and never a
     fall-through continue()."""
 
     async def handler(route: "Route") -> None:
         request = route.request
-        # --- TEMPORARY CI-ONLY DIAGNOSTICS (investigating CI run 33316988633;
-        # 5/5 amendment-7 proofs failing with net::ERR_FAILED on an ALLOWED
-        # navigation). Capture-print-reraise only: this does not change what
-        # exception propagates or when, so it does not change pass/fail
-        # outcomes -- it only makes the failure visible in CI logs. Remove
-        # once the confirmed root cause is fixed.
+        # --- TEMPORARY CI-ONLY DIAGNOSTICS (investigating CI runs
+        # 33316988633/33317487676; kept for one more run per review
+        # sequencing, to observe a real-browser ALLOW+continue_() succeed for
+        # the first time in this project). Remove once CI confirms green.
         print(
             f"[DIAG intercept] url={request.url!r} method={request.method!r} "
             f"resource_type={getattr(request, 'resource_type', None)!r}"
@@ -92,28 +95,37 @@ def _make_route_handler(contracts: Sequence[RouteContract], allowed_host: str):
         except Exception:
             print(f"[DIAG intercept] EXCEPTION during descriptor/decision for {request.url!r}:")
             traceback.print_exc()
-            await route.abort()
+            await _abort_never_raising(route, request)
             return
         print(f"[DIAG intercept] canonical={canonical!r} decision={decision!r} url={request.url!r}")
-        if decision is Decision.ALLOW:
-            try:
+        # --- END TEMPORARY DIAGNOSTICS (the try/except below is the actual
+        # fix, not diagnostic-only; see mcma.portal.interception module docs) ---
+        try:
+            if decision is Decision.ALLOW:
                 await route.continue_()
                 print(f"[DIAG intercept] continue_() returned normally for {request.url!r}")
-            except Exception:
-                print(f"[DIAG intercept] continue_() RAISED for {request.url!r}:")
-                traceback.print_exc()
-                raise
-        else:
-            try:
-                await route.abort()
+            else:
+                await route.abort(_POLICY_DENY_ERROR)
                 print(f"[DIAG intercept] abort() returned normally for {request.url!r}")
-            except Exception:
-                print(f"[DIAG intercept] abort() RAISED for {request.url!r}:")
-                traceback.print_exc()
-                raise
-        # --- END TEMPORARY DIAGNOSTICS ---
+        except Exception:
+            print(f"[DIAG intercept] continue_()/abort() RAISED for {request.url!r} decision={decision!r}:")
+            traceback.print_exc()
+            await _abort_never_raising(route, request)
 
     return handler
+
+
+async def _abort_never_raising(route: "Route", request) -> None:
+    """Best-effort fail-closed abort that itself never raises: whatever
+    already went wrong, the handler coroutine must still return normally
+    rather than let an exception escape (an escaped exception is exactly
+    what produces the ambiguous, un-attributable net::ERR_FAILED this
+    function exists to prevent)."""
+    try:
+        await route.abort(_POLICY_DENY_ERROR)
+    except Exception:
+        print(f"[DIAG intercept] fallback abort() ALSO RAISED for {request.url!r}:")
+        traceback.print_exc()
 
 
 async def _deny_websocket(ws_route: "WebSocketRoute") -> None:
