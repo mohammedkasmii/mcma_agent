@@ -2,7 +2,7 @@
 INC-06 — observable mock state per workflow, and deterministic reset.
 """
 
-from conftest import state
+from mock_test_support import state
 
 
 def test_reset_restores_deterministic_initial_state(client):

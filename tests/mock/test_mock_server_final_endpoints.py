@@ -7,7 +7,7 @@ stays absent.
 
 import json
 
-from conftest import FINAL_ENDPOINT_ROUTES, FIXTURES_DIR, state
+from mock_test_support import FINAL_ENDPOINT_ROUTES, FIXTURES_DIR, state
 
 
 def test_every_final_endpoint_is_a_registered_sentinel(client):

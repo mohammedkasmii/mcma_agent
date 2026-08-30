@@ -44,7 +44,7 @@ def test_mock_server_binds_loopback_only():
 
 
 def test_final_endpoint_hit_count_starts_at_zero(client):
-    from conftest import state, FINAL_ENDPOINT_ROUTES
+    from mock_test_support import state, FINAL_ENDPOINT_ROUTES
 
     hits = state(client)["observability"]["final_endpoint_hits"]
     for name in FINAL_ENDPOINT_ROUTES:

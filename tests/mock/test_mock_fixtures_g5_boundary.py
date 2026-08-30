@@ -7,7 +7,7 @@ deployed-commit binding, and safety evidence.
 
 import json
 
-from conftest import FIXTURES_DIR
+from mock_test_support import FIXTURES_DIR
 
 ALL_FIXTURE_FILES = sorted(FIXTURES_DIR.glob("*.json"))
 

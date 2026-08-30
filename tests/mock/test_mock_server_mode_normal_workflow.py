@@ -5,7 +5,7 @@ INC-06 — Mode Normal DOM + HTTP/state lifecycle against the offline mock.
 import json
 import re
 
-from conftest import FIXTURES_DIR, NORMAL_CHARGE_FIELDS, state
+from mock_test_support import FIXTURES_DIR, NORMAL_CHARGE_FIELDS, state
 
 
 def _section_normal(html: str) -> str:

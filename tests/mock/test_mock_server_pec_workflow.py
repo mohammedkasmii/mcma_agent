@@ -5,7 +5,7 @@ offline mock.
 
 import json
 
-from conftest import FIXTURES_DIR, PEC_CHARGE_FIELDS, state
+from mock_test_support import FIXTURES_DIR, PEC_CHARGE_FIELDS, state
 
 
 def _section_pec(html: str) -> str:
