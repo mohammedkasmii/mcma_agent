@@ -81,5 +81,14 @@ class ActiveReviewRegistry:
     def is_account_active(self, account_id: str) -> bool:
         return account_id in self._job_id_by_account_id
 
+    def active_job_for_account(self, account_id: str) -> Optional[str]:
+        """The job_id currently holding this account's review session, or
+        None. Unlike is_account_active this lets a caller tell "some
+        OTHER job has it" from "this same job already has it", which is
+        what the runner needs to refuse a second same-account job BEFORE
+        it creates a browser context rather than after it has already
+        written (pilot-runner correction, requirement 4)."""
+        return self._job_id_by_account_id.get(account_id)
+
     def active_job_count(self) -> int:
         return len(self._handle_by_job_id)

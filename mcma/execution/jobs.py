@@ -63,6 +63,18 @@ class JobAuthorizationError(Exception):
         self.reason_code = reason_code
 
 
+class AccountBusy(Exception):
+    """Raised BY an injected acquire callable (never by this module) when
+    the job cannot start because another job currently holds the shared
+    portal account -- either its account_leases row or its active review
+    session. Distinguished from every other acquire failure so the job
+    row records ACCOUNT_BUSY_ANOTHER_JOB_ACTIVE rather than the untrue
+    IDENTITY_EXCEPTION_LeaseNotHeld: contention is not an identity
+    mismatch, and an operator reading the job list must be able to tell
+    'someone else has the account' apart from 'this dossier's identity
+    did not match'."""
+
+
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -370,6 +382,35 @@ def run_dry_run_identity_check(conn, job_id: str, *, check_identity_read_only: C
     return matched
 
 
+async def run_dry_run_identity_check_async(
+    conn, job_id: str, *, check_identity_read_only: Callable[[], Any]
+) -> bool:
+    """Async twin of run_dry_run_identity_check, for the real job runner
+    (mcma.execution.runner), where the injected step is a genuine
+    awaitable Playwright/portal read. The runner previously ran that read
+    EAGERLY and passed the finished boolean in as `lambda: matched`, so
+    READ_ONLY_IDENTITY_CHECK was recorded only after the browser had
+    already searched, opened and observed the dossier -- a crash during
+    that read left the job at PLANNED, which restart reconciliation
+    returns straight to QUEUED for a full replay (reconcile._RETURN_TO_
+    QUEUED_STATUSES). Awaiting the callable here means the status is
+    durably READ_ONLY_IDENTITY_CHECK before any browser identity I/O
+    starts, so an interrupted read is reconciled as an interrupted read.
+
+    Same structural guarantee as the sync version: `check_identity_read_
+    only` is a bare bool-returning awaitable, never anything writer-
+    shaped. Any change to the status sequence must be made in BOTH this
+    function and run_dry_run_identity_check."""
+    _require_mode(AutomationJobsRepository(conn).get(job_id), "DRY_RUN")
+    transition(conn, job_id, "READ_ONLY_IDENTITY_CHECK")
+    matched = await check_identity_read_only()
+    if matched:
+        transition(conn, job_id, "DRY_RUN_VERIFIED")
+    else:
+        transition(conn, job_id, "IDENTITY_FAILED")
+    return matched
+
+
 # --------------------------------------------------------------------- #
 # EXECUTE (VerifiedMissionWriter; lease held only ACQUIRING_ACCOUNT_LOCK
 # through VERIFYING)
@@ -493,7 +534,8 @@ async def run_execute_write_async(
     job_id: str,
     *,
     acquire_lease_and_verify_identity: Callable[[], Any],
-    perform_writes_and_verify: Callable[[Any], bool],
+    perform_writes: Callable[[Any], Any],
+    verify_writes: Callable[[Any], Any],
 ) -> str:
     """Async twin of run_execute_write (pilot-runner correction), for the
     real job runner (mcma.execution.runner) where the injected steps are
@@ -501,16 +543,33 @@ async def run_execute_write_async(
     synchronous callables cannot be bridged onto the runner's asyncio
     event loop from here -- Playwright's async API is tied to the loop it
     was started on, so a callable that internally spawned its own loop/
-    thread to "go synchronous" would silently break it. This mirrors
-    run_execute_write's exact transition sequence and exception handling
-    with `await` in place of a plain call, so real browser I/O happens
-    only AFTER the corresponding transition() has already committed --
-    e.g. the lease is acquired/browser opened only once IDENTITY_
-    VERIFYING is durably recorded, and rows are only written once WRITING
-    is durably recorded -- instead of the reverse (all I/O first, state
-    caught up afterward), which left a crash mid-I/O invisible to restart
-    reconciliation. Any change to the status sequence must be made in
-    BOTH this function and run_execute_write.
+    thread to "go synchronous" would silently break it. Real browser I/O
+    therefore happens only AFTER the corresponding transition() has
+    already committed: the lease is acquired and the browser opened only
+    once IDENTITY_VERIFYING is durably recorded, rows are mutated only
+    once WRITING is durably recorded, and read-back runs only once
+    VERIFYING is durably recorded.
+
+    The write phase is split into TWO callables rather than one. Folding
+    read-back into `perform_writes` would leave VERIFYING a rubber stamp
+    -- entered only after verification had already passed, so the status
+    could never truthfully say "this job is mid-read-back", and an
+    interruption during read-back would be indistinguishable from an
+    interruption during mutation. Callers must therefore keep every
+    mutation in `perform_writes` and every read-back in `verify_writes`.
+    Both return truthy for success; either may raise.
+
+    Every terminal transition here is fenced with expected_from_statuses
+    because the runner registers its browser-close observer BEFORE the
+    first mutation (section 4 / F.4): an employee closing the window
+    mid-write drives transition_on_browser_closed concurrently with this
+    function, and whichever commits first must win outright. When this
+    function loses that race it reports the status the close callback
+    already committed instead of overwriting it -- one job, one recorded
+    outcome, never a conflicting double transition.
+
+    Any change to the status sequence must be made in BOTH this function
+    and run_execute_write.
     """
     job_row = AutomationJobsRepository(conn).get(job_id)
     _require_mode(job_row, "EXECUTE")
@@ -523,25 +582,118 @@ async def run_execute_write_async(
     transition(conn, job_id, "IDENTITY_VERIFYING")
     try:
         writer = await acquire_lease_and_verify_identity()
-    except Exception:
-        transition(conn, job_id, "IDENTITY_FAILED")
+    except (AccountBusy, Exception) as exc:
+        reason_code = (
+            "ACCOUNT_BUSY_ANOTHER_JOB_ACTIVE"
+            if isinstance(exc, AccountBusy)
+            else f"IDENTITY_EXCEPTION_{type(exc).__name__}"
+        )
+        try:
+            transition(
+                conn, job_id, "IDENTITY_FAILED", reason_code=reason_code,
+                expected_from_statuses=frozenset({"IDENTITY_VERIFYING"}),
+            )
+        except JobPreconditionMismatch as mismatch:
+            return mismatch.observed_status
         return "IDENTITY_FAILED"
-    transition(conn, job_id, "IDENTITY_VERIFIED")
+    transition(conn, job_id, "IDENTITY_VERIFIED", expected_from_statuses=frozenset({"IDENTITY_VERIFYING"}))
 
     transition(conn, job_id, "WRITING")
-    write_exception_reason = None
+    outcome = await _run_write_phase(
+        conn, job_id, writer, perform_writes, from_status="WRITING",
+        failed_status="WRITE_ABORTED", exception_prefix="WRITE_EXCEPTION",
+        failure_reason="WRITE_NOT_CONFIRMED",
+    )
+    if outcome is not None:
+        return outcome
+
+    transition(conn, job_id, "VERIFYING", expected_from_statuses=frozenset({"WRITING"}))
+    outcome = await _run_write_phase(
+        conn, job_id, writer, verify_writes, from_status="VERIFYING",
+        failed_status="WRITE_ABORTED", exception_prefix="VERIFY_EXCEPTION",
+        failure_reason="VERIFY_READ_BACK_FAILED",
+    )
+    if outcome is not None:
+        return outcome
+
     try:
-        succeeded = await perform_writes_and_verify(writer)
+        transition(
+            conn, job_id, "READY_FOR_HUMAN_REVIEW",
+            expected_from_statuses=frozenset({"VERIFYING"}),
+        )
+    except JobPreconditionMismatch as exc:
+        return exc.observed_status
+    return "READY_FOR_HUMAN_REVIEW"
+
+
+async def _run_write_phase(
+    conn,
+    job_id: str,
+    writer,
+    step: Callable[[Any], Any],
+    *,
+    from_status: str,
+    failed_status: str,
+    exception_prefix: str,
+    failure_reason: str,
+) -> Optional[str]:
+    """Runs one awaited phase of the write sequence and records its
+    failure, if any. Returns None when the phase succeeded and the caller
+    should continue, or the status to report when it did not -- including
+    the case where a concurrent browser-close callback already committed
+    a different outcome for this job, which is reported as-is rather than
+    overwritten."""
+    reason_code = failure_reason
+    try:
+        succeeded = await step(writer)
     except Exception as exc:
         succeeded = False
-        write_exception_reason = f"WRITE_EXCEPTION_{type(exc).__name__}"
-    if not succeeded:
-        transition(conn, job_id, "WRITE_ABORTED", reason_code=write_exception_reason)
-        return "WRITE_ABORTED"
+        reason_code = f"{exception_prefix}_{type(exc).__name__}"
+    if succeeded:
+        return None
+    try:
+        transition(
+            conn, job_id, failed_status, reason_code=reason_code,
+            expected_from_statuses=frozenset({from_status}),
+        )
+    except JobPreconditionMismatch as exc:
+        return exc.observed_status
+    return failed_status
 
-    transition(conn, job_id, "VERIFYING")
-    transition(conn, job_id, "READY_FOR_HUMAN_REVIEW")
-    return "READY_FOR_HUMAN_REVIEW"
+
+def fail_closed_on_runner_exception(conn, job_id: str, reason_code: str) -> Optional[str]:
+    """Last-resort truthful landing for an unexpected exception escaping
+    the runner (pilot-runner correction, requirement 2). A job must never
+    be left sitting at QUEUED/PLANNING/PLANNED after portal work has in
+    fact begun: restart reconciliation returns exactly those statuses to
+    QUEUED for a full replay, which for an EXECUTE job would mean
+    re-writing rows that may already be in the portal.
+
+    Pre-portal statuses therefore land on ERROR (nothing was touched, but
+    this attempt is over and must not silently replay), and anything from
+    ACQUIRING_ACCOUNT_LOCK through VERIFYING lands on INTERRUPTED_NEEDS_
+    HUMAN_REVIEW -- the same status a genuine mid-write interruption
+    already uses, because that is exactly what this is. A job already in
+    human handoff or already terminal is left alone and None is returned:
+    an outcome has been recorded and nothing here may overwrite it."""
+    row = AutomationJobsRepository(conn).get(job_id)
+    if row is None:
+        return None
+    status = row["status"]
+    if status in _PRE_PORTAL_STATUSES:
+        new_status = "ERROR"
+    elif status in _WRITE_IN_PROGRESS_STATUSES or status == "READ_ONLY_IDENTITY_CHECK":
+        new_status = "INTERRUPTED_NEEDS_HUMAN_REVIEW"
+    else:
+        return None
+    try:
+        transition(
+            conn, job_id, new_status, reason_code=reason_code, finished_at=_utcnow_iso(),
+            expected_from_statuses=frozenset({status}),
+        )
+    except JobPreconditionMismatch:
+        return None
+    return new_status
 
 
 # --------------------------------------------------------------------- #
@@ -559,6 +711,10 @@ async def run_execute_write_async(
 _WRITE_IN_PROGRESS_STATUSES = frozenset(
     {"ACQUIRING_ACCOUNT_LOCK", "IDENTITY_VERIFYING", "IDENTITY_VERIFIED", "WRITING", "VERIFYING"}
 )
+# Statuses reached before ANY portal contact -- the only ones from which
+# an unexpected runner exception can safely be called an ERROR rather
+# than an interruption (fail_closed_on_runner_exception).
+_PRE_PORTAL_STATUSES = frozenset({"QUEUED", "PLANNING", "PLANNED"})
 _HUMAN_HANDOFF_STATUSES = frozenset({"READY_FOR_HUMAN_REVIEW", "AWAITING_HUMAN_CONFIRMATION"})
 
 

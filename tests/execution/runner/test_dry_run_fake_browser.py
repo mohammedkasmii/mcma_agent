@@ -11,6 +11,7 @@ loopback-only isolated-CI mechanism test_runner_live_chromium_proof.py
 needs -- it runs in every local/CI pass, `-m "not egress_proof"` included.
 """
 
+from mcma.execution import runner as runner_module
 from mcma.execution.browser_handoff import ActiveReviewRegistry
 from mcma.execution.runner import RunnerConfig, process_one_queued_dry_run, process_queued_dry_run_jobs
 from mcma.persistence.leases import acquire_lease
@@ -146,3 +147,59 @@ def test_process_queued_dry_run_jobs_drains_the_queue_via_fakes(conn, vault_dir,
 
 async def _run(job_id, browser, cfg, conn, encryptor):
     return await process_one_queued_dry_run(conn, job_id, browser=browser, cfg=cfg, encryptor=encryptor)
+
+
+def test_dry_run_status_is_already_read_only_identity_check_during_the_browser_read(
+    conn, vault_dir, crypto_backend, encryptor, monkeypatch
+):
+    """Pilot-runner correction (requirement 1): the DRY_RUN identity read
+    used to run EAGERLY and be passed to run_dry_run_identity_check as an
+    already-computed boolean, so READ_ONLY_IDENTITY_CHECK was recorded
+    only afterwards and a crash mid-read left the job at PLANNED -- which
+    reconciliation returns to QUEUED for a full replay. The status must
+    already be READ_ONLY_IDENTITY_CHECK while the browser read is in
+    flight."""
+    from mcma.persistence.repositories.jobs import AutomationJobsRepository
+
+    seed_mcma_oujda_session(conn, vault_dir, crypto_backend)
+    job_id = _enqueue_dry_run(conn, encryptor, typed_input=MODE_NORMAL_TYPED_INPUT, key="fake-order-1")
+    observed = {}
+
+    real_observe = runner_module._observe_and_verify_identity
+
+    async def _observing(conn_, browser_, cfg_, account_id_, job_id_, plan_):
+        observed["status_during_read"] = AutomationJobsRepository(conn_).get(job_id_)["status"]
+        return await real_observe(conn_, browser_, cfg_, account_id_, job_id_, plan_)
+
+    monkeypatch.setattr(runner_module, "_observe_and_verify_identity", _observing)
+
+    browser = FakeBrowser([_MODE_NORMAL_SEARCH_RESULT, _MATCHING_IDENTITY])
+    cfg = _cfg(vault_dir, crypto_backend)
+    run_async(process_one_queued_dry_run(conn, job_id, browser=browser, cfg=cfg, encryptor=encryptor))
+
+    assert observed["status_during_read"] == "READ_ONLY_IDENTITY_CHECK"
+
+
+def test_dry_run_crash_during_the_browser_read_never_leaves_the_job_planned(
+    conn, vault_dir, crypto_backend, encryptor, monkeypatch
+):
+    """Requirement 2: an unexpected exception during the identity read
+    must land truthfully, never at PLANNED (silently replayable)."""
+    from mcma.persistence.repositories.jobs import AutomationJobsRepository
+
+    seed_mcma_oujda_session(conn, vault_dir, crypto_backend)
+    job_id = _enqueue_dry_run(conn, encryptor, typed_input=MODE_NORMAL_TYPED_INPUT, key="fake-crash-1")
+
+    async def _explode(*args, **kwargs):
+        raise RuntimeError("browser died mid-read")
+
+    monkeypatch.setattr(runner_module, "_observe_and_verify_identity", _explode)
+
+    browser = FakeBrowser([])
+    cfg = _cfg(vault_dir, crypto_backend)
+    outcomes = run_async(process_queued_dry_run_jobs(conn, browser=browser, cfg=cfg, encryptor=encryptor))
+
+    assert outcomes == ("RUNNER_ERROR_RuntimeError",)
+    row = AutomationJobsRepository(conn).get(job_id)
+    assert row["status"] == "INTERRUPTED_NEEDS_HUMAN_REVIEW"
+    assert row["reason_code"] == "RUNNER_EXCEPTION_RuntimeError"

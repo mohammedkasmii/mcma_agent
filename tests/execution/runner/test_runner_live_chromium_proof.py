@@ -57,7 +57,7 @@ def _cfg(vault_dir, crypto_backend) -> RunnerConfig:
     )
 
 
-def _enqueue_dry_run(conn, encryptor, *, typed_input, key):
+def _enqueue_dry_run(conn, encryptor, *, typed_input, key, account_id=MCMA_OUJDA_ACCOUNT_ID):
     import json
 
     from mcma.execution.inputs import compute_content_hash
@@ -70,7 +70,7 @@ def _enqueue_dry_run(conn, encryptor, *, typed_input, key):
     typed_input_bytes = json.dumps(typed_input, sort_keys=True).encode("utf-8")
     return enqueue_dry_run(
         conn,
-        account_id=MCMA_OUJDA_ACCOUNT_ID,
+        account_id=account_id,
         requested_by_user_id="operator-1",
         workflow_name=workflow_name,
         input_hash=compute_content_hash(typed_input_bytes),
@@ -160,8 +160,10 @@ def test_process_queued_dry_run_jobs_discovers_and_drains_every_queued_job(
     assert run_async(_run()) == ()
 
 
-def _execute_job_planned(conn, encryptor, *, typed_input, key):
-    dry_run_job_id = _enqueue_dry_run(conn, encryptor, typed_input=typed_input, key=f"{key}-dry")
+def _execute_job_planned(conn, encryptor, *, typed_input, key, account_id=MCMA_OUJDA_ACCOUNT_ID):
+    dry_run_job_id = _enqueue_dry_run(
+        conn, encryptor, typed_input=typed_input, key=f"{key}-dry", account_id=account_id
+    )
     # DRY_RUN_VERIFIED is required before an EXECUTE may reference it as
     # parent -- set directly here (the identity gate itself is proven by
     # the DRY_RUN tests above; this focuses on EXECUTE's own wiring).
@@ -175,7 +177,7 @@ def _execute_job_planned(conn, encryptor, *, typed_input, key):
     parent = AutomationJobsRepository(conn).get(dry_run_job_id)
     execute_job_id = enqueue_execute(
         conn,
-        account_id=MCMA_OUJDA_ACCOUNT_ID,
+        account_id=account_id,
         requested_by_user_id="operator-1",
         workflow_name=parent["workflow_name"],
         input_hash=parent["input_hash"],

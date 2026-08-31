@@ -55,11 +55,15 @@ def test_async_success_reaches_ready_for_human_review(conn, encryptor):
     async def _perform(writer):
         return True
 
+    async def _verify(writer):
+        return True
+
     outcome = asyncio.run(
         run_execute_write_async(
             conn, execute_id,
             acquire_lease_and_verify_identity=_acquire,
-            perform_writes_and_verify=_perform,
+            perform_writes=_perform,
+            verify_writes=_verify,
         )
     )
     assert outcome == "READY_FOR_HUMAN_REVIEW"
@@ -70,8 +74,9 @@ def test_async_success_reaches_ready_for_human_review(conn, encryptor):
 def test_async_transitions_commit_before_the_callable_runs(conn, encryptor):
     """The core bug fix: the DB must already show IDENTITY_VERIFYING (not
     PLANNED) by the time the 'browser I/O' callable is invoked, and WRITING
-    (not IDENTITY_VERIFIED) by the time the write callable is invoked --
-    proving state is durable BEFORE the I/O, not caught up after it."""
+    (not IDENTITY_VERIFIED) by the time the write callable is invoked, and
+    VERIFYING (not WRITING) by the time read-back is invoked -- proving
+    state is durable BEFORE the I/O, not caught up after it."""
     execute_id = _make_planned_execute(conn, encryptor, {"dossier": "async-2"}, "async-exec-2")
     observed = {}
 
@@ -83,15 +88,21 @@ def test_async_transitions_commit_before_the_callable_runs(conn, encryptor):
         observed["status_during_write"] = AutomationJobsRepository(conn).get(execute_id)["status"]
         return True
 
+    async def _verify(writer):
+        observed["status_during_verify"] = AutomationJobsRepository(conn).get(execute_id)["status"]
+        return True
+
     asyncio.run(
         run_execute_write_async(
             conn, execute_id,
             acquire_lease_and_verify_identity=_acquire,
-            perform_writes_and_verify=_perform,
+            perform_writes=_perform,
+            verify_writes=_verify,
         )
     )
     assert observed["status_during_acquire"] == "IDENTITY_VERIFYING"
     assert observed["status_during_write"] == "WRITING"
+    assert observed["status_during_verify"] == "VERIFYING"
 
 
 def test_async_identity_failure_stops_before_writing(conn, encryptor):
@@ -105,11 +116,15 @@ def test_async_identity_failure_stops_before_writing(conn, encryptor):
         write_attempted["called"] = True
         return True
 
+    async def _verify(writer):
+        return True
+
     outcome = asyncio.run(
         run_execute_write_async(
             conn, execute_id,
             acquire_lease_and_verify_identity=_fail_identity,
-            perform_writes_and_verify=_perform,
+            perform_writes=_perform,
+            verify_writes=_verify,
         )
     )
     assert outcome == "IDENTITY_FAILED"
@@ -125,11 +140,15 @@ def test_async_write_failure_reaches_write_aborted(conn, encryptor):
     async def _perform(writer):
         return False
 
+    async def _verify(writer):
+        return True
+
     outcome = asyncio.run(
         run_execute_write_async(
             conn, execute_id,
             acquire_lease_and_verify_identity=_acquire,
-            perform_writes_and_verify=_perform,
+            perform_writes=_perform,
+            verify_writes=_verify,
         )
     )
     assert outcome == "WRITE_ABORTED"
@@ -158,11 +177,15 @@ def _make_awaiting_confirmation_execute(conn, encryptor, payload, key):
     async def _perform(writer):
         return True
 
+    async def _verify(writer):
+        return True
+
     asyncio.run(
         run_execute_write_async(
             conn, execute_id,
             acquire_lease_and_verify_identity=_acquire,
-            perform_writes_and_verify=_perform,
+            perform_writes=_perform,
+            verify_writes=_verify,
         )
     )
     from mcma.execution.jobs import transition

@@ -1185,6 +1185,27 @@ class VerifiedMissionWriter:
 
     # -- lifecycle --------------------------------------------------------
 
+    @property
+    def is_closed(self) -> bool:
+        """True once close() has been called on this writer. Read-only:
+        exposes no context/page object and cannot drive anything."""
+        return self._closed
+
+    @property
+    def is_terminally_aborted(self) -> bool:
+        """True once this writer has aborted itself (policy deny-all
+        engaged, context being closed by _terminal_abort). Read-only.
+
+        Pilot-runner correction (section 4): _terminal_abort sets this
+        BEFORE awaiting context.close(), so a close-callback subscriber
+        can always distinguish "the writer tore itself down and the write
+        path is already recording the outcome" from "the employee closed
+        the review window". Without that distinction both look identical
+        from context.on('close'), and an internal abort would race a
+        write-failure transition against a browser-closed transition for
+        the same job."""
+        return self._terminally_aborted
+
     async def close(self) -> None:
         if self._closed:
             return
