@@ -16,7 +16,13 @@ from mcma.persistence.repositories.jobs import AutomationJobsRepository
 
 _RETURN_TO_QUEUED_STATUSES = frozenset({"QUEUED", "PLANNING", "PLANNED", "READ_ONLY_IDENTITY_CHECK"})
 _PRE_WRITE_ABORT_STATUSES = frozenset({"ACQUIRING_ACCOUNT_LOCK", "IDENTITY_VERIFYING", "IDENTITY_VERIFIED"})
-_INTERRUPTED_STATUSES = frozenset({"WRITING", "VERIFYING"})
+# Correction batch (human browser handoff, F.6): READY_FOR_HUMAN_REVIEW is
+# no longer terminal, and a restart during it means the browser context
+# is no longer provably available (this process may not even be the one
+# that had it open) -- it fails closed to INTERRUPTED_NEEDS_HUMAN_REVIEW
+# exactly like a genuine mid-write interruption, never auto-resumed and
+# never silently treated as though a human already confirmed it.
+_INTERRUPTED_STATUSES = frozenset({"WRITING", "VERIFYING", "READY_FOR_HUMAN_REVIEW"})
 
 
 def reconcile_on_restart(conn, *, encryptor) -> dict:

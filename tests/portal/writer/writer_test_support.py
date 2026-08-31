@@ -15,10 +15,22 @@ from mcma.domain.values import RubriqueId
 from mcma.portal.capabilities import LeaseInvalid
 from mcma.portal.contracts import RouteContract
 from mcma.portal.identity import ExpectedIdentity
+from mcma.portal.writer import require_mcma_writer_account
 
 FIXTURES_DIR = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "contracts"
 
 ALLOWED_HOST = "127.0.0.1:8080"
+SYNTHETIC_ACCOUNT_ID = "synthetic-account"
+
+
+def mcma_writer_account(account_id: str = SYNTHETIC_ACCOUNT_ID):
+    """MAMDA read-only enforcement, layer 3: every open_verified_writer()
+    call in these tests must present an McmaWriterAccountContext whose
+    account_id matches the SyntheticLeaseHandle it is paired with."""
+    return require_mcma_writer_account(account_id, entity="MCMA", active=True)
+
+
+MCMA_WRITER_ACCOUNT = mcma_writer_account()
 
 
 def run_async(coro):

@@ -24,17 +24,31 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
+from mcma.domain.portal_accounts import PortalAccountProfile
 from mcma.execution.inputs import InputEncryptor, default_expiry
+from mcma.persistence.repositories.accounts import AccountsRepository
+from mcma.persistence.repositories.audit import AuditEventsRepository
 from mcma.persistence.repositories.jobs import AutomationJobsRepository, JobInputsRepository
 from mcma.persistence.repositories.outbox import AccountStateVersionRepository, EventOutboxRepository
 
+# Correction batch (owner amendment, human browser handoff): READY_FOR_
+# HUMAN_REVIEW is NO LONGER terminal -- it means agent work is finished
+# and the browser stays open for human review, not that the job is done.
+# AWAITING_HUMAN_CONFIRMATION IS treated as terminal here (excluded from
+# restart reconciliation's list_non_terminal(), per F.7 "may remain
+# awaiting explicit human confirmation after restart") even though it is
+# not semantically final -- only an explicit employee action
+# (confirm_review_completed/report_review_problem) ever moves it further;
+# nothing in this module auto-advances it. HUMAN_CONFIRMED_COMPLETE is
+# genuinely terminal.
 TERMINAL_STATUSES = frozenset(
     {
         "DRY_RUN_VERIFIED",
         "NEEDS_REVIEW",
         "IDENTITY_FAILED",
         "WRITE_ABORTED",
-        "READY_FOR_HUMAN_REVIEW",
+        "AWAITING_HUMAN_CONFIRMATION",
+        "HUMAN_CONFIRMED_COMPLETE",
         "INTERRUPTED_NEEDS_HUMAN_REVIEW",
         "ABORTED_ON_RESTART",
         "ERROR",
@@ -77,6 +91,12 @@ def _enqueue(
     if existing is not None:
         return existing["job_id"]  # idempotent resubmit -- never silently re-run
 
+    # MAMDA read-only enforcement, defense-in-depth layer 2 (correction
+    # batch): re-checked here too, BEFORE any job/job_inputs/outbox row is
+    # created -- not only at the writer-construction boundary later, and
+    # never trusting that the API (layer 1) already checked this.
+    _require_mcma_writable_account(conn, account_id)
+
     job_id = uuid.uuid4().hex
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
@@ -103,6 +123,12 @@ def _enqueue(
         )
         EventOutboxRepository(conn).insert(
             account_id, version, "job", "JOB_CREATED", json.dumps({"job_id": job_id, "status": "QUEUED"}), now
+        )
+        # Employee account selection (correction batch, section E): the
+        # selected account_id is recorded in BOTH the job row (above) and
+        # here, in audit data, atomically with creation.
+        AuditEventsRepository(conn).record(
+            uuid.uuid4().hex, "JOB_CREATED", now, actor_user_id=requested_by_user_id, account_id=account_id, job_id=job_id
         )
         conn.execute("COMMIT")
     except Exception:
@@ -181,7 +207,15 @@ def transition(
     authorized_by_user_id: Optional[str] = None,
     started_at: Optional[str] = None,
     finished_at: Optional[str] = None,
+    audit_actor_user_id: Optional[str] = None,
+    audit_action: Optional[str] = None,
 ) -> None:
+    """`audit_actor_user_id`/`audit_action` are optional (correction batch,
+    human browser handoff, section G): when `audit_action` is given, an
+    audit_events row is written in the SAME transaction as the job-row
+    update and outbox event -- G requires the human-confirmation
+    transition to be atomic with its audit record, not a second,
+    separately-committed write."""
     jobs_repo = AutomationJobsRepository(conn)
     row = jobs_repo.get(job_id)
     if row is None:
@@ -209,6 +243,15 @@ def transition(
             json.dumps({"job_id": job_id, "status": new_status}),
             _utcnow_iso(),
         )
+        if audit_action is not None:
+            AuditEventsRepository(conn).record(
+                uuid.uuid4().hex,
+                audit_action,
+                _utcnow_iso(),
+                actor_user_id=audit_actor_user_id,
+                account_id=account_id,
+                job_id=job_id,
+            )
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -219,6 +262,24 @@ def transition(
 # DRY_RUN (ReadCapability only -- no VerifiedMissionWriter ever exists on
 # this path)
 # --------------------------------------------------------------------- #
+
+
+def _require_mcma_writable_account(conn, account_id: str) -> None:
+    """MAMDA read-only enforcement, defense-in-depth layer 2 (correction
+    batch / owner amendment). ALWAYS re-reads the account row fresh --
+    never trusts that the API (layer 1) already checked this, and this
+    check alone is still not the last word: mcma.portal.writer's
+    require_mcma_writer_account() (layer 3) independently refuses to
+    construct a writer for anything but an McmaWriterAccountContext, so a
+    caller that skipped this function cannot reach a writer either way."""
+    account = AccountsRepository(conn).get(account_id)
+    if account is None:
+        raise JobAuthorizationError("ACCOUNT_NOT_FOUND")
+    if not account.active:
+        raise JobAuthorizationError("ACCOUNT_NOT_ACTIVE")
+    profile = PortalAccountProfile.from_row(account.entity, account.scope)
+    if not profile.is_mcma:
+        raise JobAuthorizationError("MAMDA_ACCOUNT_NOT_WRITABLE")
 
 
 def _require_mode(job_row, expected_mode: str) -> None:
@@ -299,6 +360,7 @@ def run_execute_planning(
     jobs_repo = AutomationJobsRepository(conn)
     job_row = jobs_repo.get(job_id)
     _require_mode(job_row, "EXECUTE")
+    _require_mcma_writable_account(conn, job_row["account_id"])
     parent = _require_authorized_parent(conn, job_row)
 
     transition(conn, job_id, "PLANNING")
@@ -341,6 +403,7 @@ def run_execute_write(
     _require_mode(job_row, "EXECUTE")
     if job_row["status"] != "PLANNED":
         raise JobAuthorizationError("EXECUTE_WRITE_REQUIRES_PLANNED_STATUS")
+    _require_mcma_writable_account(conn, job_row["account_id"])
     _require_authorized_parent(conn, job_row)
 
     transition(conn, job_id, "ACQUIRING_ACCOUNT_LOCK")
@@ -370,5 +433,120 @@ def run_execute_write(
         return "WRITE_ABORTED"
 
     transition(conn, job_id, "VERIFYING")
-    transition(conn, job_id, "READY_FOR_HUMAN_REVIEW", finished_at=_utcnow_iso())
+    # F.8 (correction batch): finished_at is NOT set here -- READY_FOR_
+    # HUMAN_REVIEW is no longer a terminal outcome (the browser stays
+    # open for human review); finished_at is set only at a genuine
+    # terminal outcome (HUMAN_CONFIRMED_COMPLETE, WRITE_ABORTED,
+    # IDENTITY_FAILED, INTERRUPTED_NEEDS_HUMAN_REVIEW, ABORTED_ON_RESTART).
+    transition(conn, job_id, "READY_FOR_HUMAN_REVIEW")
     return "READY_FOR_HUMAN_REVIEW"
+
+
+# --------------------------------------------------------------------- #
+# Human browser handoff (correction batch / owner amendment,
+# WORKFLOW_STATE_MODEL.md correction): READY_FOR_HUMAN_REVIEW means agent
+# work is finished and a visible browser is left open for the employee to
+# review, manually click Valider/Clôture, and close it themselves -- this
+# module never touches Valider/Clôture or the browser itself.
+# `release_lease`, like every portal-facing step in this module, is an
+# injected callable (never a direct mcma.portal/lease import) -- the real
+# job runner that will eventually own an mcma.persistence.leases.
+# AccountLeaseHandle wires it in; tests inject a stub.
+# --------------------------------------------------------------------- #
+
+_WRITE_IN_PROGRESS_STATUSES = frozenset(
+    {"ACQUIRING_ACCOUNT_LOCK", "IDENTITY_VERIFYING", "IDENTITY_VERIFIED", "WRITING", "VERIFYING"}
+)
+_HUMAN_HANDOFF_STATUSES = frozenset({"READY_FOR_HUMAN_REVIEW", "AWAITING_HUMAN_CONFIRMATION"})
+
+
+def transition_on_browser_closed(conn, job_id: str, *, release_lease: Optional[Callable[[], None]] = None) -> str:
+    """Driven by the real job runner's page/context close callback (never
+    auto-invoked by anything in this module). Browser closure BEFORE
+    READY_FOR_HUMAN_REVIEW (write still in progress, or the write phase
+    already reached READY but the browser is closing for the first time
+    from that exact state is handled by the branch below, not this one)
+    fails closed to INTERRUPTED_NEEDS_HUMAN_REVIEW -- never auto-resumed.
+    Closure AFTER READY_FOR_HUMAN_REVIEW is expected human behavior and
+    moves to AWAITING_HUMAN_CONFIRMATION -- closure ALONE never means
+    success (F.4); only confirm_review_completed can mark the job done.
+    The lease is released on the INTERRUPTED path (nothing further will
+    run) but deliberately NOT on the AWAITING_HUMAN_CONFIRMATION path --
+    it stays held until confirm_review_completed/report_review_problem so
+    no second job can concurrently use the same shared portal account
+    while a human is still mid-review."""
+    job_row = AutomationJobsRepository(conn).get(job_id)
+    if job_row is None:
+        raise ValueError("no such job_id")
+    status = job_row["status"]
+    if status == "READY_FOR_HUMAN_REVIEW":
+        transition(conn, job_id, "AWAITING_HUMAN_CONFIRMATION")
+        return "AWAITING_HUMAN_CONFIRMATION"
+    if status in _WRITE_IN_PROGRESS_STATUSES:
+        transition(conn, job_id, "INTERRUPTED_NEEDS_HUMAN_REVIEW", reason_code="BROWSER_CLOSED_BEFORE_READY", finished_at=_utcnow_iso())
+        if release_lease is not None:
+            release_lease()
+        return "INTERRUPTED_NEEDS_HUMAN_REVIEW"
+    raise JobAuthorizationError("NO_ACTIVE_BROWSER_SESSION_FOR_JOB")
+
+
+def confirm_review_completed(
+    conn, job_id: str, *, confirmed_by_user_id: str, release_lease: Optional[Callable[[], None]] = None
+) -> str:
+    """The ONLY way a job can ever reach HUMAN_CONFIRMED_COMPLETE. Records
+    ONLY a human attestation (F.5) -- this never claims the application
+    independently observed Valider/Clôture. Idempotent: retrying against
+    an already-HUMAN_CONFIRMED_COMPLETE job returns that same state rather
+    than raising (G's idempotent-retry requirement) -- but every OTHER
+    status is rejected, never silently "completed" out of turn."""
+    job_row = AutomationJobsRepository(conn).get(job_id)
+    if job_row is None:
+        raise ValueError("no such job_id")
+    if job_row["status"] == "HUMAN_CONFIRMED_COMPLETE":
+        return "HUMAN_CONFIRMED_COMPLETE"
+    if job_row["status"] != "AWAITING_HUMAN_CONFIRMATION":
+        raise JobAuthorizationError("REVIEW_NOT_AWAITING_CONFIRMATION")
+    transition(
+        conn,
+        job_id,
+        "HUMAN_CONFIRMED_COMPLETE",
+        finished_at=_utcnow_iso(),
+        audit_actor_user_id=confirmed_by_user_id,
+        audit_action="HUMAN_CONFIRMED_COMPLETE",
+    )
+    if release_lease is not None:
+        release_lease()
+    return "HUMAN_CONFIRMED_COMPLETE"
+
+
+def report_review_problem(
+    conn,
+    job_id: str,
+    *,
+    reported_by_user_id: str,
+    reason_code: str,
+    release_lease: Optional[Callable[[], None]] = None,
+) -> str:
+    """The "Problem / not completed" action: a documented human-review/
+    error outcome (INTERRUPTED_NEEDS_HUMAN_REVIEW, the same status restart
+    reconciliation already uses for an unresolved write) rather than
+    falsely marking the job HUMAN_CONFIRMED_COMPLETE. Valid from either
+    human-handoff status -- the employee may report a problem before OR
+    after closing the browser."""
+    job_row = AutomationJobsRepository(conn).get(job_id)
+    if job_row is None:
+        raise ValueError("no such job_id")
+    if job_row["status"] not in _HUMAN_HANDOFF_STATUSES:
+        raise JobAuthorizationError("NOT_IN_HUMAN_HANDOFF")
+    transition(
+        conn,
+        job_id,
+        "INTERRUPTED_NEEDS_HUMAN_REVIEW",
+        reason_code=reason_code,
+        finished_at=_utcnow_iso(),
+        audit_actor_user_id=reported_by_user_id,
+        audit_action="HUMAN_REPORTED_PROBLEM",
+    )
+    if release_lease is not None:
+        release_lease()
+    return "INTERRUPTED_NEEDS_HUMAN_REVIEW"

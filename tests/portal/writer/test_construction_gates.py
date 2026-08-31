@@ -30,6 +30,7 @@ from mcma.portal.writer import (
 )
 from writer_test_support import (
     ALLOWED_HOST,
+    MCMA_WRITER_ACCOUNT,
     FakeBrowser,
     FakeContext,
     FakePage,
@@ -45,6 +46,7 @@ from writer_test_support import (
     SHARED_ROW_WRITE_CONTRACT,
     SyntheticLeaseHandle,
     make_expected_identity,
+    mcma_writer_account,
     row_intent,
     run_async,
 )
@@ -126,7 +128,8 @@ def test_permanently_blocked_write_contract_is_rejected_before_any_browser_conte
     with pytest.raises(ValueError):
         run_async(
             open_verified_writer(
-                browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, contracts, ALLOWED_HOST
+                browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, contracts, ALLOWED_HOST,
+                writer_account=MCMA_WRITER_ACCOUNT,
             )
         )
     assert browser.new_context_calls == []
@@ -138,7 +141,8 @@ def test_shared_row_write_contract_is_rejected():
     with pytest.raises(ValueError):
         run_async(
             open_verified_writer(
-                browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, contracts, ALLOWED_HOST
+                browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, contracts, ALLOWED_HOST,
+                writer_account=MCMA_WRITER_ACCOUNT,
             )
         )
     assert browser.new_context_calls == []
@@ -159,7 +163,8 @@ def test_other_workflow_row_write_contract_is_filtered_out_leaving_none():
     )
     writer = run_async(
         open_verified_writer(
-            browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, contracts, ALLOWED_HOST
+            browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, contracts, ALLOWED_HOST,
+            writer_account=MCMA_WRITER_ACCOUNT,
         )
     )
     assert isinstance(writer, VerifiedMissionWriter)
@@ -171,7 +176,8 @@ def test_missing_search_page_contract_is_rejected():
     with pytest.raises(ValueError):
         run_async(
             open_verified_writer(
-                browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, contracts, ALLOWED_HOST
+                browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, contracts, ALLOWED_HOST,
+                writer_account=MCMA_WRITER_ACCOUNT,
             )
         )
     assert browser.new_context_calls == []
@@ -183,7 +189,8 @@ def test_missing_read_rows_contract_is_rejected():
     with pytest.raises(ValueError):
         run_async(
             open_verified_writer(
-                browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, contracts, ALLOWED_HOST
+                browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, contracts, ALLOWED_HOST,
+                writer_account=MCMA_WRITER_ACCOUNT,
             )
         )
     assert browser.new_context_calls == []
@@ -201,6 +208,7 @@ def test_non_loopback_host_is_rejected_before_any_browser_context():
                 NORMAL_IDENTIFIERS,
                 HAPPY_PATH_CONTRACTS,
                 "example.com:8080",
+                writer_account=MCMA_WRITER_ACCOUNT,
             )
         )
     assert browser.new_context_calls == []
@@ -211,7 +219,8 @@ def test_construction_failure_after_context_creation_closes_the_context():
     with pytest.raises(RuntimeError):
         run_async(
             open_verified_writer(
-                browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, HAPPY_PATH_CONTRACTS, ALLOWED_HOST
+                browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, HAPPY_PATH_CONTRACTS, ALLOWED_HOST,
+                writer_account=MCMA_WRITER_ACCOUNT,
             )
         )
     assert browser.contexts_created[0].closed_count == 1
@@ -221,7 +230,8 @@ def test_happy_path_succeeds_and_reaches_write_active():
     browser = FakeBrowser(context_factory=lambda: FakeContext(_normal_happy_page_factory))
     writer = run_async(
         open_verified_writer(
-            browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, HAPPY_PATH_CONTRACTS, ALLOWED_HOST
+            browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, HAPPY_PATH_CONTRACTS, ALLOWED_HOST,
+            writer_account=MCMA_WRITER_ACCOUNT,
         )
     )
     assert isinstance(writer, VerifiedMissionWriter)
@@ -232,7 +242,8 @@ def test_unplanned_rubrique_rejected_before_any_page_interaction():
     browser = FakeBrowser(context_factory=lambda: FakeContext(_normal_happy_page_factory))
     writer = run_async(
         open_verified_writer(
-            browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, HAPPY_PATH_CONTRACTS, ALLOWED_HOST
+            browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, HAPPY_PATH_CONTRACTS, ALLOWED_HOST,
+            writer_account=MCMA_WRITER_ACCOUNT,
         )
     )
     page = writer._page
@@ -248,7 +259,8 @@ def test_wrong_workflow_plan_rejects_add_normal_row_before_page_interaction():
     browser = FakeBrowser(context_factory=lambda: FakeContext(lambda: _pec_happy_page_factory()))
     writer = run_async(
         open_verified_writer(
-            browser, SyntheticLeaseHandle(), PEC_IDENTITY, PEC_PLAN, PEC_IDENTIFIERS, PEC_HAPPY_PATH_CONTRACTS, ALLOWED_HOST
+            browser, SyntheticLeaseHandle(), PEC_IDENTITY, PEC_PLAN, PEC_IDENTIFIERS, PEC_HAPPY_PATH_CONTRACTS, ALLOWED_HOST,
+            writer_account=MCMA_WRITER_ACCOUNT,
         )
     )
     with pytest.raises(WriteAborted):
@@ -279,7 +291,8 @@ def test_pec_preflight_succeeds_during_construction_and_caches_the_mapping():
     browser = FakeBrowser(context_factory=lambda: FakeContext(lambda: _pec_happy_page_factory()))
     writer = run_async(
         open_verified_writer(
-            browser, SyntheticLeaseHandle(), PEC_IDENTITY, PEC_PLAN, PEC_IDENTIFIERS, PEC_HAPPY_PATH_CONTRACTS, ALLOWED_HOST
+            browser, SyntheticLeaseHandle(), PEC_IDENTITY, PEC_PLAN, PEC_IDENTIFIERS, PEC_HAPPY_PATH_CONTRACTS, ALLOWED_HOST,
+            writer_account=MCMA_WRITER_ACCOUNT,
         )
     )
     assert writer._pec_row_map == {"3": 1}
@@ -290,7 +303,8 @@ def test_pec_preflight_zero_matches_aborts_construction_and_closes_context():
     with pytest.raises(RowAmbiguous):
         run_async(
             open_verified_writer(
-                browser, SyntheticLeaseHandle(), PEC_IDENTITY, PEC_PLAN, PEC_IDENTIFIERS, PEC_HAPPY_PATH_CONTRACTS, ALLOWED_HOST
+                browser, SyntheticLeaseHandle(), PEC_IDENTITY, PEC_PLAN, PEC_IDENTIFIERS, PEC_HAPPY_PATH_CONTRACTS, ALLOWED_HOST,
+                writer_account=MCMA_WRITER_ACCOUNT,
             )
         )
     assert browser.contexts_created[0].closed_count == 1
@@ -302,7 +316,8 @@ def test_pec_preflight_duplicate_matches_aborts_construction():
     with pytest.raises(RowAmbiguous):
         run_async(
             open_verified_writer(
-                browser, SyntheticLeaseHandle(), PEC_IDENTITY, PEC_PLAN, PEC_IDENTIFIERS, PEC_HAPPY_PATH_CONTRACTS, ALLOWED_HOST
+                browser, SyntheticLeaseHandle(), PEC_IDENTITY, PEC_PLAN, PEC_IDENTIFIERS, PEC_HAPPY_PATH_CONTRACTS, ALLOWED_HOST,
+                writer_account=MCMA_WRITER_ACCOUNT,
             )
         )
     assert browser.contexts_created[0].closed_count == 1
@@ -314,7 +329,8 @@ def test_pec_preflight_malformed_id_devis_det_aborts_construction():
     with pytest.raises(RowMismatch):
         run_async(
             open_verified_writer(
-                browser, SyntheticLeaseHandle(), PEC_IDENTITY, PEC_PLAN, PEC_IDENTIFIERS, PEC_HAPPY_PATH_CONTRACTS, ALLOWED_HOST
+                browser, SyntheticLeaseHandle(), PEC_IDENTITY, PEC_PLAN, PEC_IDENTIFIERS, PEC_HAPPY_PATH_CONTRACTS, ALLOWED_HOST,
+                writer_account=MCMA_WRITER_ACCOUNT,
             )
         )
     assert browser.contexts_created[0].closed_count == 1
@@ -370,7 +386,8 @@ def test_caller_cannot_substitute_a_fresh_lease_after_construction_lease_becomes
     browser = FakeBrowser(context_factory=lambda: FakeContext(_normal_happy_page_factory))
     writer = run_async(
         open_verified_writer(
-            browser, construction_lease, NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, HAPPY_PATH_CONTRACTS, ALLOWED_HOST
+            browser, construction_lease, NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, HAPPY_PATH_CONTRACTS, ALLOWED_HOST,
+            writer_account=mcma_writer_account("acct-1"),
         )
     )
     construction_lease.valid = False
@@ -380,3 +397,58 @@ def test_caller_cannot_substitute_a_fresh_lease_after_construction_lease_becomes
     assert fresh_valid_lease.valid is True  # exists, valid, and structurally unreachable
     with pytest.raises(LeaseInvalid):
         run_async(writer.add_normal_row(RubriqueId("3")))
+
+
+# --------------------------------------------------------------------- #
+# MAMDA read-only enforcement, layer 3 (correction batch / owner
+# amendment): open_verified_writer structurally refuses a bare account_id
+# -- it requires an McmaWriterAccountContext, and cross-checks its
+# account_id against the LeaseHandle actually presented.
+# --------------------------------------------------------------------- #
+
+
+def test_open_verified_writer_rejects_a_non_mcma_writer_account_context():
+    from mcma.portal.writer import AccountNotMcmaWritable, require_mcma_writer_account
+
+    with pytest.raises(AccountNotMcmaWritable):
+        require_mcma_writer_account("acct-mamda", entity="MAMDA", active=True)
+
+
+def test_open_verified_writer_rejects_an_inactive_mcma_account():
+    from mcma.portal.writer import AccountNotMcmaWritable, require_mcma_writer_account
+
+    with pytest.raises(AccountNotMcmaWritable):
+        require_mcma_writer_account("acct-mcma", entity="MCMA", active=False)
+
+
+def test_open_verified_writer_rejects_a_writer_account_context_for_a_different_account():
+    from mcma.portal.writer import AccountNotMcmaWritable
+
+    browser = FakeBrowser(context_factory=lambda: FakeContext(_normal_happy_page_factory))
+    mismatched_context = mcma_writer_account("some-other-account")
+    with pytest.raises(AccountNotMcmaWritable):
+        run_async(
+            open_verified_writer(
+                browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, HAPPY_PATH_CONTRACTS, ALLOWED_HOST,
+                writer_account=mismatched_context,
+            )
+        )
+    assert browser.new_context_calls == []
+
+
+def test_open_verified_writer_requires_a_writer_account_context_at_all():
+    browser = FakeBrowser(context_factory=lambda: FakeContext(_normal_happy_page_factory))
+    with pytest.raises(TypeError):
+        run_async(
+            open_verified_writer(
+                browser, SyntheticLeaseHandle(), NORMAL_IDENTITY, MODE_NORMAL_PLAN, NORMAL_IDENTIFIERS, HAPPY_PATH_CONTRACTS, ALLOWED_HOST,
+            )
+        )
+    assert browser.new_context_calls == []
+
+
+def test_mcma_writer_account_context_cannot_be_constructed_directly():
+    from mcma.portal.writer import McmaWriterAccountContext
+
+    with pytest.raises(RuntimeError):
+        McmaWriterAccountContext("acct-1")

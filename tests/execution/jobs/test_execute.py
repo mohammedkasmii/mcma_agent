@@ -69,9 +69,11 @@ def test_execute_rejects_parent_not_dry_run_verified(conn, encryptor):
 
 
 def test_execute_rejects_different_account_or_workflow_parent(conn, encryptor):
+    # MCMA (not MAMDA) -- this test exercises the account/workflow-mismatch
+    # guard specifically, not MAMDA enforcement (see test_mamda_enforcement.py).
     conn.execute(
         "INSERT INTO accounts (account_id, label, entity, scope, active, created_at) "
-        "VALUES ('acct-2', 'Other', 'MAMDA', 'NADOR', 1, '2026-01-01T00:00:00+00:00')"
+        "VALUES ('acct-2', 'Other', 'MCMA', 'NADOR', 1, '2026-01-01T00:00:00+00:00')"
     )
     payload = {"dossier": "g"}
     dry_run_id, _ = _make_verified_dry_run(conn, encryptor, payload)

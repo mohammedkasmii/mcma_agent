@@ -91,7 +91,7 @@ def test_cross_account_category_presence_insert_fails(conn):
     a category_presence row cannot pair one account with ANOTHER account's
     claim_pk, even though claim_pk alone is a valid primary key elsewhere."""
     seed_account(conn, "acct-a")
-    seed_account(conn, "acct-b")
+    seed_account(conn, "acct-b", scope="NADOR")
     conn.execute(
         "INSERT INTO claims (claim_pk, account_id, portal_claim_id, first_seen_version, last_seen_version) "
         "VALUES ('claim-a', 'acct-a', 'IDS-A', 1, 1)"

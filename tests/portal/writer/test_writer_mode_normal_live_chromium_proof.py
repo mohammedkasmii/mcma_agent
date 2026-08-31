@@ -25,6 +25,7 @@ from mcma.portal.writer import (
 )
 from writer_live_chromium_test_support import ALLOWED_HOST, live_mock_server  # noqa: F401
 from writer_test_support import (
+    MCMA_WRITER_ACCOUNT,
     NORMAL_READ_ROWS_CONTRACT,
     NORMAL_ROW_WRITE_CONTRACT,
     SEARCH_LISTE_MISSIONS_CONTRACT,
@@ -45,7 +46,8 @@ IDENTIFIERS = SearchIdentifiers(matricule="77001-C-3")
 
 async def _open_writer(browser):
     return await open_verified_writer(
-        browser, SyntheticLeaseHandle(), IDENTITY, PLAN, IDENTIFIERS, CONTRACTS, ALLOWED_HOST
+        browser, SyntheticLeaseHandle(), IDENTITY, PLAN, IDENTIFIERS, CONTRACTS, ALLOWED_HOST,
+        writer_account=MCMA_WRITER_ACCOUNT,
     )
 
 

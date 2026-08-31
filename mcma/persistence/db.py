@@ -80,6 +80,13 @@ def _split_statements(sql: str) -> list[str]:
     return [stmt.strip() for stmt in cleaned.split(";") if stmt.strip()]
 
 
+class MigrationForeignKeyViolation(RuntimeError):
+    """Raised when a migration's own PRAGMA foreign_key_check finds a
+    violation before that migration is allowed to commit (correction
+    batch, INC-12 accounts/automation_jobs rebuild). Never silently
+    committed -- the migration's transaction is rolled back first."""
+
+
 def run_migrations(conn: sqlite3.Connection) -> list[str]:
     """Applies every not-yet-applied migration file, in filename order, each
     inside its own transaction (the file's DDL plus its schema_migrations
@@ -88,7 +95,18 @@ def run_migrations(conn: sqlite3.Connection) -> list[str]:
     transaction before running and does not compose with an explicit
     BEGIN/COMMIT, which would silently defeat the atomicity this function
     promises. Returns the list of newly-applied version strings (empty if
-    the database was already current -- a replay is always safe)."""
+    the database was already current -- a replay is always safe).
+
+    `PRAGMA foreign_keys` is turned OFF for the duration of each
+    migration's own transaction (SQLite refuses to change it inside an
+    active transaction, so this happens immediately before BEGIN, and it
+    is always restored to ON immediately after COMMIT/ROLLBACK, before
+    control returns to the caller or the next migration runs) -- this is
+    SQLite's own documented safe procedure for a migration that rebuilds
+    a table via create-copy-drop-rename (correction batch: automation_jobs'
+    CHECK constraint cannot be altered any other way). A migration that
+    performs such a rebuild MUST verify PRAGMA foreign_key_check itself
+    finds nothing before this function will let it commit."""
     applied = _applied_versions(conn)
     newly_applied: list[str] = []
     for path in _migration_files():
@@ -96,10 +114,16 @@ def run_migrations(conn: sqlite3.Connection) -> list[str]:
         if version in applied:
             continue
         statements = _split_statements(path.read_text(encoding="utf-8"))
+        conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("BEGIN")
         try:
             for statement in statements:
                 conn.execute(statement)
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise MigrationForeignKeyViolation(
+                    f"migration {version} left {len(violations)} foreign-key violation(s): {list(violations)!r}"
+                )
             conn.execute(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                 (version, _utcnow()),
@@ -108,6 +132,8 @@ def run_migrations(conn: sqlite3.Connection) -> list[str]:
         except Exception:
             conn.execute("ROLLBACK")
             raise
+        finally:
+            conn.execute("PRAGMA foreign_keys=ON")
         newly_applied.append(version)
     return newly_applied
 

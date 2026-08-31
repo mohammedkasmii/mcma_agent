@@ -20,11 +20,15 @@ def db_path(tmp_path: Path) -> Path:
 @pytest.fixture()
 def conn(db_path: Path) -> sqlite3.Connection:
     connection = open_database(db_path)
-    for account_id in (ACCOUNT_A, ACCOUNT_B):
+    # Correction batch: accounts now enforce UNIQUE(entity, scope) -- these
+    # two accounts must be distinct shared PortalAccount profiles. MCMA
+    # (not MAMDA) because test_outbox.py enqueues a real DRY_RUN job
+    # against ACCOUNT_A, and MAMDA accounts can no longer enqueue jobs.
+    for account_id, scope in ((ACCOUNT_A, "OUJDA"), (ACCOUNT_B, "NADOR")):
         connection.execute(
             "INSERT INTO accounts (account_id, label, entity, scope, active, created_at) "
-            "VALUES (?, ?, 'MAMDA', 'OUJDA', 1, '2026-01-01T00:00:00+00:00')",
-            (account_id, account_id),
+            "VALUES (?, ?, 'MCMA', ?, 1, '2026-01-01T00:00:00+00:00')",
+            (account_id, account_id, scope),
         )
     yield connection
     connection.close()

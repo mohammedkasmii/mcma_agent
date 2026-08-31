@@ -37,6 +37,7 @@ from mcma.portal.writer import (
 )
 from writer_live_chromium_test_support import ALLOWED_HOST, live_mock_server  # noqa: F401
 from writer_test_support import (
+    MCMA_WRITER_ACCOUNT,
     NORMAL_READ_ROWS_CONTRACT,
     NORMAL_ROW_WRITE_CONTRACT,
     SEARCH_LISTE_MISSIONS_CONTRACT,
@@ -123,7 +124,8 @@ async def _scenario():
             await context.close()
 
             writer = await open_verified_writer(
-                browser, SyntheticLeaseHandle(), IDENTITY, PLAN, IDENTIFIERS, CONTRACTS, ALLOWED_HOST
+                browser, SyntheticLeaseHandle(), IDENTITY, PLAN, IDENTIFIERS, CONTRACTS, ALLOWED_HOST,
+                writer_account=MCMA_WRITER_ACCOUNT,
             )
             await writer.add_normal_row(RubriqueId("3"))
             await writer.close()
@@ -143,7 +145,8 @@ async def _permanently_blocked_scenario():
         browser = await p.chromium.launch(headless=True)
         try:
             writer = await open_verified_writer(
-                browser, SyntheticLeaseHandle(), IDENTITY, PLAN, IDENTIFIERS, CONTRACTS, ALLOWED_HOST
+                browser, SyntheticLeaseHandle(), IDENTITY, PLAN, IDENTIFIERS, CONTRACTS, ALLOWED_HOST,
+                writer_account=MCMA_WRITER_ACCOUNT,
             )
             page = writer._page
 

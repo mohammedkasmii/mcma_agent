@@ -74,8 +74,14 @@ def test_restart_identity_verified_aborts_on_restart_and_releases_lease(conn, en
     assert conn.execute("SELECT COUNT(*) AS c FROM account_leases").fetchone()["c"] == 0
 
 
-@pytest.mark.parametrize("status", ["WRITING", "VERIFYING"])
-def test_restart_writing_verifying_never_auto_resumed(conn, encryptor, status):
+@pytest.mark.parametrize("status", ["WRITING", "VERIFYING", "READY_FOR_HUMAN_REVIEW"])
+def test_restart_writing_verifying_or_ready_for_review_never_auto_resumed(conn, encryptor, status):
+    """Correction batch (F.6): READY_FOR_HUMAN_REVIEW joins WRITING/
+    VERIFYING here -- a restart means the browser context this process
+    (or possibly a DIFFERENT process) had open is no longer provably
+    available, so it fails closed to INTERRUPTED_NEEDS_HUMAN_REVIEW
+    exactly like a genuine mid-write interruption, never silently treated
+    as though a human already confirmed it."""
     payload = {"dossier": status}
     job_id = _enqueue_at(conn, encryptor, payload, status, key=f"interrupted-{status}")
     acquire_lease(conn, ACCOUNT_ID, "instance-1")
@@ -142,7 +148,15 @@ def test_restart_releases_stale_leases_first(conn, encryptor):
 
 @pytest.mark.parametrize(
     "status",
-    ["DRY_RUN_VERIFIED", "NEEDS_REVIEW", "IDENTITY_FAILED", "WRITE_ABORTED", "READY_FOR_HUMAN_REVIEW", "ERROR"],
+    [
+        "DRY_RUN_VERIFIED",
+        "NEEDS_REVIEW",
+        "IDENTITY_FAILED",
+        "WRITE_ABORTED",
+        "AWAITING_HUMAN_CONFIRMATION",
+        "HUMAN_CONFIRMED_COMPLETE",
+        "ERROR",
+    ],
 )
 def test_restart_terminal_statuses_are_kept_unchanged(conn, encryptor, status):
     payload = {"dossier": status}

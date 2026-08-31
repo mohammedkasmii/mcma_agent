@@ -6,3 +6,5 @@ pydantic
 requests
 httpx
 pytest
+sse-starlette
+argon2-cffi

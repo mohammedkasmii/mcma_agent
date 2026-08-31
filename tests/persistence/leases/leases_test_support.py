@@ -27,9 +27,13 @@ def conn(db_path: Path) -> sqlite3.Connection:
     connection.close()
 
 
-def seed_account(conn: sqlite3.Connection, account_id: str = "acct-1") -> None:
+def seed_account(
+    conn: sqlite3.Connection, account_id: str = "acct-1", *, entity: str = "MAMDA", scope: str = "OUJDA"
+) -> None:
+    """Correction batch: accounts now enforce UNIQUE(entity, scope) -- a
+    test seeding a SECOND account must pass a distinct entity/scope pair."""
     conn.execute(
         "INSERT INTO accounts (account_id, label, entity, scope, active, created_at) "
-        "VALUES (?, 'Test Account', 'MAMDA', 'OUJDA', 1, '2026-01-01T00:00:00+00:00')",
-        (account_id,),
+        "VALUES (?, 'Test Account', ?, ?, 1, '2026-01-01T00:00:00+00:00')",
+        (account_id, entity, scope),
     )

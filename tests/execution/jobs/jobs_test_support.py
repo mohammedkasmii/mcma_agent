@@ -28,9 +28,13 @@ def db_path(tmp_path: Path) -> Path:
 @pytest.fixture()
 def conn(db_path: Path) -> sqlite3.Connection:
     connection = open_database(db_path)
+    # Correction batch: automation_jobs are form-filling/write-workflow
+    # jobs -- MAMDA is notification-only and can never enqueue one (see
+    # test_mamda_enforcement.py), so the generic job-lifecycle fixture
+    # here must use an MCMA account.
     connection.execute(
         "INSERT INTO accounts (account_id, label, entity, scope, active, created_at) "
-        "VALUES (?, 'Test', 'MAMDA', 'OUJDA', 1, '2026-01-01T00:00:00+00:00')",
+        "VALUES (?, 'Test', 'MCMA', 'OUJDA', 1, '2026-01-01T00:00:00+00:00')",
         (ACCOUNT_ID,),
     )
     connection.execute(

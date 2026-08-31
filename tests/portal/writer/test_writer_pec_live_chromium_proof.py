@@ -39,6 +39,7 @@ from mcma.portal.writer import (
 )
 from writer_live_chromium_test_support import ALLOWED_HOST, live_mock_server  # noqa: F401
 from writer_test_support import (
+    MCMA_WRITER_ACCOUNT,
     PEC_NATIVE_RECALC_CONTRACT,
     PEC_READ_ROWS_CONTRACT,
     PEC_ROW_WRITE_CONTRACT,
@@ -69,7 +70,8 @@ PLAN = WriterPlanData(
 
 async def _open_writer(browser):
     return await open_verified_writer(
-        browser, SyntheticLeaseHandle(), IDENTITY, PLAN, IDENTIFIERS, CONTRACTS, ALLOWED_HOST
+        browser, SyntheticLeaseHandle(), IDENTITY, PLAN, IDENTIFIERS, CONTRACTS, ALLOWED_HOST,
+        writer_account=MCMA_WRITER_ACCOUNT,
     )
 
 
@@ -163,7 +165,8 @@ async def _wrong_workflow_then_correct_scenario():
         try:
             with pytest.raises(WorkflowMismatch):
                 await open_verified_writer(
-                    browser, SyntheticLeaseHandle(), wrong_identity, PLAN, wrong_identifiers, wrong_contracts, ALLOWED_HOST
+                    browser, SyntheticLeaseHandle(), wrong_identity, PLAN, wrong_identifiers, wrong_contracts, ALLOWED_HOST,
+                    writer_account=MCMA_WRITER_ACCOUNT,
                 )
 
             # Positive control: the SAME plan against the CORRECT

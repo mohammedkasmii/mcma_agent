@@ -70,7 +70,7 @@ def test_release_then_reacquire_by_a_new_owner(conn):
 
 def test_release_stale_leases_removes_only_expired_rows(conn):
     seed_account(conn, "acct-1")
-    seed_account(conn, "acct-2")
+    seed_account(conn, "acct-2", scope="NADOR")
     acquire_lease(conn, "acct-2", "instance-1", ttl_seconds=3600)  # fresh, not stale
     acquire_lease(conn, "acct-1", "instance-1", ttl_seconds=60)
     past = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()

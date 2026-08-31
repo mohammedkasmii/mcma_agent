@@ -294,6 +294,15 @@ class MissionRouteInvalid(WriteAborted):
     pass
 
 
+class AccountNotMcmaWritable(WriteAborted):
+    """Correction batch (owner amendment, MAMDA read-only enforcement,
+    defense-in-depth layer 3): raised before any browser context exists,
+    either because require_mcma_writer_account() itself was called with a
+    non-MCMA/inactive account, or because open_verified_writer() was
+    handed an McmaWriterAccountContext whose account_id does not match the
+    LeaseHandle actually being used."""
+
+
 class UnplannedRubrique(WriteAborted):
     pass
 
@@ -353,6 +362,54 @@ class NativeCalculationStale(WriteAborted):
 
 class NativeCalculationMismatch(WriteAborted):
     pass
+
+
+# --------------------------------------------------------------------- #
+# McmaWriterAccountContext -- MAMDA read-only enforcement, layer 3
+# (correction batch / owner amendment). mcma.portal must never import
+# mcma.persistence (sibling layers) -- this module cannot look up an
+# account's entity itself. Instead, open_verified_writer() refuses to
+# accept a bare account_id/LeaseHandle: it requires this typed context,
+# constructible ONLY via require_mcma_writer_account() below, which takes
+# the entity/active SCALARS the caller (mcma.execution, which DOES import
+# mcma.persistence and has just re-read the row) already looked up. A
+# generic account identifier alone can never reach the writer factory.
+# --------------------------------------------------------------------- #
+
+_MCMA_WRITER_ACCOUNT_TOKEN = object()
+
+
+@dataclass(frozen=True)
+class McmaWriterAccountContext:
+    """Carries only an account_id -- never credentials or session material.
+    Its mere existence attests that require_mcma_writer_account() already
+    confirmed entity=='MCMA' and active=True for THIS account_id. Like
+    VerifiedMissionWriter's construction_token (see that class's
+    docstring), this is an API-usability safeguard, not a cryptographic
+    boundary -- Python provides no true private construction."""
+
+    account_id: str
+    _token: object = None
+
+    def __post_init__(self) -> None:
+        if self._token is not _MCMA_WRITER_ACCOUNT_TOKEN:
+            raise RuntimeError(
+                "McmaWriterAccountContext must be constructed via require_mcma_writer_account()"
+            )
+
+
+def require_mcma_writer_account(account_id: str, *, entity: str, active: bool) -> McmaWriterAccountContext:
+    """The ONLY way to construct an McmaWriterAccountContext. `entity` and
+    `active` must come from a fresh read of the accounts row (never a
+    cached/assumed value) -- MAMDA supports notifications only and must
+    never reach a writer (SAFETY_MODEL.md correction batch, defense in
+    depth layer 3; layers 1/2 are the API and mcma.execution's own
+    independent re-check, neither of which this module trusts alone)."""
+    if entity != "MCMA":
+        raise AccountNotMcmaWritable(f"account {account_id!r} is not an MCMA account (entity={entity!r})")
+    if not active:
+        raise AccountNotMcmaWritable(f"account {account_id!r} is not active")
+    return McmaWriterAccountContext(account_id, _MCMA_WRITER_ACCOUNT_TOKEN)
 
 
 # --------------------------------------------------------------------- #
@@ -1081,12 +1138,23 @@ async def open_verified_writer(
     contracts: Sequence[RouteContract],
     allowed_host: str,
     *,
+    writer_account: McmaWriterAccountContext,
     context_options: dict | None = None,
 ) -> VerifiedMissionWriter:
     if not isinstance(writer_plan, WriterPlanData):
         raise TypeError("open_verified_writer() requires a WriterPlanData")
     if not isinstance(expected_identity, ExpectedIdentity):
         raise TypeError("open_verified_writer() requires an ExpectedIdentity")
+    if not isinstance(writer_account, McmaWriterAccountContext):
+        raise TypeError(
+            "open_verified_writer() requires an McmaWriterAccountContext -- "
+            "see require_mcma_writer_account() (MAMDA read-only enforcement, layer 3)"
+        )
+    if writer_account.account_id != lease_handle.account_id:
+        raise AccountNotMcmaWritable(
+            f"writer_account.account_id {writer_account.account_id!r} does not match "
+            f"lease_handle.account_id {lease_handle.account_id!r}"
+        )
 
     _require_loopback_host(allowed_host)
 

@@ -102,13 +102,20 @@ class AutomationJobsRepository:
 
     def list_non_terminal(self) -> tuple[sqlite3.Row, ...]:
         """Used by restart reconciliation (INC-12) -- every status not in
-        the terminal set."""
+        the terminal set. Correction batch (human browser handoff):
+        READY_FOR_HUMAN_REVIEW is REMOVED from this set (a restart during
+        it must be reconciled to INTERRUPTED_NEEDS_HUMAN_REVIEW -- the
+        browser context is no longer provably available); AWAITING_HUMAN_
+        CONFIRMATION and HUMAN_CONFIRMED_COMPLETE are ADDED (must survive
+        a restart untouched, awaiting only an explicit employee action).
+        Kept in sync with mcma.execution.jobs.TERMINAL_STATUSES."""
         terminal = (
             "DRY_RUN_VERIFIED",
             "NEEDS_REVIEW",
             "IDENTITY_FAILED",
             "WRITE_ABORTED",
-            "READY_FOR_HUMAN_REVIEW",
+            "AWAITING_HUMAN_CONFIRMATION",
+            "HUMAN_CONFIRMED_COMPLETE",
             "INTERRUPTED_NEEDS_HUMAN_REVIEW",
             "ABORTED_ON_RESTART",
             "ERROR",
