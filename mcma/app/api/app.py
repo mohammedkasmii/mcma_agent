@@ -104,6 +104,7 @@ def create_api_app(
     session_store: Optional[SessionStore] = None,
     encryptor: InputEncryptor,
     secure_cookies: bool = True,
+    portal_login_opener=None,
 ) -> FastAPI:
     app = FastAPI(title="MCMA API")
     install_error_handlers(app)
@@ -192,7 +193,24 @@ def create_api_app(
                 f"SELECT account_id, label, entity, scope FROM accounts WHERE account_id IN ({placeholders})",
                 tuple(visible),
             ).fetchall()
-        return {"accounts": [dict(r) for r in rows]}
+        # session_active tells the dashboard which accounts can currently
+        # be polled or written to at all. Without it, an account with no
+        # captured portal session looks identical to one that simply has
+        # no notifications, and "why is this list empty" has no answer.
+        active_sessions = {
+            row["account_id"]
+            for row in conn.execute("SELECT account_id FROM portal_sessions WHERE status = 'ACTIVE'")
+        }
+        accounts = []
+        for row in rows:
+            account = dict(row)
+            account["session_active"] = account["account_id"] in active_sessions
+            # A MAMDA account is readable but can never be the target of a
+            # form job. Stating it here means the dashboard never has to
+            # re-derive the rule from the entity string.
+            account["writable"] = account.get("entity") == "MCMA"
+            accounts.append(account)
+        return {"accounts": accounts}
 
     @app.get("/notifications")
     def list_notifications(account_id: Optional[str] = None, principal: Principal = Depends(get_principal)):
@@ -201,6 +219,32 @@ def create_api_app(
     @app.get("/cached-notifications")
     def list_cached_notifications(account_id: Optional[str] = None, principal: Principal = Depends(get_principal)):
         return _list_notifications(principal, account_id)
+
+    # -- portal login ------------------------------------------------------
+    # Registered by the composition root (mcma.app.main), which owns the
+    # browser and the vault; this module never touches either. When no
+    # opener is supplied -- every existing test app, and any deployment
+    # without a browser -- the route simply does not exist, rather than
+    # existing and failing.
+
+    if portal_login_opener is not None:
+
+        @app.post("/accounts/{account_id}/login")
+        async def start_portal_login(
+            account_id: str, principal: Principal = Depends(get_principal), _csrf=Depends(require_csrf)
+        ):
+            require_permission(principal, Permission.NOTIFICATIONS_READ)
+            require_account_access(conn, principal, account_id)
+            try:
+                session_id = await portal_login_opener(account_id)
+            except Exception as exc:
+                # No portal text is ever surfaced: a login failure page can
+                # contain the username that was typed.
+                raise ApiError(
+                    409, "PORTAL_LOGIN_FAILED",
+                    "the portal login was not completed -- open the browser window and finish signing in",
+                ) from exc
+            return {"account_id": account_id, "session_id": session_id}
 
     # -- claims: the employee's working list -------------------------------
     # An employee opens one account (MCMA Oujda, MAMDA Nador, ...) and works

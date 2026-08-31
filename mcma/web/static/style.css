@@ -912,3 +912,17 @@ body {
 .signin-card .btn { width: 100%; justify-content: center; }
 
 .status-line { margin: 0.8rem 0 0; font-size: 0.85rem; color: var(--text-secondary); min-height: 1.2em; }
+
+.account-chip-connect {
+    background: var(--color-blue-bg);
+    border: 1px solid var(--brand-primary);
+    border-radius: var(--radius-full);
+    color: var(--brand-primary);
+    font-family: var(--font-main);
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 0.1rem 0.5rem;
+    cursor: pointer;
+}
+
+.account-chip-connect:hover { background: var(--brand-primary); color: #fff; }

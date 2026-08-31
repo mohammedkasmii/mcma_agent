@@ -67,6 +67,17 @@ class Settings:
     # as such rather than trusted.
     dev_mode: bool = False
 
+    # Alert categories polled for every account. Empty by default: a
+    # category is only reachable if a reviewed contract was installed for
+    # that exact code (mcma.portal.sinauto_contracts), so this list is
+    # what decides which notifications the office actually sees.
+    notification_category_codes: Tuple[str, ...] = ()
+
+    # How often notifications are refreshed. Far longer than the job poll
+    # interval: notifications change on a human timescale, and each pass
+    # takes an account's lease briefly.
+    notification_poll_interval_seconds: float = 300.0
+
 
 class UnsafeDevModeConfiguration(Exception):
     """dev_mode was requested against something other than the loopback

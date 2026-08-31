@@ -69,6 +69,8 @@ from mcma.execution.runner import (
     process_queued_dry_run_jobs,
     process_queued_planned_execute_jobs,
 )
+from mcma.app.portal_login import capture_session_for_account
+from mcma.notifications.poller import poll_all_accounts
 from mcma.persistence.db import open_database
 from mcma.portal.browser import launch_browser
 from mcma.portal.vault import WindowsAclVerifier, get_crypto_backend
@@ -84,17 +86,34 @@ def build_encryptor(settings: Settings) -> InputEncryptor:
     return get_input_encryptor(_test_only_plaintext_backend=settings.dev_mode)
 
 
-def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=None):
+def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=None, browser_holder=None):
     """Assembles the one ASGI app: authenticated API + dashboard + the two
     loopback-only sub-apps. The sub-apps enforce their own loopback checks
     internally (mcma.app.auth.bootstrap._require_loopback,
     mcma.app.onboarding._require_loopback), so mounting them on the same
     LAN-served app does not expose them to the LAN."""
+    async def _open_portal_login(account_id: str) -> str:
+        """Runs the login capture on the process's ONE browser -- the same
+        one the runner uses -- so the window the employee signs into is a
+        real, visible browser on their own machine."""
+        browser = browser_holder.get("browser") if browser_holder else None
+        if browser is None:
+            raise RuntimeError("no browser is available yet")
+        return await capture_session_for_account(
+            conn, browser, account_id,
+            instance_id=settings.instance_id,
+            allowed_host=settings.allowed_host,
+            vault_dir=settings.vault_dir,
+            crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.dev_mode),
+            acl_verifier=WindowsAclVerifier(),
+        )
+
     app = create_api_app(
         conn,
         auth_provider=LocalUserAuthProvider(conn),
         encryptor=encryptor,
         secure_cookies=True,
+        portal_login_opener=_open_portal_login if browser_holder is not None else None,
     )
     if lifespan is not None:
         app.router.lifespan_context = lifespan
@@ -121,7 +140,9 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
     return app
 
 
-async def run_job_poll_loop(conn, cfg: RunnerConfig, encryptor: InputEncryptor, settings: Settings) -> None:
+async def run_job_poll_loop(
+    conn, cfg: RunnerConfig, encryptor: InputEncryptor, settings: Settings, browser_holder=None
+) -> None:
     """Drains QUEUED DRY_RUN jobs and PLANNED EXECUTE jobs forever, on the
     caller's event loop, until cancelled at shutdown.
 
@@ -137,10 +158,31 @@ async def run_job_poll_loop(conn, cfg: RunnerConfig, encryptor: InputEncryptor, 
     running -- stopping it would silently strand every future job -- but
     it never retries faster than the poll interval."""
     async with launch_browser(headless=settings.headless_browser) as browser:
+        # Published so the portal-login endpoint can open its window on
+        # this same browser rather than starting a second one.
+        if browser_holder is not None:
+            browser_holder["browser"] = browser
+        since_notification_poll = settings.notification_poll_interval_seconds
         while True:
             try:
                 await process_queued_dry_run_jobs(conn, browser=browser, cfg=cfg, encryptor=encryptor)
                 await process_queued_planned_execute_jobs(conn, browser=browser, cfg=cfg, encryptor=encryptor)
+
+                # Notifications refresh on their own, much slower clock.
+                # Jobs come first every pass: a notification refresh takes
+                # an account's lease briefly, and a dossier someone is
+                # waiting on must never queue behind one.
+                since_notification_poll += settings.poll_interval_seconds
+                if (settings.notification_category_codes
+                        and since_notification_poll >= settings.notification_poll_interval_seconds):
+                    since_notification_poll = 0
+                    await poll_all_accounts(
+                        conn, browser, settings.notification_category_codes,
+                        instance_id=settings.instance_id,
+                        allowed_host=settings.allowed_host,
+                        vault_dir=settings.vault_dir,
+                        crypto_backend=cfg.crypto_backend,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -205,9 +247,13 @@ def main(settings: Optional[Settings] = None) -> None:  # pragma: no cover - rea
     cfg = build_runner_config(settings)
     tls_config = build_tls_config(settings)
 
+    browser_holder: dict = {}
+
     @contextlib.asynccontextmanager
     async def _lifespan(app):
-        task = asyncio.create_task(run_job_poll_loop(runner_conn, cfg, encryptor, settings))
+        task = asyncio.create_task(
+            run_job_poll_loop(runner_conn, cfg, encryptor, settings, browser_holder)
+        )
         try:
             yield
         finally:
@@ -215,7 +261,7 @@ def main(settings: Optional[Settings] = None) -> None:  # pragma: no cover - rea
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-    app = build_app(api_conn, settings, encryptor, lifespan=_lifespan)
+    app = build_app(api_conn, settings, encryptor, lifespan=_lifespan, browser_holder=browser_holder)
     try:
         serve(app, tls_config)
     finally:

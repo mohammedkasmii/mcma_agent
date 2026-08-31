@@ -284,7 +284,7 @@
     });
   }
 
-  function renderAccountBar(container, accounts, selectedId, onSelect) {
+  function renderAccountBar(container, accounts, selectedId, onSelect, onConnect) {
     if (!container) return;
     container.textContent = "";
     accounts.forEach(function (account) {
@@ -306,6 +306,20 @@
         chip.appendChild(el("span", "account-readonly-tag", "lecture seule"));
       }
       chip.addEventListener("click", function () { onSelect(account.account_id); });
+
+      if (!account.session_active) {
+        var connect = document.createElement("button");
+        connect.type = "button";
+        connect.className = "account-chip-connect";
+        setText(connect, "connexion");
+        connect.addEventListener("click", function (event) {
+          // The chip itself selects; this selects AND signs in.
+          event.stopPropagation();
+          onSelect(account.account_id);
+          if (typeof onConnect === "function") onConnect(account.account_id);
+        });
+        chip.appendChild(connect);
+      }
       container.appendChild(chip);
     });
   }
@@ -479,6 +493,10 @@
   async function saveClaimAction(fetchImpl, claimPk, status, note) {
     return postAction(fetchImpl, "/claims/" + encodeURIComponent(claimPk) + "/action",
                       { status: status, note: note });
+  }
+
+  async function openPortalLogin(fetchImpl, accountId) {
+    return postAction(fetchImpl, "/accounts/" + encodeURIComponent(accountId) + "/login", {});
   }
 
   function readCsrfCookie() {
@@ -717,7 +735,7 @@
     function selectAccount(accountId) {
       selectedAccountId = accountId;
       categoryFilter = "ALL";
-      renderAccountBar(accountBarEl, accounts, selectedAccountId, selectAccount);
+      renderAccountBar(accountBarEl, accounts, selectedAccountId, selectAccount, startPortalLogin);
       // The form-job target follows the selected account, and stays
       // MCMA-only: a MAMDA account can never be chosen for a write.
       if (accountSelect) {
@@ -738,6 +756,27 @@
         selectAccount(selectedAccountId || accounts[0].account_id);
       } catch (err) {
         renderAccountBar(accountBarEl, [], null, function () {});
+      }
+    }
+
+    async function startPortalLogin(accountId) {
+      if (!accountId) return;
+      var syncText = document.getElementById("syncText");
+      var account = accounts.filter(function (a) { return a.account_id === accountId; })[0];
+      var label = account ? (account.entity + " " + account.scope) : accountId;
+      setText(syncText, "Connexion " + label + " — terminez dans le navigateur");
+      try {
+        var response = await openPortalLogin(fetch, accountId);
+        if (response && response.ok) {
+          setText(syncText, "Session " + label + " enregistrée");
+          // The dot on the chip is driven by session state, so re-reading
+          // the accounts is what makes the result visible.
+          await refreshNotifications();
+        } else {
+          setText(syncText, "Connexion " + label + " non terminée");
+        }
+      } catch (err) {
+        setText(syncText, "Connexion " + label + " impossible");
       }
     }
 
@@ -775,6 +814,9 @@
       }
       var refreshBtn = document.getElementById("btnRefreshLive");
       if (refreshBtn) refreshBtn.addEventListener("click", function () { refreshClaims(); });
+
+      var loginBtn = document.getElementById("btnReauth");
+      if (loginBtn) loginBtn.addEventListener("click", function () { startPortalLogin(selectedAccountId); });
 
       var saveNoteBtn = document.getElementById("btnSaveNote");
       if (saveNoteBtn) saveNoteBtn.addEventListener("click", saveNoteFromModal);
