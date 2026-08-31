@@ -260,6 +260,39 @@ def test_read_rows_normal_and_pec_use_separate_fixed_routes():
 
 
 # --------------------------------------------------------------------- #
+# observe_identity(): the same fixed script mcma.portal.identity already
+# uses for EXECUTE's write-side gate, now reachable read-only too
+# --------------------------------------------------------------------- #
+
+
+def test_observe_identity_uses_the_fixed_script_and_returns_a_typed_result():
+    from mcma.domain.values import IdSinistre, RegistrationPlate
+    from mcma.portal.identity import ObservedIdentity
+
+    browser, reader = _open()
+    page = browser.contexts_created[0].pages_created[0]
+    page._evaluate_results = [{"registration": "34602-B-7", "id_sinistre": "534660"}]
+    observed = run_async(reader.observe_identity())
+    assert observed == ObservedIdentity(
+        registration=RegistrationPlate("34602-B-7"),
+        insurer_reference=None,
+        id_sinistre=IdSinistre("534660"),
+    )
+    script, arg = page.evaluate_calls[0]
+    assert "MatriculeVeh" in script and "IdSinistre__I" in script
+    assert arg is None  # no caller-supplied argument -- the script is fully fixed
+
+
+def test_observe_identity_fails_after_close_without_touching_the_page():
+    browser, reader = _open()
+    page = browser.contexts_created[0].pages_created[0]
+    run_async(reader.close())
+    with pytest.raises(RuntimeError):
+        run_async(reader.observe_identity())
+    assert page.evaluate_calls == []
+
+
+# --------------------------------------------------------------------- #
 # Lifecycle: fail after close without touching the page; idempotent close
 # --------------------------------------------------------------------- #
 
@@ -285,14 +318,26 @@ def test_close_is_idempotent():
 # --------------------------------------------------------------------- #
 
 
-def test_public_surface_is_exactly_the_five_operations_plus_close():
+def test_public_surface_is_exactly_the_six_operations_plus_close():
     """INC-14 disclosed extension: read_notifications() was added (the
-    recovered getAlerte/DataTable contract, read-only, category-scoped) --
-    every other operation and close() are unchanged."""
+    recovered getAlerte/DataTable contract, read-only, category-scoped).
+    Pilot-integration correction (section 3): observe_identity() was added
+    -- the same fixed-script scraping mcma.portal.identity already
+    provides for EXECUTE's write-side identity gate, now also reachable
+    read-only for the real DRY_RUN job runner. Every other operation and
+    close() are unchanged."""
     public = {
         name for name in dir(ReadCapability) if not name.startswith("_") and callable(getattr(ReadCapability, name))
     }
-    assert public == {"search", "open", "scrape", "read_rows", "read_notifications", "close"}
+    assert public == {
+        "search",
+        "open",
+        "scrape",
+        "read_rows",
+        "read_notifications",
+        "observe_identity",
+        "close",
+    }
 
 
 def test_no_page_context_or_generic_request_exposed():

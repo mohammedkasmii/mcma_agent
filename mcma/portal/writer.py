@@ -1194,6 +1194,19 @@ class VerifiedMissionWriter:
         except Exception:
             pass
 
+    def register_close_callback(self, on_close) -> None:
+        """Pilot-integration correction (section 4): the ONE way a caller
+        can observe this writer's browser context closing (the employee
+        closing the window themselves) without ever holding the context
+        object -- a thin passthrough to Playwright's own context.on(
+        "close", ...). Satisfies mcma.execution.browser_handoff.
+        BrowserHandle's Protocol shape exactly (structurally, no import),
+        so a VerifiedMissionWriter can be registered with
+        ActiveReviewRegistry directly. This is a subscription, not
+        access: `on_close` receives no arguments and cannot inspect or
+        drive the context/page in any way."""
+        self._context.on("close", lambda *_: on_close())
+
 
 # --------------------------------------------------------------------- #
 # open_verified_writer -- the staged construction sequence

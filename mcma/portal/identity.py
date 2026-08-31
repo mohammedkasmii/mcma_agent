@@ -103,3 +103,44 @@ def verify_identity(expected: ExpectedIdentity, observed: ObservedIdentity) -> N
     if expected.id_sinistre is not None:
         if observed.id_sinistre is None or observed.id_sinistre != expected.id_sinistre:
             raise IdentityMismatch("id_sinistre")
+
+
+# --------------------------------------------------------------------- #
+# Identity scraping (moved here from mcma.portal.mission by the pilot-
+# integration correction, section 3/4: mcma.portal.capabilities.
+# ReadCapability needs this too, for the real DRY_RUN read-only identity
+# gate -- identity.py is a leaf module (only mcma.domain), so both
+# mission.py and capabilities.py can depend on it without a cycle
+# (mission.py already imports FROM capabilities.py for SearchIdentifiers,
+# so the reverse direction would have been circular). mission.py
+# re-imports this name for backward compatibility.
+# --------------------------------------------------------------------- #
+
+_OBSERVE_IDENTITY_JS = """() => {
+    const readValue = (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const v = el.value !== undefined ? el.value : el.textContent;
+        const trimmed = v == null ? '' : String(v).trim();
+        return trimmed === '' ? null : trimmed;
+    };
+    return {
+        registration: readValue('#MatriculeVeh'),
+        id_sinistre: readValue('#IdSinistre__I'),
+    };
+}"""
+
+
+async def observe_identity(page) -> ObservedIdentity:
+    """Scrapes the currently opened mission page via one fixed script.
+    insurer_reference is always None -- see this module's docstring for
+    why (no confirmed selector exists yet)."""
+    result = await page.evaluate(_OBSERVE_IDENTITY_JS)
+    raw = result if isinstance(result, dict) else {}
+    registration_raw = raw.get("registration")
+    id_sinistre_raw = raw.get("id_sinistre")
+    return ObservedIdentity(
+        registration=RegistrationPlate(registration_raw) if registration_raw else None,
+        insurer_reference=None,
+        id_sinistre=IdSinistre(id_sinistre_raw) if id_sinistre_raw else None,
+    )

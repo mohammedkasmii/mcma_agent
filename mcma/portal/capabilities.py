@@ -47,6 +47,8 @@ from urllib.parse import quote
 from mcma.domain.enums import RepairWorkflow
 from mcma.portal.contracts import RouteContract
 from mcma.portal.final_endpoints import is_permanently_blocked
+from mcma.portal.identity import ObservedIdentity
+from mcma.portal.identity import observe_identity as _observe_identity
 from mcma.portal.session import open_guarded_context
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -457,6 +459,18 @@ class ReadCapability:
             raise TypeError("scrape() only accepts one or more ApprovedField members")
         pairs = [(f.value, _APPROVED_FIELD_SELECTORS[f]) for f in fields]
         return await self._page.evaluate(_SCRAPE_JS, pairs)
+
+    async def observe_identity(self) -> ObservedIdentity:
+        """The read-only identity gate for the real DRY_RUN job runner
+        (pilot-integration correction, section 3): scrapes registration
+        and id_sinistre from the currently-open mission page via the one
+        fixed script in mcma.portal.identity -- the same scraping this
+        capability's write-side counterpart (mcma.portal.writer via
+        open_verified_writer) already uses for EXECUTE. Still no raw
+        page/context exposure: the fixed script runs, the typed result
+        comes back, nothing else."""
+        self._ensure_open()
+        return await _observe_identity(self._page)
 
     async def read_notifications(self, code_alerte: str) -> tuple[dict, ...]:
         """INC-14: the recovered getAlerte/DataTable contract

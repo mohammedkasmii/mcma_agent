@@ -340,11 +340,14 @@ def test_no_public_preflight_method_exists_on_verified_mission_writer():
     assert not hasattr(VerifiedMissionWriter, "preflight_pec_rows")
 
 
-def test_public_surface_is_exactly_the_ten_documented_operations_plus_close():
-    """Pilot-integration correction (section 7): fill_form_fields/
-    verify_form_fields join the original eight -- the non-table header-
-    field write/read-back pair, mirroring add_normal_row+read_row/
-    verify_row's own fill-then-verify shape exactly."""
+def test_public_surface_is_exactly_the_ten_documented_operations_plus_close_and_the_close_callback():
+    """Pilot-integration correction: fill_form_fields/verify_form_fields
+    (section 7) join the original eight -- the non-table header-field
+    write/read-back pair, mirroring add_normal_row+read_row/verify_row's
+    own fill-then-verify shape exactly. register_close_callback (section
+    4) is the one subscription-only hook a real job runner needs to
+    observe the employee closing the browser -- it exposes no access to
+    the context/page itself."""
     public_methods = {
         name
         for name in dir(VerifiedMissionWriter)
@@ -361,6 +364,7 @@ def test_public_surface_is_exactly_the_ten_documented_operations_plus_close():
         "read_financial_summary",
         "verify_financial_summary",
         "close",
+        "register_close_callback",
     }
 
 

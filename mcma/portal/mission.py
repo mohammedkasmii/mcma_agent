@@ -44,9 +44,8 @@ from typing import Optional
 from urllib.parse import quote
 
 from mcma.domain.enums import RepairWorkflow
-from mcma.domain.values import IdSinistre, RegistrationPlate
 from mcma.portal.capabilities import SearchIdentifiers
-from mcma.portal.identity import ObservedIdentity
+from mcma.portal.identity import observe_identity  # noqa: F401 -- re-exported, see below
 
 # --------------------------------------------------------------------- #
 # Exactly-one mission search (F3/F4: no first-row/sole-candidate fallback)
@@ -117,40 +116,6 @@ async def open_candidate(page, allowed_host: str, candidate: MissionCandidate) -
     id_segment = quote(str(candidate.id_mission), safe="")
     path = _MISSION_DEEP_LINK_TEMPLATE.format(id_sinistre=id_segment)
     await page.goto(f"http://{allowed_host}{path}")
-
-
-# --------------------------------------------------------------------- #
-# Identity scraping
-# --------------------------------------------------------------------- #
-
-_OBSERVE_IDENTITY_JS = """() => {
-    const readValue = (sel) => {
-        const el = document.querySelector(sel);
-        if (!el) return null;
-        const v = el.value !== undefined ? el.value : el.textContent;
-        const trimmed = v == null ? '' : String(v).trim();
-        return trimmed === '' ? null : trimmed;
-    };
-    return {
-        registration: readValue('#MatriculeVeh'),
-        id_sinistre: readValue('#IdSinistre__I'),
-    };
-}"""
-
-
-async def observe_identity(page) -> ObservedIdentity:
-    """Scrapes the currently opened mission page via one fixed script.
-    insurer_reference is always None -- see this module's docstring for
-    why (no confirmed selector exists yet)."""
-    result = await page.evaluate(_OBSERVE_IDENTITY_JS)
-    raw = result if isinstance(result, dict) else {}
-    registration_raw = raw.get("registration")
-    id_sinistre_raw = raw.get("id_sinistre")
-    return ObservedIdentity(
-        registration=RegistrationPlate(registration_raw) if registration_raw else None,
-        insurer_reference=None,
-        id_sinistre=IdSinistre(id_sinistre_raw) if id_sinistre_raw else None,
-    )
 
 
 # --------------------------------------------------------------------- #
