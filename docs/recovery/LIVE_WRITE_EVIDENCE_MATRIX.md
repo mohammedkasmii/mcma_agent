@@ -1,14 +1,113 @@
 # LIVE WRITE EVIDENCE MATRIX
 
-What is actually **known** about writing to the real SinAuto portal, and
-what is currently believed on no evidence at all.
+> **CORRECTED.** The first version of this audit used baseline `0290fe9`
+> and concluded that most write mechanics were `MOCK_INFERRED`. That was
+> wrong, and wrong in the direction that matters: two EARLIER commits were
+> run by the developer against real MCMA dossiers and worked.
+>
+> ```
+> MODE NORMAL   live-tested golden   9a2c57c
+> PEC           live-tested golden   8e5e4e6
+> ```
+>
+> The DOM interactions in those commits are not inferences. They are
+> recorded behaviour of the real portal, confirmed by a successful run.
+> The sections below are re-classified accordingly.
+>
+> What has NOT changed: no HTTP method, request body or response schema
+> was ever captured. A commit that drove the DOM successfully proves the
+> DOM, not the wire.
 
-Written during Phase C.2. Nothing here enables a live write, and nothing
-here is a contract — `mcma/portal/pilot_contracts.py` remains mock-only
-and `mcma.portal.writer._require_loopback_host` still refuses any
-non-loopback host before a writer context exists.
+## Evidence levels (revised)
+
+| Level | Means |
+|---|---|
+| `LIVE_TESTED_DOM_BEHAVIOR` | Present in `9a2c57c` or `8e5e4e6` and exercised in a successful real-portal run. |
+| `RECOVERED_NETWORK_EVIDENCE` | The golden code observed an actual request/response. |
+| `UNCONFIRMED_NETWORK_DETAIL` | A wire-level fact nobody captured -- method, body keys, response schema. |
+| `MOCK_ONLY` | Exists solely in `mock_server.py` or fixtures. Never observed against SinAuto. |
+
+A level is still never promoted. `expect_response(lambda r: "updateDevisDet" in r.url)`
+is `RECOVERED_NETWORK_EVIDENCE` for *a response whose URL contains that
+substring* and `UNCONFIRMED_NETWORK_DETAIL` for everything else about it.
 
 ---
+
+## Mode Normal (`9a2c57c`)
+
+| Fact | Level |
+|---|---|
+| `#VehRepareI` must be checked before the rubriques table appears | `LIVE_TESTED_DOM_BEHAVIOR` |
+| Add control `a.btn-success:has-text('Ajouter'), a:has-text('Ajouter +'), a[onclick*='addRow']` | `LIVE_TESTED_DOM_BEHAVIOR` |
+| Fallback `edataTable_RapportDet.addRow()` | `LIVE_TESTED_DOM_BEHAVIOR` |
+| Unsuffixed `#IdRubrique`, `#MontantHT`, `#Taxe` + `name*=` fallbacks | `LIVE_TESTED_DOM_BEHAVIOR` |
+| Select2 destroy → set → verify → change → reinit | `LIVE_TESTED_DOM_BEHAVIOR` |
+| input/change/keyup + inline `onkeyup`/`onchange` + jQuery triggers | `LIVE_TESTED_DOM_BEHAVIOR` |
+| Row save = 7th-column checkmark, Playwright click AND JS `tds[6]` | `LIVE_TESTED_DOM_BEHAVIOR` |
+| AJAX redraw wait after save | `LIVE_TESTED_DOM_BEHAVIOR` |
+| `CalculerMontantDommage` / `CalculerMntArrete` / `CalculerMontantTTC` / `CalculerMontantVetuste` invoked, plus the 10-selector event sweep | `LIVE_TESTED_DOM_BEHAVIOR` |
+| Summary selectors `#MontantReparation`, `#MontantArrete`, `#BaseIndemnite`, ... | `LIVE_TESTED_DOM_BEHAVIOR` (read) |
+| **`createRapportDefDet` endpoint** | `MOCK_ONLY` — zero occurrences in either golden commit |
+| Its path, method, content type, body keys, response schema | `UNCONFIRMED_NETWORK_DETAIL` |
+| `#normal_row_<tempId>`, `#IdRubrique_<tempId>`, `#MontantHT_<tempId>` | `MOCK_ONLY` |
+
+The previous audit called the whole Mode Normal row lifecycle
+`MOCK_INFERRED`. Only the *network* part deserved that. The golden write
+was the DOM interaction, and it worked.
+
+`#MontantChargeMutuelle` / `#MontantChargeSocietaire` remain READ-only.
+The golden code wrote them directly; BUSINESS_RULES.md B.3 forbids it, and
+that part was deliberately not ported. Golden commits define mechanics,
+not business rules.
+
+---
+
+## Garage Conventionné / PEC (`8e5e4e6`)
+
+| Fact | Level |
+|---|---|
+| Table `#DevisDetTableVal`, enumerated by displayed row | `LIVE_TESTED_DOM_BEHAVIOR` |
+| `RUBRIQUE_MATCH_ALIASES` and exact → alias → substring(≥4) matching | `LIVE_TESTED_DOM_BEHAVIOR` |
+| `used_indices`, all-or-nothing preflight before any mutation | `LIVE_TESTED_DOM_BEHAVIOR` |
+| Re-locate the row by normalized label after every redraw | `LIVE_TESTED_DOM_BEHAVIOR` |
+| Pencil `a.edit-row, a#Modifier, a[onclick*="editRow"], a[title*="Modifier"], i.fa-pencil` | `LIVE_TESTED_DOM_BEHAVIOR` |
+| Unsuffixed `#MontantHTValide`, `#TaxeValide`, `#TauxVetusteValide`, `#MontantVetusteValide`, `#MontantTTCValide` | `LIVE_TESTED_DOM_BEHAVIOR` |
+| Save `a.save-row, a:has(.fa-check), a[onclick*="saveRow"], a[title*="Enregistrer"], i.fa-check` | `LIVE_TESTED_DOM_BEHAVIOR` |
+| `DevisCalculerMontantCharge()` + the 8-selector event cascade | `LIVE_TESTED_DOM_BEHAVIOR` |
+| Summary `#DevisMontantTVA`, `#DevisMontantTTC`, ... | `LIVE_TESTED_DOM_BEHAVIOR` (read) |
+| **A response whose URL contains `updateDevisDet` arrives after save** | `RECOVERED_NETWORK_EVIDENCE` |
+| Its full path, HTTP method, content type, body keys, response schema | `UNCONFIRMED_NETWORK_DETAIL` |
+| `#row_val_<id>`, suffixed input ids, `/_mock/pec/native_calculation`, `data-mock-only-*` | `MOCK_ONLY` |
+
+---
+
+## Still genuinely unconfirmed
+
+1. Every wire-level detail of both row-persistence calls.
+2. Whether `createRapportDefDet` exists on the real portal at all.
+3. Header field ids beyond `ValeurVenale` / `ValeurVenaleEstime`.
+
+These are observations, not decisions, and remain the job of
+`tools/capture_sinauto_write_evidence.py`.
+
+---
+
+## Readiness
+
+```
+MODE_NORMAL_LIVE_WRITE_READY          = false
+GARAGE_CONVENTIONNE_LIVE_WRITE_READY  = false
+```
+
+Unchanged, and still correct. The DOM mechanics are now known to work;
+the writer is still bound to loopback by
+`mcma.portal.writer._require_loopback_host`, and unlocking that is an
+INC-23 decision requiring owner approval, not a consequence of this
+re-classification.
+
+---
+
+## Original audit (superseded, retained for provenance)
 
 ## Evidence levels
 
