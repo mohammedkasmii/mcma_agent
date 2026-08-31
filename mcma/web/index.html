@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'">
+<title>MCMA Agency Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>MCMA Agency Dashboard</h1>
+  <p class="disclaimer">This dashboard never validates or closes a dossier on the real portal. Final Valider/Clôture is always a human action performed directly in SinAuto.</p>
+</header>
+
+<section id="login-section">
+  <h2>Sign in</h2>
+  <form id="login-form">
+    <label>Username <input type="text" id="login-username" autocomplete="username" required></label>
+    <label>Password <input type="password" id="login-password" autocomplete="current-password" required></label>
+    <button type="submit">Sign in</button>
+  </form>
+  <p id="login-status" role="status"></p>
+</section>
+
+<nav>
+  <a href="#notifications-section">Notifications</a>
+  <a href="#form-job-section">Form job</a>
+</nav>
+
+<section id="notifications-section">
+  <h2>Notifications (all accounts)</h2>
+  <p>Notifications never start a form job automatically -- opening/viewing one is purely informational.</p>
+  <ul id="notifications-list" aria-live="polite"></ul>
+</section>
+
+<section id="form-job-section">
+  <h2>Start a form job (MCMA only)</h2>
+  <form id="dossier-upload-form">
+    <label>MCMA account
+      <select id="account-select" required>
+        <option value="">Select an account</option>
+        <option value="acct-mcma-oujda">MCMA / Oujda</option>
+        <option value="acct-mcma-nador">MCMA / Nador</option>
+      </select>
+    </label>
+    <label>Wexia dossier JSON file
+      <input type="file" id="dossier-file-input" accept=".json,application/json" required>
+    </label>
+    <button type="submit">Upload and create dry-run</button>
+  </form>
+  <p id="upload-status" role="status"></p>
+</section>
+
+<section id="plan-preview-section">
+  <h2>Plan preview</h2>
+  <p>Review the deterministic plan and any warnings before authorizing execution. No charge-mutuelle/sociétaire field is ever shown or editable here.</p>
+  <div id="plan-preview"></div>
+</section>
+
+<section id="human-handoff-section">
+  <h2>Browser handoff</h2>
+  <p id="readiness-label" role="status"></p>
+  <p class="instructions">
+    When the browser opens for review: check the filled fields and rows, then
+    manually click <strong>Valider</strong> and/or <strong>Clôture</strong> in
+    the portal yourself, then close the browser window yourself. This
+    dashboard never clicks those controls for you.
+  </p>
+  <button id="review-completed-btn" type="button">Review completed</button>
+  <button id="problem-btn" type="button">Problem / not completed</button>
+  <p id="handoff-status" role="status"></p>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

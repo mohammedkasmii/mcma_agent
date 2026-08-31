@@ -95,3 +95,23 @@ def test_idor_job_id_from_another_account_is_not_listed(conn, app_and_client):
     response = client.get("/jobs")
     job_ids = {j["job_id"] for j in response.json()["jobs"]}
     assert "job-nador" not in job_ids
+
+
+def test_notifications_always_carry_account_entity_scope_and_label(conn, app_and_client):
+    """Section I (correction batch): combined UI data always retains
+    account/entity/scope labels, even in the no-explicit-account_id
+    (combined) listing."""
+    app, client, _ = app_and_client
+    user_id = create_user(conn, "irene", "pw12345", "operator")
+    grant_access(conn, user_id, OUJDA)
+    conn.execute(
+        "INSERT INTO unmatched_notifications (staging_id, account_id, reference, raw_payload, seen_at, resolved) "
+        "VALUES ('s1', ?, 'R1', '{}', '2026-01-01T00:00:00+00:00', 0)",
+        (OUJDA,),
+    )
+    login_client(client, "irene", "pw12345")
+    response = client.get("/notifications")
+    notification = response.json()["notifications"][0]
+    assert notification["account_entity"] == "MCMA"
+    assert notification["account_scope"] == "OUJDA"
+    assert "account_label" in notification

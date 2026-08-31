@@ -130,13 +130,16 @@ def create_api_app(
 
     # -- notifications (row-filtered list surfaces, review AR-H1) --------
 
+    _NOTIFICATIONS_WITH_PROFILE_SELECT = (
+        "SELECT n.*, a.entity AS account_entity, a.scope AS account_scope, a.label AS account_label "
+        "FROM unmatched_notifications n JOIN accounts a ON a.account_id = n.account_id"
+    )
+
     def _list_notifications(principal: Principal, account_id: Optional[str]):
         require_permission(principal, Permission.NOTIFICATIONS_READ)
         if account_id is not None:
             require_account_access(conn, principal, account_id)
-            rows = conn.execute(
-                "SELECT * FROM unmatched_notifications WHERE account_id = ?", (account_id,)
-            ).fetchall()
+            rows = conn.execute(f"{_NOTIFICATIONS_WITH_PROFILE_SELECT} WHERE n.account_id = ?", (account_id,)).fetchall()
         else:
             visible = visible_account_ids(conn, principal)
             if not visible:
@@ -144,10 +147,13 @@ def create_api_app(
             else:
                 placeholders = ",".join("?" for _ in visible)
                 rows = conn.execute(
-                    f"SELECT * FROM unmatched_notifications WHERE account_id IN ({placeholders})", tuple(visible)
+                    f"{_NOTIFICATIONS_WITH_PROFILE_SELECT} WHERE n.account_id IN ({placeholders})", tuple(visible)
                 ).fetchall()
         # Row-filtered even for a caller with a global permission and no
-        # explicit account_id -- never another account's rows.
+        # explicit account_id -- never another account's rows. entity/
+        # scope/label (section I, correction batch) let the dashboard
+        # always render an account-labelled notification view, even in
+        # the combined (no explicit account_id) listing.
         filtered = filter_rows_by_account_access(conn, principal, rows)
         return {"notifications": [dict(r) for r in filtered]}
 

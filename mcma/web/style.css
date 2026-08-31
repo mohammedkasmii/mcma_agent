@@ -1,0 +1,96 @@
+/* mcma.web.style -- plain CSS, no build step, no preprocessor. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --border: #d0d0d0;
+  --accent: #2b5fb0;
+  --danger: #b02b2b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181c;
+    --fg: #e6e6e6;
+    --border: #3a3d42;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.4;
+}
+
+header, section {
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.disclaimer {
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+
+nav {
+  padding: 0.5rem 1.5rem;
+  display: flex;
+  gap: 1rem;
+}
+
+nav a { color: var(--accent); }
+
+form label {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+button {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+#problem-btn {
+  background: var(--danger);
+}
+
+#notifications-list {
+  list-style: none;
+  padding: 0;
+}
+
+.notification-row {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.account-badge {
+  font-weight: 600;
+  min-width: 8rem;
+}
+
+.empty-state, .loading-state, .error-state {
+  opacity: 0.75;
+  font-style: italic;
+}
+
+.error-state {
+  color: var(--danger);
+}
+
+.instructions {
+  background: rgba(43, 95, 176, 0.08);
+  padding: 0.75rem;
+  border-radius: 4px;
+}
