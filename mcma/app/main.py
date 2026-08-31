@@ -95,13 +95,16 @@ _DEV_TLS_DIR = Path("var") / "tls"
 
 
 def build_encryptor(settings: Settings) -> InputEncryptor:
-    """The production DPAPI-backed InputEncryptor does not exist yet --
-    get_input_encryptor() raises ProductionEncryptorUnavailable rather
-    than falling back to a weak one, which is the correct behaviour and
-    is NOT worked around here. dev_mode explicitly selects the test-only
-    plaintext encryptor, and require_dev_mode_is_safe() has already
-    refused that combination against anything but the loopback mock."""
-    return get_input_encryptor(_test_only_plaintext_backend=settings.dev_mode)
+    """Real DPAPI encryption unless a test explicitly asks otherwise.
+
+    Selection is driven by allow_test_plaintext_job_inputs, NOT by
+    dev_mode. Tying it to dev_mode meant the normal employee application
+    -- which runs in the local/dev composition -- stored every dossier's
+    JSON verbatim. Pointing at the mock portal and storing PII in the
+    clear are unrelated decisions and are now unrelated settings."""
+    return get_input_encryptor(
+        _test_only_plaintext_backend=settings.allow_test_plaintext_job_inputs
+    )
 
 
 def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=None, supervisor=None):
@@ -122,7 +125,7 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
             instance_id=settings.instance_id,
             allowed_host=settings.portal_host,
             vault_dir=settings.vault_dir,
-            crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.dev_mode),
+            crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.allow_test_only_session_vault),
             acl_verifier=WindowsAclVerifier(),
         )
 
@@ -151,7 +154,7 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
             instance_id=settings.instance_id,
             allowed_host=settings.portal_host,
             vault_dir=settings.vault_dir,
-            crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.dev_mode),
+            crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.allow_test_only_session_vault),
             entity=account.entity,
         )
 
@@ -181,7 +184,7 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
         create_onboarding_app(
             conn=conn,
             vault_dir=settings.vault_dir,
-            backend=get_crypto_backend(_test_only_in_memory_backend=settings.dev_mode),
+            backend=get_crypto_backend(_test_only_in_memory_backend=settings.allow_test_only_session_vault),
             acl_verifier=WindowsAclVerifier(),
             lease_provider=_lease_provider,
         ),
@@ -274,7 +277,7 @@ def build_runner_config(settings: Settings) -> RunnerConfig:
         instance_id=settings.instance_id,
         allowed_host=settings.allowed_host,
         vault_dir=settings.vault_dir,
-        crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.dev_mode),
+        crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.allow_test_only_session_vault),
         active_review_registry=ActiveReviewRegistry(),
     )
 
@@ -325,12 +328,12 @@ def local_settings() -> Settings:
     `python -m mcma.app.main` uses, so normal use needs no arguments, no
     bootstrap token and no separate launcher.
 
-    dev_mode stays TRUE and allowed_host stays loopback: job inputs are
-    still stored through the test-only plaintext encryptor because the
-    DPAPI one does not exist yet (INC-21), and require_dev_mode_is_safe()
-    refuses to start if that is ever combined with a non-loopback write
-    target. Logging in and reading notifications go to the real portal
-    (portal_host) -- neither can alter a claim."""
+    dev_mode stays TRUE, meaning form filling targets the loopback mock
+    (G5); logging in and reading notifications go to the real portal, and
+    neither can alter a claim. Storage is REAL: dossier inputs are
+    encrypted with DPAPI CURRENT_USER and portal sessions with the DPAPI
+    vault, because the employee running this handles real dossiers even
+    while writes are still pointed at the mock."""
     base = Settings()
     return Settings(
         db_path=base.db_path,

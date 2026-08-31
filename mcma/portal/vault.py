@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import os
 import sys
+
+from mcma.core import dpapi
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,44 +43,23 @@ class ProductionCryptoBackendUnavailable(Exception):
 
 
 class DpapiLocalMachineBackend:
-    """Production backend: Windows DPAPI, CRYPTPROTECT_LOCAL_MACHINE
-    scope, via ctypes (no pywin32 dependency needed for this narrow
-    use)."""
+    """Production backend: Windows DPAPI, LOCAL_MACHINE scope.
 
-    _CRYPTPROTECT_LOCAL_MACHINE = 0x4
+    LOCAL_MACHINE is kept for the SESSION vault specifically. Any process
+    on the machine can decrypt at this scope, so confidentiality here
+    rests on the vault directory's NTFS ACL -- which is exactly the model
+    G3 already specifies and WindowsAclVerifier already checks. Job inputs
+    make the opposite choice; see mcma.execution.inputs.
+
+    The ctypes call itself moved to mcma.core.dpapi so it is written once
+    rather than twice; the scope and the threat model stay here, with the
+    caller that owns them."""
 
     def encrypt(self, plaintext: bytes) -> bytes:
-        return self._crypt(plaintext, protect=True)
+        return dpapi.protect(plaintext, dpapi.DpapiScope.LOCAL_MACHINE)
 
     def decrypt(self, ciphertext: bytes) -> bytes:
-        return self._crypt(ciphertext, protect=False)
-
-    def _crypt(self, data: bytes, *, protect: bool) -> bytes:
-        import ctypes
-        import ctypes.wintypes as wintypes
-
-        class DATA_BLOB(ctypes.Structure):
-            _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
-
-        def _to_blob(buf: bytes) -> DATA_BLOB:
-            buf_copy = ctypes.create_string_buffer(buf, len(buf))
-            return DATA_BLOB(len(buf), ctypes.cast(buf_copy, ctypes.POINTER(ctypes.c_char)))
-
-        crypt32 = ctypes.windll.crypt32  # type: ignore[attr-defined]
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-
-        in_blob = _to_blob(data)
-        out_blob = DATA_BLOB()
-        func = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
-        flags = self._CRYPTPROTECT_LOCAL_MACHINE
-        ok = func(ctypes.byref(in_blob), None, None, None, None, flags, ctypes.byref(out_blob))
-        if not ok:
-            raise RuntimeError("DPAPI operation failed")
-        try:
-            result = ctypes.string_at(out_blob.pbData, out_blob.cbData)
-        finally:
-            kernel32.LocalFree(out_blob.pbData)
-        return result
+        return dpapi.unprotect(ciphertext, dpapi.DpapiScope.LOCAL_MACHINE)
 
 
 class TestOnlyInMemoryCryptoBackend:

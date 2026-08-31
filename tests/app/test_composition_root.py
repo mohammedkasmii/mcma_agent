@@ -29,6 +29,10 @@ def _dev_settings(tmp_path: Path, **overrides) -> Settings:
         db_path=tmp_path / "mcma.sqlite3",
         vault_dir=tmp_path / "vault",
         dev_mode=True,
+        # Explicit test opt-in. These are what select the unsafe backends
+        # now; dev_mode alone no longer does.
+        allow_test_plaintext_job_inputs=True,
+        allow_test_only_session_vault=True,
         allowed_host="127.0.0.1:8080",
         mutex_name=f"mcma-test-{tmp_path.name}",
     )
@@ -42,10 +46,10 @@ def _dev_settings(tmp_path: Path, **overrides) -> Settings:
 
 
 def test_dev_mode_against_a_non_loopback_host_refuses_to_start(tmp_path):
-    """dev_mode stores CONTAINS_PII job inputs through the TEST-ONLY
-    plaintext encryptor. Combining it with a live host would put real
-    dossier PII on disk in cleartext, so the combination fails closed
-    before the database is even opened."""
+    """Plaintext job-input storage puts dossier JSON on disk verbatim.
+    Combined with a live write target that would be real claimant PII in
+    the clear, so the combination fails closed before the database is
+    even opened."""
     settings = _dev_settings(tmp_path, allowed_host="sinauto.mamda-mcma.ma")
     with pytest.raises(UnsafeDevModeConfiguration):
         require_dev_mode_is_safe(settings)
@@ -70,12 +74,21 @@ def test_dev_mode_check_rejects_hostnames_that_merely_look_local(tmp_path):
         require_dev_mode_is_safe(_dev_settings(tmp_path, allowed_host="localhost:8080"))
 
 
-def test_production_mode_still_has_no_input_encryptor(tmp_path):
-    """Guards against 'fixing' the missing DPAPI encryptor by quietly
-    letting production fall through to the plaintext one. Production must
-    keep failing closed until a real encryptor exists (INC-21)."""
-    with pytest.raises(ProductionEncryptorUnavailable):
-        build_encryptor(_dev_settings(tmp_path, dev_mode=False))
+def test_production_never_falls_back_to_the_plaintext_encryptor(tmp_path):
+    """Without the explicit test opt-in, an environment that cannot
+    provide DPAPI must REFUSE rather than store dossier JSON verbatim.
+    (On Windows this same call returns the real DPAPI encryptor; the
+    property under test is that there is no third, weaker option.)"""
+    import sys
+
+    settings = _dev_settings(tmp_path, allow_test_plaintext_job_inputs=False)
+    if sys.platform == "win32":
+        from mcma.execution.inputs import DpapiCurrentUserEncryptor
+
+        assert isinstance(build_encryptor(settings), DpapiCurrentUserEncryptor)
+    else:
+        with pytest.raises(ProductionEncryptorUnavailable):
+            build_encryptor(settings)
 
 
 # --------------------------------------------------------------------- #
@@ -234,6 +247,10 @@ def test_local_settings_are_safe_and_need_no_arguments():
     settings = local_settings()
     assert settings.local_single_user_mode is True
     assert settings.dev_mode is True
+    # The employee's own install stores REAL dossiers, so neither unsafe
+    # backend may be selected there.
+    assert settings.allow_test_plaintext_job_inputs is False
+    assert settings.allow_test_only_session_vault is False
     assert settings.api_host == "127.0.0.1"
     assert settings.headless_browser is False       # the human must see the handoff
     assert settings.tls_cert_path is not None       # HTTPS only, no plaintext path

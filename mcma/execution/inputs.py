@@ -19,6 +19,8 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
 
+from mcma.core import dpapi
+
 
 class InputEncryptor(Protocol):
     def encrypt(self, plaintext: bytes) -> bytes: ...
@@ -26,9 +28,8 @@ class InputEncryptor(Protocol):
 
 
 class ProductionEncryptorUnavailable(Exception):
-    """No production (DPAPI-backed, arrives in INC-13) encryptor is
-    available. Storing a job input refuses rather than using a weak
-    fallback."""
+    """No production DPAPI-backed encryptor is available on this platform.
+    Storing a job input refuses rather than using a weak fallback."""
 
 
 class TestOnlyPlaintextEncryptor:
@@ -42,13 +43,52 @@ class TestOnlyPlaintextEncryptor:
         return ciphertext
 
 
+class DpapiCurrentUserEncryptor:
+    """Production encryptor for job inputs: Windows DPAPI, CURRENT_USER
+    scope.
+
+    WHY CURRENT_USER, where the session vault uses LOCAL_MACHINE. The two
+    are stored differently and so have different threat models. Session
+    material lives in its own directory whose NTFS ACL G3 specifies and
+    WindowsAclVerifier verifies, so LOCAL_MACHINE plus that ACL is the
+    documented model there. Job input ciphertext lives inside the SQLite
+    database, and nothing in this repository specifies or verifies an ACL
+    on that file. At LOCAL_MACHINE scope, anyone who obtained a copy of
+    var/mcma.sqlite3 -- a backup, a support copy, another local account --
+    could decrypt every dossier in it. At CURRENT_USER only the Windows
+    account that ran the application can, so possessing the database is
+    not enough.
+
+    Nothing is lost by narrowing: this is a single-office install that one
+    employee starts and uses under one Windows account, and CURRENT_USER
+    survives a restart under that same account, which is the only
+    continuity the resume path needs.
+
+    A decryption failure raises the module's own error type with a fixed
+    message. The plaintext, the ciphertext and the Windows error text
+    never appear in it: this data is claimant names, registrations and
+    amounts."""
+
+    def encrypt(self, plaintext: bytes) -> bytes:
+        return dpapi.protect(plaintext, dpapi.DpapiScope.CURRENT_USER)
+
+    def decrypt(self, ciphertext: bytes) -> bytes:
+        return dpapi.unprotect(ciphertext, dpapi.DpapiScope.CURRENT_USER)
+
+
 def get_input_encryptor(*, _test_only_plaintext_backend: bool = False) -> InputEncryptor:
+    """Fail-closed selection. There is no path from "production" or "DPAPI
+    unavailable" to a weaker encryptor -- the test backend is reachable
+    only by passing the deliberately ugly keyword, which no production
+    call site does."""
     if _test_only_plaintext_backend:
         return TestOnlyPlaintextEncryptor()
-    raise ProductionEncryptorUnavailable(
-        "no production DPAPI-backed encryptor is available yet (arrives in INC-13); "
-        "job input storage refuses rather than falling back to a weak encryptor"
-    )
+    if not dpapi.is_available():
+        raise ProductionEncryptorUnavailable(
+            "Windows DPAPI is not available on this platform; job input storage "
+            "refuses rather than falling back to a weaker encryptor"
+        )
+    return DpapiCurrentUserEncryptor()
 
 
 def compute_content_hash(payload: bytes) -> str:

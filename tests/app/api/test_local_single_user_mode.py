@@ -143,6 +143,10 @@ def test_startup_refuses_local_mode_on_a_non_loopback_bind(tmp_path):
         db_path=tmp_path / "m.sqlite3",
         vault_dir=tmp_path / "vault",
         dev_mode=True,
+        # Explicit test opt-in. These are what select the unsafe backends
+        # now; dev_mode alone no longer does.
+        allow_test_plaintext_job_inputs=True,
+        allow_test_only_session_vault=True,
         local_single_user_mode=True,
         api_host="0.0.0.0",
         mutex_name=f"mcma-test-{tmp_path.name}",

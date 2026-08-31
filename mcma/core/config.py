@@ -71,13 +71,23 @@ class Settings:
     # handoff requires the employee to see and close the window themselves.
     headless_browser: bool = False
 
-    # DEV MODE -- see require_dev_mode_is_safe(). Selects the test-only
-    # plaintext job-input encryptor because no DPAPI-backed InputEncryptor
-    # exists yet (mcma.execution.inputs.get_input_encryptor still raises
-    # ProductionEncryptorUnavailable; it is scheduled for INC-21). It is
-    # therefore ONLY ever safe against the mock portal, and is validated
-    # as such rather than trusted.
+    # DEV MODE means one thing only: form filling targets the loopback
+    # mock rather than the real portal. It used to ALSO decide how job
+    # inputs and portal sessions were stored, which meant the normal
+    # employee application -- which runs in this composition -- persisted
+    # both with test-only backends. Storage is now chosen by the two
+    # explicit settings below, so "I am pointed at the mock" can never
+    # again silently mean "PII may be stored unprotected".
     dev_mode: bool = False
+
+    # UNSAFE STORAGE, named so that reading it is enough to know.
+    # TestOnlyPlaintextEncryptor stores dossier JSON -- claimant names,
+    # registrations, amounts -- verbatim, and TestOnlyInMemoryCryptoBackend
+    # is a prefix rather than encryption, so portal session cookies would
+    # sit on disk essentially in the clear. Both default False and are
+    # opted into by tests and mocks alone.
+    allow_test_plaintext_job_inputs: bool = False
+    allow_test_only_session_vault: bool = False
 
     # Single-office local install: one machine, one team, bound to
     # loopback. The employee already holds four portal passwords; a fifth
@@ -129,22 +139,22 @@ def _is_loopback_host(allowed_host: str) -> bool:
 
 
 def require_dev_mode_is_safe(settings: "Settings") -> None:
-    """dev_mode stores job inputs -- which are CONTAINS_PII -- through the
-    TEST-ONLY plaintext encryptor, because the production DPAPI one does
-    not exist yet. That is acceptable against synthetic data in the mock
-    portal and is NEVER acceptable against real dossiers, so the
-    combination is checked structurally here instead of being left to
-    operator discipline: dev_mode against a non-loopback allowed_host
-    fails closed at startup, before the database is opened or a browser
-    is launched.
+    """Refuses to start when unprotected storage is combined with a real
+    write target.
 
-    This mirrors, one layer higher, the refusal mcma.portal.writer
-    already performs on the same value -- the writer would reject a live
-    host anyway, but only once a job was already underway and its PII had
-    already been written to disk. Failing here means it never is."""
-    if settings.dev_mode and not _is_loopback_host(settings.allowed_host):
+    The rule now keys off the storage setting rather than dev_mode,
+    because those became separate things: dev_mode alone no longer means
+    anything is stored unprotected. What must never happen is
+    plaintext job inputs -- which are CONTAINS_PII -- alongside a
+    non-loopback write target, i.e. real dossiers stored in the clear.
+
+    Checked here, before the database is opened or a browser is launched.
+    mcma.portal.writer refuses a live host too, but only once a job is
+    already underway and its PII has already been written to disk.
+    Failing here means it never is."""
+    if settings.allow_test_plaintext_job_inputs and not _is_loopback_host(settings.allowed_host):
         raise UnsafeDevModeConfiguration(
-            "dev_mode uses the TEST-ONLY plaintext job-input encryptor and is "
+            "allow_test_plaintext_job_inputs stores dossier JSON verbatim and is "
             f"only permitted against the loopback mock portal; allowed_host={settings.allowed_host!r} "
             "is not loopback. Real dossier PII must never be stored through it."
         )
