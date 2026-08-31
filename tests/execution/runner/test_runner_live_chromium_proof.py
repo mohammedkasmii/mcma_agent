@@ -35,9 +35,13 @@ from runner_test_support import (
     MCMA_OUJDA_ACCOUNT_ID,
     MODE_NORMAL_TYPED_INPUT,
     PEC_TYPED_INPUT,
+    conn,  # noqa: F401
+    crypto_backend,  # noqa: F401
+    encryptor,  # noqa: F401
     live_mock_server,  # noqa: F401
     run_async,
     seed_mcma_oujda_session,
+    vault_dir,  # noqa: F401
 )
 
 pytestmark = [pytest.mark.egress_proof, pytest.mark.requires_egress_isolation]
@@ -89,7 +93,7 @@ def test_dry_run_reaches_dry_run_verified_via_a_real_read_only_identity_check(
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             try:
-                return process_one_queued_dry_run(conn, job_id, browser=browser, cfg=cfg, encryptor=encryptor)
+                return await process_one_queued_dry_run(conn, job_id, browser=browser, cfg=cfg, encryptor=encryptor)
             finally:
                 await browser.close()
 
@@ -122,7 +126,7 @@ def test_dry_run_fails_closed_to_identity_failed_on_a_genuine_mismatch(
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             try:
-                return process_one_queued_dry_run(conn, job_id, browser=browser, cfg=cfg, encryptor=encryptor)
+                return await process_one_queued_dry_run(conn, job_id, browser=browser, cfg=cfg, encryptor=encryptor)
             finally:
                 await browser.close()
 
@@ -146,7 +150,7 @@ def test_process_queued_dry_run_jobs_discovers_and_drains_every_queued_job(
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             try:
-                return process_queued_dry_run_jobs(conn, browser=browser, cfg=cfg, encryptor=encryptor)
+                return await process_queued_dry_run_jobs(conn, browser=browser, cfg=cfg, encryptor=encryptor)
             finally:
                 await browser.close()
 
@@ -210,18 +214,18 @@ def test_execute_reaches_ready_for_human_review_and_registers_with_the_review_re
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             try:
-                return process_one_planned_execute(conn, execute_job_id, browser=browser, cfg=cfg, encryptor=encryptor)
+                status = await process_one_planned_execute(conn, execute_job_id, browser=browser, cfg=cfg, encryptor=encryptor)
+                assert status == "READY_FOR_HUMAN_REVIEW"
+                assert AutomationJobsRepository(conn).get(execute_job_id)["status"] == "READY_FOR_HUMAN_REVIEW"
+
+                # Section 4: the lease is held (a second job cannot use the account).
+                assert cfg.active_review_registry.is_account_active(MCMA_OUJDA_ACCOUNT_ID)
+                with pytest.raises(LeaseNotHeld):
+                    acquire_lease(conn, MCMA_OUJDA_ACCOUNT_ID, "another-instance")
             finally:
                 await browser.close()
 
-    status = run_async(_run())
-    assert status == "READY_FOR_HUMAN_REVIEW"
-    assert AutomationJobsRepository(conn).get(execute_job_id)["status"] == "READY_FOR_HUMAN_REVIEW"
-
-    # Section 4: the lease is held (a second job cannot use the account).
-    assert cfg.active_review_registry.is_account_active(MCMA_OUJDA_ACCOUNT_ID)
-    with pytest.raises(LeaseNotHeld):
-        acquire_lease(conn, MCMA_OUJDA_ACCOUNT_ID, "another-instance")
+    run_async(_run())
 
 
 def test_browser_close_after_ready_moves_to_awaiting_confirmation_and_releases_the_lease(
@@ -237,7 +241,7 @@ def test_browser_close_after_ready_moves_to_awaiting_confirmation_and_releases_t
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             try:
-                status = process_one_planned_execute(conn, execute_job_id, browser=browser, cfg=cfg, encryptor=encryptor)
+                status = await process_one_planned_execute(conn, execute_job_id, browser=browser, cfg=cfg, encryptor=encryptor)
                 assert status == "READY_FOR_HUMAN_REVIEW"
                 handle = cfg.active_review_registry.get(execute_job_id)
                 # The employee closes their own visible browser -- the

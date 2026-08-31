@@ -186,7 +186,9 @@ async def _observe_and_verify_identity(
         lease.release()
 
 
-def process_one_queued_dry_run(conn, job_id: str, *, browser, cfg: RunnerConfig, encryptor: InputEncryptor) -> str:
+async def process_one_queued_dry_run(
+    conn, job_id: str, *, browser, cfg: RunnerConfig, encryptor: InputEncryptor
+) -> str:
     """Drives exactly one QUEUED DRY_RUN job through planning and (when
     planning did not already fail closed to NEEDS_REVIEW) the read-only
     identity gate. Returns the job's resulting status."""
@@ -201,14 +203,15 @@ def process_one_queued_dry_run(conn, job_id: str, *, browser, cfg: RunnerConfig,
     if plan.needs_review:
         return "NEEDS_REVIEW"
 
-    def _check_identity_read_only() -> bool:
-        return asyncio.run(_observe_and_verify_identity(conn, browser, cfg, job_row["account_id"], job_id, plan))
+    matched = await _observe_and_verify_identity(conn, browser, cfg, job_row["account_id"], job_id, plan)
 
-    run_dry_run_identity_check(conn, job_id, check_identity_read_only=_check_identity_read_only)
+    run_dry_run_identity_check(conn, job_id, check_identity_read_only=lambda: matched)
     return AutomationJobsRepository(conn).get(job_id)["status"]
 
 
-def process_queued_dry_run_jobs(conn, *, browser, cfg: RunnerConfig, encryptor: InputEncryptor) -> Tuple[str, ...]:
+async def process_queued_dry_run_jobs(
+    conn, *, browser, cfg: RunnerConfig, encryptor: InputEncryptor
+) -> Tuple[str, ...]:
     """"Consume QUEUED DRY_RUN jobs" (section 3) -- the runner's one
     job-discovery entry point. Processed in submission order; one job's
     failure (an unexpected exception escaping planning/identity-check,
@@ -219,7 +222,7 @@ def process_queued_dry_run_jobs(conn, *, browser, cfg: RunnerConfig, encryptor: 
     outcomes = []
     for job_id in job_ids:
         try:
-            outcomes.append(process_one_queued_dry_run(conn, job_id, browser=browser, cfg=cfg, encryptor=encryptor))
+            outcomes.append(await process_one_queued_dry_run(conn, job_id, browser=browser, cfg=cfg, encryptor=encryptor))
         except Exception as exc:  # pragma: no cover - defensive isolation only
             outcomes.append(f"RUNNER_ERROR_{type(exc).__name__}")
     return tuple(outcomes)
@@ -264,7 +267,7 @@ async def _open_writer_for_execute(
         raise
 
 
-def _perform_writes_and_verify(writer: VerifiedMissionWriter, plan: ProposedPlan) -> bool:
+async def _perform_writes_and_verify(writer: VerifiedMissionWriter, plan: ProposedPlan) -> bool:
     """MODE_NORMAL fills rows + the five confirmed non-table fields only
     -- it never calls trigger_native_recalc (which always raises
     NativeCalculationUnconfirmed for Mode Normal by design, see
@@ -272,29 +275,26 @@ def _perform_writes_and_verify(writer: VerifiedMissionWriter, plan: ProposedPlan
     additionally triggers and verifies the native financial summary."""
     from mcma.domain.enums import RepairWorkflow
 
-    async def _run() -> bool:
-        try:
-            if plan.repair_workflow is RepairWorkflow.MODE_NORMAL:
-                for step in plan.steps:
-                    await writer.add_normal_row(step.rubrique_id)
-                    await writer.verify_row(step.rubrique_id)
-            else:
-                for step in plan.steps:
-                    await writer.edit_conventionne_row(step.rubrique_id)
-                    await writer.verify_row(step.rubrique_id)
-            await writer.fill_form_fields()
-            await writer.verify_form_fields()
-            if plan.repair_workflow is RepairWorkflow.GARAGE_CONVENTIONNE:
-                await writer.trigger_native_recalc()
-                await writer.verify_financial_summary()
-            return True
-        except WriteAborted:
-            return False
-
-    return asyncio.run(_run())
+    try:
+        if plan.repair_workflow is RepairWorkflow.MODE_NORMAL:
+            for step in plan.steps:
+                await writer.add_normal_row(step.rubrique_id)
+                await writer.verify_row(step.rubrique_id)
+        else:
+            for step in plan.steps:
+                await writer.edit_conventionne_row(step.rubrique_id)
+                await writer.verify_row(step.rubrique_id)
+        await writer.fill_form_fields()
+        await writer.verify_form_fields()
+        if plan.repair_workflow is RepairWorkflow.GARAGE_CONVENTIONNE:
+            await writer.trigger_native_recalc()
+            await writer.verify_financial_summary()
+        return True
+    except WriteAborted:
+        return False
 
 
-def process_one_planned_execute(
+async def process_one_planned_execute(
     conn,
     job_id: str,
     *,
@@ -317,26 +317,38 @@ def process_one_planned_execute(
         raise ValueError("no such job_id")
     plan = _rebuild_plan(conn, job_row, encryptor)
 
-    # acquire_lease_and_verify_identity's return value is what
-    # run_execute_write hands to perform_writes_and_verify, and is NOT
-    # otherwise visible to this function afterward -- both the lease and
-    # the writer are stashed in this closure-local box so the human
-    # handoff/lease-release code below (which runs after run_execute_write
-    # returns) can reach them.
     state: dict = {}
-
-    def _acquire_lease_and_verify_identity():
-        writer, lease = asyncio.run(_open_writer_for_execute(conn, browser, cfg, job_row, plan))
+    open_exc = None
+    writer = None
+    try:
+        writer, lease = await _open_writer_for_execute(conn, browser, cfg, job_row, plan)
         state["lease"] = lease
         state["writer"] = writer
+    except Exception as exc:
+        open_exc = exc
+
+    write_result = None
+    write_exc = None
+    if open_exc is None and writer is not None:
+        try:
+            write_result = await _perform_writes_and_verify(writer, plan)
+        except Exception as exc:
+            write_exc = exc
+
+    def _acquire_lease_and_verify_identity():
+        if open_exc is not None:
+            raise open_exc
         return writer
 
-    def _perform(writer):
-        return _perform_writes_and_verify(writer, plan)
+    def _perform(w):
+        if write_exc is not None:
+            raise write_exc
+        return bool(write_result)
 
     try:
         status = run_execute_write(
-            conn, job_id,
+            conn,
+            job_id,
             acquire_lease_and_verify_identity=_acquire_lease_and_verify_identity,
             perform_writes_and_verify=_perform,
         )
@@ -361,6 +373,11 @@ def process_one_planned_execute(
                 lease.release()
 
         transition_on_browser_closed(conn, closed_job_id, release_lease=_release)
+        if lease is not None:
+            try:
+                lease.release()
+            except Exception:
+                pass
         if on_browser_closed is not None:
             on_browser_closed(closed_job_id)
 
@@ -368,7 +385,7 @@ def process_one_planned_execute(
     return status
 
 
-def process_queued_planned_execute_jobs(
+async def process_queued_planned_execute_jobs(
     conn, *, browser, cfg: RunnerConfig, encryptor: InputEncryptor, on_browser_closed=None
 ) -> Tuple[str, ...]:
     jobs_repo = AutomationJobsRepository(conn)
@@ -377,7 +394,7 @@ def process_queued_planned_execute_jobs(
     for job_id in job_ids:
         try:
             outcomes.append(
-                process_one_planned_execute(
+                await process_one_planned_execute(
                     conn, job_id, browser=browser, cfg=cfg, encryptor=encryptor, on_browser_closed=on_browser_closed
                 )
             )

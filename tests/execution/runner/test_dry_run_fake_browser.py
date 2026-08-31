@@ -54,8 +54,16 @@ class FakePage:
 class FakeContext:
     def __init__(self, evaluate_results):
         self._evaluate_results = evaluate_results
+        self.route_calls = []
+        self.ws_route_calls = []
         self.closed_count = 0
         self.pages_created = []
+
+    async def route(self, pattern, handler):
+        self.route_calls.append((pattern, handler))
+
+    async def route_web_socket(self, pattern, handler):
+        self.ws_route_calls.append((pattern, handler))
 
     async def new_page(self):
         page = FakePage(self._evaluate_results)
@@ -131,10 +139,10 @@ def test_process_queued_dry_run_jobs_drains_the_queue_via_fakes(conn, vault_dir,
     browser = FakeBrowser([_MODE_NORMAL_SEARCH_RESULT, _MATCHING_IDENTITY])
     cfg = _cfg(vault_dir, crypto_backend)
 
-    outcomes = process_queued_dry_run_jobs(conn, browser=browser, cfg=cfg, encryptor=encryptor)
+    outcomes = run_async(process_queued_dry_run_jobs(conn, browser=browser, cfg=cfg, encryptor=encryptor))
     assert outcomes == ("DRY_RUN_VERIFIED",)
-    assert process_queued_dry_run_jobs(conn, browser=browser, cfg=cfg, encryptor=encryptor) == ()
+    assert run_async(process_queued_dry_run_jobs(conn, browser=browser, cfg=cfg, encryptor=encryptor)) == ()
 
 
 async def _run(job_id, browser, cfg, conn, encryptor):
-    return process_one_queued_dry_run(conn, job_id, browser=browser, cfg=cfg, encryptor=encryptor)
+    return await process_one_queued_dry_run(conn, job_id, browser=browser, cfg=cfg, encryptor=encryptor)

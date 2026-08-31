@@ -86,7 +86,7 @@ PEC_TYPED_INPUT = {
             "total_cost": 10,
             "tax_amount": 2,
             "lignes_pieces": [
-                {"item_type": "part", "item_name": "pare-choc avant", "part_type": "original", "subtotal": 10}
+                {"item_type": "part", "item_name": "pare-choc avant", "part_type": "used", "subtotal": 10}
             ],
         }
     ],
@@ -101,6 +101,10 @@ def run_async(coro):
 def conn(tmp_path: Path):
     connection = open_database(tmp_path / "mcma_runner_test.sqlite3")
     ensure_canonical_accounts(connection)
+    connection.execute(
+        "INSERT INTO users (user_id, username, password_hash, role, active) "
+        "VALUES ('operator-1', 'operator-1', 'hash', 'operator', 1)"
+    )
     yield connection
     connection.close()
 

@@ -87,6 +87,22 @@ def read_contracts(host: str) -> tuple[RouteContract, ...]:
             capability="read", operation_type="search",
             content_type="application/x-www-form-urlencoded", body_fields={"Matricule", "ReferenceCie"},
         ),
+        _c(
+            host,
+            "/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/612001/rubrique/gestionexpert-index",
+            "GET",
+            capability="read",
+            operation_type="mission_page",
+            workflow="MODE_NORMAL",
+        ),
+        _c(
+            host,
+            "/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/532805/rubrique/gestionexpert-index",
+            "GET",
+            capability="read",
+            operation_type="mission_page",
+            workflow="GARAGE_CONVENTIONNE",
+        ),
     )
 
 
