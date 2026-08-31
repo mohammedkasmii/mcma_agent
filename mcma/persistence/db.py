@@ -33,10 +33,20 @@ def connect(db_path: Path) -> sqlite3.Connection:
     """Opens one connection with the mandatory PRAGMAs applied. The parent
     directory is created if missing (the DB path itself is never created
     inside a served directory -- that is a caller/config responsibility,
-    see mcma.core.config.Settings.db_path)."""
+    see mcma.core.config.Settings.db_path).
+
+    `check_same_thread=False`: mcma.app (FastAPI/Starlette, from INC-13's
+    onboarding endpoint onward) dispatches sync request handlers onto a
+    worker thread distinct from the one that opened this connection --
+    sqlite3's default same-thread restriction would otherwise raise on
+    every such request. This is safe under this project's single-writer
+    model (one Uvicorn worker, INC-11's OS mutex, WAL mode) as long as
+    callers never share ONE connection across genuinely concurrent
+    writers without serializing access -- there is no connection pool or
+    additional locking here; each caller opens what it needs."""
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    conn = sqlite3.connect(str(db_path), isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

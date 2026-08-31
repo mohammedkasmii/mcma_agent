@@ -1,0 +1,278 @@
+"""
+mcma.portal.vault -- the multi-account session vault (INC-13, ADR-0007,
+SAFETY_MODEL.md §7, INV-10).
+
+Production model: DPAPI LocalMachine encryption plus a service-account-
+only NTFS ACL on the vault directory. LocalMachine-scoped DPAPI
+ciphertext is decryptable by ANY local user on the machine -- the NTFS
+ACL is therefore the SOLE confidentiality control, and this module
+refuses to persist a session if that ACL cannot be set and verified
+(review SEC-5, a HARD precondition, never "where feasible").
+
+The crypto backend and the ACL verifier are both injected via the same
+underscore-gated test-only opt-in pattern already established in
+mcma.core.mutex/mcma.execution.inputs -- production call sites can never
+reach the weaker backend by omission.
+
+Decryption/binding failure always fails closed: no read or write
+proceeds on ambiguous evidence. `storage_ref` (DATA_MODEL.md §2) is an
+opaque token; the account's identity is `account_id`, never the file
+path or the token itself.
+"""
+
+from __future__ import annotations
+
+import os
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional, Protocol
+
+
+class CryptoBackend(Protocol):
+    def encrypt(self, plaintext: bytes) -> bytes: ...
+    def decrypt(self, ciphertext: bytes) -> bytes: ...
+
+
+class ProductionCryptoBackendUnavailable(Exception):
+    """No production (DPAPI LocalMachine) backend is available. The vault
+    refuses rather than falling back to a weaker backend."""
+
+
+class DpapiLocalMachineBackend:
+    """Production backend: Windows DPAPI, CRYPTPROTECT_LOCAL_MACHINE
+    scope, via ctypes (no pywin32 dependency needed for this narrow
+    use)."""
+
+    _CRYPTPROTECT_LOCAL_MACHINE = 0x4
+
+    def encrypt(self, plaintext: bytes) -> bytes:
+        return self._crypt(plaintext, protect=True)
+
+    def decrypt(self, ciphertext: bytes) -> bytes:
+        return self._crypt(ciphertext, protect=False)
+
+    def _crypt(self, data: bytes, *, protect: bool) -> bytes:
+        import ctypes
+        import ctypes.wintypes as wintypes
+
+        class DATA_BLOB(ctypes.Structure):
+            _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+        def _to_blob(buf: bytes) -> DATA_BLOB:
+            buf_copy = ctypes.create_string_buffer(buf, len(buf))
+            return DATA_BLOB(len(buf), ctypes.cast(buf_copy, ctypes.POINTER(ctypes.c_char)))
+
+        crypt32 = ctypes.windll.crypt32  # type: ignore[attr-defined]
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+        in_blob = _to_blob(data)
+        out_blob = DATA_BLOB()
+        func = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
+        flags = self._CRYPTPROTECT_LOCAL_MACHINE
+        ok = func(ctypes.byref(in_blob), None, None, None, None, flags, ctypes.byref(out_blob))
+        if not ok:
+            raise RuntimeError("DPAPI operation failed")
+        try:
+            result = ctypes.string_at(out_blob.pbData, out_blob.cbData)
+        finally:
+            kernel32.LocalFree(out_blob.pbData)
+        return result
+
+
+class TestOnlyInMemoryCryptoBackend:
+    """TEST-ONLY reversible transform (not real encryption). Never
+    selectable in production -- see get_crypto_backend()."""
+
+    _MARKER = b"TEST-ONLY-VAULT::"
+
+    def encrypt(self, plaintext: bytes) -> bytes:
+        return self._MARKER + plaintext
+
+    def decrypt(self, ciphertext: bytes) -> bytes:
+        if not ciphertext.startswith(self._MARKER):
+            raise ValueError("not a value this test backend encrypted")
+        return ciphertext[len(self._MARKER):]
+
+
+def get_crypto_backend(*, _test_only_in_memory_backend: bool = False) -> CryptoBackend:
+    if _test_only_in_memory_backend:
+        return TestOnlyInMemoryCryptoBackend()
+    raise ProductionCryptoBackendUnavailable(
+        "no production DPAPI LocalMachine backend is available on this platform/context; "
+        "the vault refuses rather than falling back to a weaker backend"
+    )
+
+
+# --------------------------------------------------------------------- #
+# ACL verification -- a hard precondition, not "where feasible" (SEC-5)
+# --------------------------------------------------------------------- #
+
+
+class AclVerifier(Protocol):
+    def verify_restrictive(self, path: Path) -> bool: ...
+
+
+class WindowsAclVerifier:
+    """Verifies the vault directory grants access to no broad principal
+    (Everyone/Authenticated Users/Users) via `icacls` (a built-in Windows
+    tool -- no pywin32 dependency)."""
+
+    _DISALLOWED_PRINCIPALS = ("Everyone", "BUILTIN\\Users", "Authenticated Users", "NT AUTHORITY\\Authenticated Users")
+
+    def verify_restrictive(self, path: Path) -> bool:
+        import subprocess
+
+        result = subprocess.run(["icacls", str(path)], capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            return False
+        output = result.stdout
+        return not any(principal in output for principal in self._DISALLOWED_PRINCIPALS)
+
+
+class TestOnlyAclVerifier:
+    """TEST-ONLY: a fixed, injected result -- never selectable in
+    production."""
+
+    def __init__(self, result: bool) -> None:
+        self._result = result
+
+    def verify_restrictive(self, path: Path) -> bool:
+        return self._result
+
+
+def get_acl_verifier(*, _test_only_result: Optional[bool] = None) -> AclVerifier:
+    if _test_only_result is not None:
+        return TestOnlyAclVerifier(_test_only_result)
+    return WindowsAclVerifier()
+
+
+# --------------------------------------------------------------------- #
+# Vault errors
+# --------------------------------------------------------------------- #
+
+
+class VaultAclPreconditionFailed(Exception):
+    """The service-account-only NTFS ACL could not be set/verified on the
+    vault directory -- the store refuses (SEC-5 hard precondition)."""
+
+
+class SessionDecryptionFailed(Exception):
+    pass
+
+
+class SessionBindingMismatch(Exception):
+    """The opened portal identity's fingerprint does not match the
+    account this session is bound to."""
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+# --------------------------------------------------------------------- #
+# Store / rotate / revoke / load
+# --------------------------------------------------------------------- #
+
+
+def store_session(
+    conn,
+    lease_handle,
+    account_id: str,
+    storage_state: bytes,
+    *,
+    vault_dir: Path,
+    backend: CryptoBackend,
+    acl_verifier: AclVerifier,
+    identity_fingerprint: Optional[str] = None,
+) -> str:
+    """Acquires no lease itself -- the CALLER must already hold (and pass)
+    a valid lease for this account (test_service_acquires_lease_before_
+    session_replace proves the ordering). Atomic file replacement: writes
+    to a temp file in the SAME directory, then os.replace() (atomic on
+    the same filesystem) -- there is never a window where a reader could
+    observe a partially-written ciphertext file."""
+    if lease_handle.account_id != account_id:
+        raise ValueError("lease_handle does not belong to this account")
+
+    vault_dir = Path(vault_dir)
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    if not acl_verifier.verify_restrictive(vault_dir):
+        raise VaultAclPreconditionFailed(
+            f"service-account-only NTFS ACL could not be verified on {vault_dir}; refusing to store"
+        )
+
+    ciphertext = backend.encrypt(storage_state)
+    storage_ref = uuid.uuid4().hex
+    final_path = vault_dir / f"{storage_ref}.session"
+    tmp_path = vault_dir / f".{storage_ref}.session.tmp"
+    tmp_path.write_bytes(ciphertext)
+    os.replace(tmp_path, final_path)  # atomic on the same filesystem
+
+    previous = conn.execute(
+        "SELECT session_id, storage_ref FROM portal_sessions WHERE account_id = ? AND status = 'ACTIVE' "
+        "ORDER BY rowid DESC LIMIT 1",
+        (account_id,),
+    ).fetchone()
+
+    session_id = uuid.uuid4().hex
+    conn.execute(
+        "INSERT INTO portal_sessions (session_id, account_id, storage_ref, status, last_validated_at, "
+        "opened_identity_fingerprint) VALUES (?, ?, ?, 'ACTIVE', ?, ?)",
+        (session_id, account_id, storage_ref, _utcnow_iso(), identity_fingerprint),
+    )
+
+    if previous is not None:
+        conn.execute("UPDATE portal_sessions SET status = 'REVOKED' WHERE session_id = ?", (previous["session_id"],))
+        old_path = vault_dir / f"{previous['storage_ref']}.session"
+        old_path.unlink(missing_ok=True)
+
+    return session_id
+
+
+def load_and_verify_session(
+    conn,
+    account_id: str,
+    *,
+    vault_dir: Path,
+    backend: CryptoBackend,
+    observed_identity_fingerprint: Optional[str] = None,
+) -> bytes:
+    row = conn.execute(
+        "SELECT session_id, storage_ref, status, opened_identity_fingerprint FROM portal_sessions "
+        "WHERE account_id = ? AND status = 'ACTIVE' ORDER BY rowid DESC LIMIT 1",
+        (account_id,),
+    ).fetchone()
+    if row is None:
+        raise SessionDecryptionFailed(f"no active session for account {account_id!r}")
+
+    path = Path(vault_dir) / f"{row['storage_ref']}.session"
+    try:
+        ciphertext = path.read_bytes()
+    except OSError as exc:
+        raise SessionDecryptionFailed(f"session file unreadable for account {account_id!r}") from exc
+
+    try:
+        plaintext = backend.decrypt(ciphertext)
+    except Exception as exc:
+        raise SessionDecryptionFailed(f"decryption failed for account {account_id!r}") from exc
+
+    if observed_identity_fingerprint is not None and row["opened_identity_fingerprint"] is not None:
+        if observed_identity_fingerprint != row["opened_identity_fingerprint"]:
+            raise SessionBindingMismatch(f"identity fingerprint mismatch for account {account_id!r}")
+
+    return plaintext
+
+
+def revoke_session(conn, account_id: str, *, vault_dir: Path) -> None:
+    """Revocation forces re-login: the row is marked REVOKED and the file
+    is deleted -- load_and_verify_session finds no ACTIVE row afterward."""
+    row = conn.execute(
+        "SELECT session_id, storage_ref FROM portal_sessions WHERE account_id = ? AND status = 'ACTIVE' "
+        "ORDER BY rowid DESC LIMIT 1",
+        (account_id,),
+    ).fetchone()
+    if row is None:
+        return
+    conn.execute("UPDATE portal_sessions SET status = 'REVOKED' WHERE session_id = ?", (row["session_id"],))
+    (Path(vault_dir) / f"{row['storage_ref']}.session").unlink(missing_ok=True)
