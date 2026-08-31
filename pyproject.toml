@@ -16,6 +16,7 @@ dependencies = [
     "pydantic==2.13.4",
     "requests==2.34.2",
     "httpx==0.28.1",
+    "sse-starlette==3.4.8",
 ]
 
 [dependency-groups]
