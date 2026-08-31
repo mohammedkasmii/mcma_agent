@@ -166,8 +166,11 @@ def test_an_expired_session_never_marks_existing_claims_absent(conn, monkeypatch
     ran = []
 
     class _ExpiredReader:
+        async def observe_session_state(self):
+            return "LOGGED_OUT"
+
         async def discover_notification_categories(self):
-            raise RuntimeError("session expired")
+            raise AssertionError("discovery must not run for a logged-out session")
 
         async def close(self):
             return None
@@ -195,6 +198,9 @@ def test_no_categories_is_not_treated_as_an_empty_portal(conn, monkeypatch):
     ran = []
 
     class _EmptyReader:
+        async def observe_session_state(self):
+            return "AUTHENTICATED"
+
         async def discover_notification_categories(self):
             return ()
 

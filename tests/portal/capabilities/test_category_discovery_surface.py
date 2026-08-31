@@ -36,6 +36,8 @@ ALERT_LIST_FRAGMENT = """
         Relances <span class="badge">2</span></a></li>
   <li><a href="/SinAuto_MCMA/expertise/notification/alerte/MISSIONS">Duplicate</a></li>
   <li><a href="https://evil.example.com/expertise/notification/alerte/STEAL">Hostile host</a></li>
+  <li><a href="https://evil.example.com/SinAuto_MCMA/expertise/notification/alerte/LOOKALIKE">
+        Hostile host carrying the legitimate path</a></li>
   <li><a href="/SinAuto_MCMA/expertise/notification/alerte/../../gestionExpert/expertEnregistrerMission">
         Traversal</a></li>
 </ul>
@@ -78,16 +80,27 @@ class GuardedPage:
         return list(self._landing_links)  # arg is the base prefix; no request is made
 
 
+PORTAL_ORIGIN = f"https://{DEFAULT_SINAUTO_HOST}"
+
+
 def _codes_from(html, prefix="/SinAuto_MCMA/expertise/notification/alerte"):
-    """Mirrors the in-page extraction: only links belonging to THIS
-    account's own application contribute a code."""
+    """Mirrors the in-page extraction exactly: the href is RESOLVED
+    against the current origin, and only a same-origin link whose path
+    starts with this application's notification prefix contributes a
+    code. A substring test would let an absolute hostile URL containing
+    the same path through."""
     import re
+    from urllib.parse import urljoin, urlsplit
 
     codes = []
     for href in re.findall(r'href="([^"]*)"', html):
-        if prefix not in href:
+        resolved = urljoin(f"{PORTAL_ORIGIN}/SinAuto_MCMA/expertise/frontexpert", href)
+        parts = urlsplit(resolved)
+        if f"{parts.scheme}://{parts.netloc}" != PORTAL_ORIGIN:
             continue
-        match = re.search(r"alerte/([A-Za-z0-9-]+)", href)
+        if not parts.path.startswith(prefix + "/"):
+            continue
+        match = re.search(r"alerte/([A-Za-z0-9-]+)$", parts.path)
         if match:
             codes.append(match.group(1))
     return codes
@@ -169,6 +182,10 @@ def test_hostile_hrefs_and_codes_never_survive():
     reader, page = _reader()
     codes = _run(reader.discover_notification_categories())
     assert codes == ("MISSIONS", "RELANCES-EXPERT")
+    # Including the lookalike: an absolute URL on another host that
+    # carries the legitimate path would pass a substring test.
+    assert "LOOKALIKE" not in codes
+    assert "STEAL" not in codes
     assert not any("evil" in c or ".." in c or "/" in c for c in codes)
 
 

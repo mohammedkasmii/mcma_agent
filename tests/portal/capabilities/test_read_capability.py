@@ -318,7 +318,7 @@ def test_close_is_idempotent():
 # --------------------------------------------------------------------- #
 
 
-def test_public_surface_is_exactly_the_seven_operations_plus_close():
+def test_public_surface_is_exactly_the_eight_operations_plus_close():
     """INC-14 disclosed extension: read_notifications() was added (the
     recovered getAlerte/DataTable contract, read-only, category-scoped).
     Pilot-integration correction (section 3): observe_identity() was added
@@ -352,6 +352,7 @@ def test_public_surface_is_exactly_the_seven_operations_plus_close():
         "read_rows",
         "read_notifications",
         "discover_notification_categories",
+        "observe_session_state",
         "observe_identity",
         "close",
     }

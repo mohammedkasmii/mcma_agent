@@ -193,11 +193,15 @@ _CATEGORY_SURFACE_JS = """([url, prefix]) => fetch(url, {
     const codes = [];
     links.forEach(a => {
         const href = a.getAttribute('href') || '';
-        // Only links belonging to THIS account's own application count. A
-        // hostile <a> on the alert list could otherwise contribute a code
-        // -- harmless, since a code can only reach the reviewed host and
-        // the fixed route, but there is no reason to accept it at all.
-        if (href.indexOf(prefix) === -1) return;
+        // "Belongs to this application" is checked by RESOLVING the href
+        // against the current origin and comparing origin + path prefix.
+        // A substring test was not literally true: an absolute URL like
+        // https://evil.example.com/SinAuto_MCMA/expertise/notification/
+        // alerte/X contains the prefix and would have passed.
+        let resolved;
+        try { resolved = new URL(href, location.href); } catch (e) { return; }
+        if (resolved.origin !== location.origin) return;
+        if (resolved.pathname.indexOf(prefix + '/') !== 0) return;
         const match = href.match(/alerte\\/([A-Za-z0-9\\-]+)/i);
         if (match) codes.push(match[1]);
     });
@@ -212,7 +216,15 @@ _CATEGORY_LINKS_JS = """(prefix) => {
     const codes = [];
     links.forEach(a => {
         const href = a.getAttribute('href') || '';
-        if (href.indexOf(prefix) === -1) return;
+        // Same rule as the fetched surface: see above. "Belongs to this application" is checked by RESOLVING the href
+        // against the current origin and comparing origin + path prefix.
+        // A substring test was not literally true: an absolute URL like
+        // https://evil.example.com/SinAuto_MCMA/expertise/notification/
+        // alerte/X contains the prefix and would have passed.
+        let resolved;
+        try { resolved = new URL(href, location.href); } catch (e) { return; }
+        if (resolved.origin !== location.origin) return;
+        if (resolved.pathname.indexOf(prefix + '/') !== 0) return;
         const match = href.match(/alerte\\/([A-Za-z0-9\\-]+)/i);
         if (match) codes.push(match[1]);
     });
@@ -221,6 +233,26 @@ _CATEGORY_LINKS_JS = """(prefix) => {
 
 _CATEGORY_CODE_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 _MAX_DISCOVERED_CATEGORIES = 50
+
+# Session state (recovered from browser/mission_navigator.py's
+# check_session_validity() at baseline 0290fe9). The logged-OUT evidence
+# is that function's three indicators verbatim; the logged-IN markers are
+# the ones already used for manual login.
+#
+# Returns booleans only. No URL, no HTML, no DOM: this page can be a
+# login form holding a username, a password and an OTP, and none of that
+# is anything to read, log or return.
+_SESSION_STATE_JS = """() => {
+    const url = (location.href || '').toLowerCase();
+    const html = document.documentElement ? document.documentElement.innerHTML : '';
+    return {
+        logged_in: ['#formRecherche', '#ReferenceCie', "a[href*='logout']"]
+            .some(sel => document.querySelector(sel) !== null),
+        logged_out: url.indexOf('login') !== -1
+            || document.querySelector("input[name='login'], #login, #password") !== null
+            || html.indexOf('expert_.phtml') !== -1
+    };
+}"""
 
 _LOGGED_IN_MARKER_JS = """(selectors) => selectors.some(sel => document.querySelector(sel) !== null)"""
 LOGGED_IN_MARKERS = ("#formRecherche", "#ReferenceCie", "a[href*='logout']")
@@ -707,6 +739,38 @@ class ReadCapability:
             if len(codes) >= _MAX_DISCOVERED_CATEGORIES:
                 break
         return tuple(codes)
+
+    async def observe_session_state(self) -> str:
+        """AUTHENTICATED, LOGGED_OUT or INDETERMINATE.
+
+        The distinction this exists for: an empty alert list means one of
+        two completely different things. An authenticated account with no
+        open alerts is normal. A session that has silently expired and
+        redirected to a login page ALSO produces no category links -- and
+        reporting that as "no categories" tells the employee everything is
+        fine while their notifications quietly stop arriving.
+
+        Contradictory evidence returns INDETERMINATE rather than picking a
+        side. Guessing AUTHENTICATED would hide an expired session;
+        guessing LOGGED_OUT would revoke a working one and force a
+        pointless re-login. Neither is worth a guess, and the caller
+        treats INDETERMINATE as "cannot tell, change nothing"."""
+        self._ensure_open()
+        try:
+            state = await self._page.evaluate(_SESSION_STATE_JS)
+        except Exception:
+            # A page that cannot even be probed says nothing about whether
+            # the session is valid.
+            return "INDETERMINATE"
+        if not isinstance(state, dict):
+            return "INDETERMINATE"
+        logged_in = bool(state.get("logged_in"))
+        logged_out = bool(state.get("logged_out"))
+        if logged_out and not logged_in:
+            return "LOGGED_OUT"
+        if logged_in and not logged_out:
+            return "AUTHENTICATED"
+        return "INDETERMINATE"
 
     def _notification_surface_route(self) -> str:
         return f"{self._portal_base}/expertise/notification/alerte"

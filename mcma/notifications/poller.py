@@ -97,18 +97,47 @@ async def poll_one_account(
             except Exception:
                 return "PORTAL_UNAVAILABLE"
             try:
+                # Before trusting an empty list, establish whether this
+                # session is even authenticated. An expired session that
+                # has been redirected to a login page produces exactly the
+                # same "no category links" as a genuinely quiet account,
+                # and reporting that as NO_CATEGORIES tells the employee
+                # everything is fine while their notifications silently
+                # stop.
+                state = await discovery.observe_session_state()
+                if state == "LOGGED_OUT":
+                    return _mark_reconnect_required(conn, account_id, vault_dir)
+                if state != "AUTHENTICATED":
+                    # Cannot tell. Revoking a session on a guess would
+                    # force a pointless re-login for what may be a network
+                    # blip, so nothing is changed.
+                    return "PORTAL_UNAVAILABLE"
+
                 codes = await discovery.discover_notification_categories()
+
+                if not codes:
+                    # Re-checked, because the session can expire between
+                    # opening the landing page and reading the alert list
+                    # -- which is precisely when an empty result is most
+                    # misleading.
+                    state = await discovery.observe_session_state()
+                    if state == "LOGGED_OUT":
+                        return _mark_reconnect_required(conn, account_id, vault_dir)
+                    if state != "AUTHENTICATED":
+                        return "PORTAL_UNAVAILABLE"
             except Exception:
-                # A portal that will not show its alert list to this
-                # session is the signature of an expired one.
-                return _mark_reconnect_required(conn, account_id, vault_dir)
+                # A failure reading the surface is NOT evidence that the
+                # session expired: revoking here would log the employee
+                # out because the network hiccupped.
+                return "PORTAL_UNAVAILABLE"
             finally:
                 await discovery.close()
 
         if not codes:
-            # No categories offered. NOT the same as "every alert is
-            # gone": nothing is read, so run_poll is never called and no
-            # presence lifecycle advances on this evidence.
+            # An authenticated account with genuinely no open alerts.
+            # Still NOT "every alert is gone": nothing was read, so
+            # run_poll is never called and no presence lifecycle advances
+            # on this evidence.
             return "NO_CATEGORIES"
 
         try:

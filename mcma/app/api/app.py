@@ -315,7 +315,7 @@ def create_api_app(
             "RECONNECT_REQUIRED": "Session expirée — reconnectez ce compte.",
             "LEASE_BUSY": "Compte occupé par un dossier en cours — réessayez dans un instant.",
             "NO_CATEGORIES": "Aucune catégorie d'alerte pour ce compte.",
-            "PORTAL_UNAVAILABLE": "Portail temporairement indisponible.",
+            "PORTAL_UNAVAILABLE": "Portail temporairement indisponible — réessayez.",
         }
 
         @app.post("/accounts/{account_id}/refresh-notifications")
