@@ -107,6 +107,7 @@ def create_api_app(
     secure_cookies: bool = True,
     portal_login_opener=None,
     local_user_id: str | None = None,
+    notification_refresher=None,
 ) -> FastAPI:
     app = FastAPI(title="MCMA API")
     install_error_handlers(app)
@@ -218,10 +219,24 @@ def create_api_app(
             row["account_id"]
             for row in conn.execute("SELECT account_id FROM portal_sessions WHERE status = 'ACTIVE'")
         }
+        # An account that HAS session rows but none active was connected
+        # and is not any more -- it needs reconnecting, which is a
+        # different thing to tell an employee than "never connected".
+        # Derived from the existing session model rather than adding a
+        # second definition of "connected".
+        ever_connected = {
+            row["account_id"] for row in conn.execute("SELECT DISTINCT account_id FROM portal_sessions")
+        }
         accounts = []
         for row in rows:
             account = dict(row)
             account["session_active"] = account["account_id"] in active_sessions
+            if account["account_id"] in active_sessions:
+                account["connection_state"] = "CONNECTED"
+            elif account["account_id"] in ever_connected:
+                account["connection_state"] = "RECONNECT_REQUIRED"
+            else:
+                account["connection_state"] = "NOT_CONNECTED"
             # A MAMDA account is readable but can never be the target of a
             # form job. Stating it here means the dashboard never has to
             # re-derive the rule from the entity string.
@@ -285,6 +300,44 @@ def create_api_app(
                     "in the browser window that opened, then try again",
                 ) from exc
             return {"account_id": account_id, "session_id": session_id}
+
+    # -- manual notification refresh ---------------------------------------
+    # Registered by the composition root, like the login route, because it
+    # needs the browser the API layer does not have. It calls the SAME
+    # poll_one_account() the background loop calls -- there is no second
+    # scraper, so the two can never drift apart.
+
+    if notification_refresher is not None:
+
+        _REFRESH_MESSAGES = {
+            "POLLED": "Notifications actualisées.",
+            "NO_SESSION": "Compte non connecté — cliquez sur Se connecter.",
+            "RECONNECT_REQUIRED": "Session expirée — reconnectez ce compte.",
+            "LEASE_BUSY": "Compte occupé par un dossier en cours — réessayez dans un instant.",
+            "NO_CATEGORIES": "Aucune catégorie d'alerte pour ce compte.",
+            "PORTAL_UNAVAILABLE": "Portail temporairement indisponible.",
+        }
+
+        @app.post("/accounts/{account_id}/refresh-notifications")
+        async def refresh_notifications(
+            account_id: str, principal: Principal = Depends(get_principal),
+            _csrf=Depends(require_csrf),
+        ):
+            require_permission(principal, Permission.NOTIFICATIONS_READ)
+            require_account_access(conn, principal, account_id)
+            try:
+                outcome = await notification_refresher(account_id)
+            except Exception as exc:
+                # No portal text: an error page can carry claimant data.
+                raise ApiError(
+                    502, f"REFRESH_FAILED_{type(exc).__name__}",
+                    "l'actualisation a échoué",
+                ) from exc
+            return {
+                "account_id": account_id,
+                "outcome": outcome,
+                "message": _REFRESH_MESSAGES.get(outcome, "Actualisation terminée."),
+            }
 
     # -- claims: the employee's working list -------------------------------
     # An employee opens one account (MCMA Oujda, MAMDA Nador, ...) and works

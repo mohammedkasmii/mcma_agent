@@ -308,9 +308,19 @@
                     (account.entity || "?") + " " + (account.scope || "?"));
       card.appendChild(name);
 
+      var stateCode = account.connection_state
+        || (connected ? "CONNECTED" : "NOT_CONNECTED");
+      var stateLabels = {
+        CONNECTED: "Connecté",
+        NOT_CONNECTED: "Non connecté",
+        RECONNECT_REQUIRED: "Reconnexion requise"
+      };
       var state = el("div", "account-card-state");
-      state.appendChild(el("span", "account-dot" + (connected ? " account-dot-live" : "")));
-      state.appendChild(el("span", null, connected ? "Connecté" : "Non connecté"));
+      state.appendChild(el("span", "account-dot"
+        + (stateCode === "CONNECTED" ? " account-dot-live" : "")
+        + (stateCode === "RECONNECT_REQUIRED" ? " account-dot-warn" : "")));
+      state.appendChild(el("span", "account-card-status",
+                           stateLabels[stateCode] || stateLabels.NOT_CONNECTED));
       card.appendChild(state);
 
       if (isMamda) {
@@ -319,7 +329,7 @@
 
       var action = document.createElement("span");
       action.className = "account-card-action";
-      setText(action, connected ? "Reconnecter" : "Se connecter");
+      setText(action, stateCode === "CONNECTED" ? "Reconnecter" : "Se connecter");
       action.addEventListener("click", function (event) {
         // The card selects; this selects AND signs in.
         event.stopPropagation();
@@ -928,6 +938,31 @@
       return "Connexion " + label + " impossible";
     }
 
+    async function refreshSelectedAccountFromPortal() {
+      if (!selectedAccountId) return;
+      var syncText = document.getElementById("syncText");
+      setText(syncText, "Actualisation…");
+      try {
+        var response = await postAction(
+          fetch, "/accounts/" + encodeURIComponent(selectedAccountId) + "/refresh-notifications", {});
+        var body = null;
+        try { body = await response.json(); } catch (parseError) { body = null; }
+        if (response && response.ok && body) {
+          // The server's own wording for the outcome -- connected,
+          // expired, busy, unavailable -- rather than a guess here.
+          setText(syncText, body.message || "Actualisation terminée.");
+        } else {
+          setText(syncText, "Actualisation impossible.");
+        }
+      } catch (err) {
+        setText(syncText, "Actualisation impossible — application injoignable.");
+      }
+      // Reload this account's claims either way, and the cards, since a
+      // refresh can discover that a session has expired.
+      await refreshClaims();
+      await refreshNotifications();
+    }
+
     async function startPortalLogin(accountId) {
       if (!accountId) return;
       var syncText = document.getElementById("syncText");
@@ -992,7 +1027,9 @@
         });
       }
       var refreshBtn = document.getElementById("btnRefreshLive");
-      if (refreshBtn) refreshBtn.addEventListener("click", function () { refreshClaims(); });
+      if (refreshBtn) refreshBtn.addEventListener("click", function () {
+        refreshSelectedAccountFromPortal();
+      });
 
       var loginBtn = document.getElementById("btnReauth");
       if (loginBtn) loginBtn.addEventListener("click", function () { startPortalLogin(selectedAccountId); });

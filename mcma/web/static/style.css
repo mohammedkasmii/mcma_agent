@@ -948,3 +948,5 @@ body {
 }
 
 .account-chip-connect:hover { background: var(--brand-primary); color: #fff; }
+
+.account-dot-warn { background: var(--color-amber); }
