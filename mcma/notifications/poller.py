@@ -33,13 +33,14 @@ from mcma.persistence.leases import LeaseNotHeld, acquire_lease
 from mcma.persistence.repositories.accounts import AccountsRepository
 from mcma.persistence.repositories.outbox import AccountStateVersionRepository
 from mcma.portal.capabilities import open_reader
-from mcma.portal.sinauto_contracts import notification_contracts
+from mcma.portal.sinauto_contracts import notification_contracts, portal_base_for
 from mcma.portal.vault import load_and_verify_session
 
 
 async def poll_one_account(
     conn, browser, account_id: str, category_codes, *,
     instance_id: str, allowed_host: str, vault_dir, crypto_backend,
+    entity: str = "MCMA",
 ) -> str:
     """Polls every category for ONE account. Returns a short outcome
     string for the caller to log; never raises for an expected failure
@@ -64,11 +65,12 @@ async def poll_one_account(
             # account; it is not an error to report here.
             return "NO_SESSION"
 
-        contracts = notification_contracts(allowed_host, category_codes)
+        contracts = notification_contracts(allowed_host, category_codes, entity)
         try:
             reader = await open_reader(
                 browser, lease, contracts, allowed_host,
                 context_options={"storage_state": json.loads(raw_session)},
+                portal_base=portal_base_for(entity),
             )
         except Exception:
             return "READER_UNAVAILABLE"
@@ -100,6 +102,7 @@ async def poll_all_accounts(
                 conn, browser, account.account_id, category_codes,
                 instance_id=instance_id, allowed_host=allowed_host,
                 vault_dir=vault_dir, crypto_backend=crypto_backend,
+                entity=account.entity,
             )
         except Exception as exc:  # pragma: no cover - defensive isolation only
             # One account's unexpected failure must never stop the others.

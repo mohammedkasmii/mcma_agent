@@ -82,7 +82,18 @@ def _c(host, route, method, *, capability, operation_type, content_type=None, bo
     )
 
 
-def auth_contracts(host: str = DEFAULT_SINAUTO_HOST) -> tuple[RouteContract, ...]:
+def portal_base_for(entity: str) -> str:
+    """MCMA and MAMDA are two applications served from ONE host under
+    different base paths. Getting this wrong is not a cosmetic error: it
+    sends a MAMDA employee to MCMA's login form, and would point a MAMDA
+    notification poll at MCMA's alert list."""
+    normalized = str(entity).strip().upper()
+    if normalized not in ("MCMA", "MAMDA"):
+        raise UnreviewedHost(f"unknown portal entity: {entity!r}")
+    return f"/SinAuto_{normalized}"
+
+
+def auth_contracts(host: str = DEFAULT_SINAUTO_HOST, entity: str = "MCMA") -> tuple[RouteContract, ...]:
     """For open_login_session() -- the human performs the login and OTP
     themselves in a visible browser. LoginCapability navigates only to
     the single GET route below and polls fixed logged-in markers; it
@@ -93,11 +104,11 @@ def auth_contracts(host: str = DEFAULT_SINAUTO_HOST) -> tuple[RouteContract, ...
     sinauto.mamda-mcma.ma/SinAuto_MCMA/ for manual login."""
     host = sinauto_allowed_host(host)
     return (
-        _c(host, "/SinAuto_MCMA", "GET", capability="auth", operation_type="login_page"),
+        _c(host, portal_base_for(entity), "GET", capability="auth", operation_type="login_page"),
     )
 
 
-def notification_contracts(host: str, category_codes) -> tuple[RouteContract, ...]:
+def notification_contracts(host: str, category_codes, entity: str = "MCMA") -> tuple[RouteContract, ...]:
     """One contract per alert category, plus the same-origin landing page
     a reader must navigate to before any fetch-based read runs.
 
@@ -111,16 +122,17 @@ def notification_contracts(host: str, category_codes) -> tuple[RouteContract, ..
     asks for the complete dataset rather than a page (the poll-run
     lifecycle needs completeness evidence, not a first page)."""
     host = sinauto_allowed_host(host)
+    base = portal_base_for(entity)
     contracts = [
         # A same-origin document must exist before fetch-based reads run.
-        _c(host, "/SinAuto_MCMA/expertise/frontexpert", "GET",
+        _c(host, f"{base}/expertise/frontexpert", "GET",
            capability="read", operation_type="search_page"),
     ]
     for code in category_codes:
         contracts.append(
             _c(
                 host,
-                f"/SinAuto_MCMA/expertise/notification/getAlerte/CodeAlerte/{quote(str(code), safe='')}",
+                f"{base}/expertise/notification/getAlerte/CodeAlerte/{quote(str(code), safe='')}",
                 "POST",
                 capability="read",
                 operation_type="read_notifications",

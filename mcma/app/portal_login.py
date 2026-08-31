@@ -30,6 +30,7 @@ import json
 from pathlib import Path
 
 from mcma.persistence.leases import acquire_lease
+from mcma.persistence.repositories.accounts import AccountsRepository
 from mcma.portal.capabilities import open_login_session
 from mcma.portal.sinauto_contracts import auth_contracts
 from mcma.portal.vault import store_session
@@ -65,11 +66,19 @@ async def capture_session_for_account(
     The lease is held for the whole capture so a form job cannot start
     against the account while its session is being replaced. Returns the
     stored session_id."""
+    # MCMA and MAMDA sign in at different base paths on the same host, so
+    # the window must be opened for THIS account's entity -- otherwise all
+    # four buttons land on the same form.
+    account = AccountsRepository(conn).get(account_id)
+    if account is None:
+        raise PortalLoginFailed("UNKNOWN_ACCOUNT")
+    entity = account.entity
+
     lease = acquire_lease(conn, account_id, instance_id, ttl_seconds=int(timeout_seconds) + 120)
     try:
         try:
             login = await open_login_session(
-                browser, account_id, auth_contracts(allowed_host), allowed_host
+                browser, account_id, auth_contracts(allowed_host, entity), allowed_host
             )
         except Exception as exc:
             raise PortalLoginFailed("LOGIN_PAGE_UNREACHABLE") from exc

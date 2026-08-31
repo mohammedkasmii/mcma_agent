@@ -320,3 +320,65 @@ def test_the_login_host_is_the_real_portal_not_the_mock():
     assert sinauto_allowed_host(settings.portal_host) == DEFAULT_SINAUTO_HOST
     # And the two really are separate settings.
     assert settings.allowed_host != settings.portal_host
+
+
+# --------------------------------------------------------------------- #
+# MCMA and MAMDA are two applications on ONE host
+# --------------------------------------------------------------------- #
+
+
+def test_each_entity_signs_in_at_its_own_base_path():
+    """All four buttons opened the same MCMA form because the base path
+    was hardcoded. MCMA and MAMDA are served from /SinAuto_MCMA and
+    /SinAuto_MAMDA on the same host."""
+    from mcma.portal.sinauto_contracts import portal_base_for
+
+    assert portal_base_for("MCMA") == "/SinAuto_MCMA"
+    assert portal_base_for("MAMDA") == "/SinAuto_MAMDA"
+    assert auth_contracts(entity="MCMA")[0].route == "/SinAuto_MCMA"
+    assert auth_contracts(entity="MAMDA")[0].route == "/SinAuto_MAMDA"
+
+
+def test_an_unknown_entity_is_refused_rather_than_guessed():
+    from mcma.portal.sinauto_contracts import portal_base_for
+
+    for bad in ("MCMAX", "", "../SinAuto_MCMA", "AXA"):
+        with pytest.raises(UnreviewedHost):
+            portal_base_for(bad)
+
+
+def test_notifications_are_read_from_the_accounts_own_application():
+    """A MAMDA poll pointed at /SinAuto_MCMA would read MCMA's alert list
+    and file it against MAMDA accounts."""
+    mamda = notification_contracts(DEFAULT_SINAUTO_HOST, ["MISSIONS"], "MAMDA")
+    assert all(c.route.startswith("/SinAuto_MAMDA") for c in mamda)
+    mcma = notification_contracts(DEFAULT_SINAUTO_HOST, ["MISSIONS"], "MCMA")
+    assert all(c.route.startswith("/SinAuto_MCMA") for c in mcma)
+
+
+def test_login_opens_the_window_for_the_requested_accounts_entity(conn):
+    """End to end through the service: a MAMDA account must not be sent to
+    MCMA's login form."""
+    import mcma.app.portal_login as portal_login
+
+    seen = {}
+
+    async def _fake_open_login_session(browser, account_id, contracts, allowed_host, **kwargs):
+        seen[account_id] = tuple(c.route for c in contracts)
+        raise RuntimeError("stop here -- the route is what matters")
+
+    original = portal_login.open_login_session
+    portal_login.open_login_session = _fake_open_login_session
+    try:
+        for account_id in (OUJDA, MAMDA_OUJDA):
+            with pytest.raises(portal_login.PortalLoginFailed):
+                asyncio.run(portal_login.capture_session_for_account(
+                    conn, object(), account_id,
+                    instance_id="i", allowed_host=DEFAULT_SINAUTO_HOST,
+                    vault_dir=None, crypto_backend=None, acl_verifier=None,
+                ))
+    finally:
+        portal_login.open_login_session = original
+
+    assert seen[OUJDA] == ("/SinAuto_MCMA",)
+    assert seen[MAMDA_OUJDA] == ("/SinAuto_MAMDA",)

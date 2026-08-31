@@ -385,7 +385,14 @@ _ROW_LIST_ROUTES = {
 # caller must supply a matching reviewed RouteContract for the exact
 # category code(s) they poll (category-scoped, same discipline as every
 # other dynamic route in this project).
-_NOTIFICATION_ROUTE_TEMPLATE = "/SinAuto_MCMA/expertise/notification/getAlerte/CodeAlerte/{code}"
+# MCMA and MAMDA are two applications on ONE host, distinguished by their
+# base path: /SinAuto_MCMA and /SinAuto_MAMDA. Hardcoding the MCMA prefix
+# sent every MAMDA account to MCMA's pages -- all four login buttons
+# landed on the same form, and a MAMDA notification poll would have read
+# MCMA's alert list.
+DEFAULT_PORTAL_BASE = "/SinAuto_MCMA"
+
+_NOTIFICATION_ROUTE_TEMPLATE = "{base}/expertise/notification/getAlerte/CodeAlerte/{code}"
 
 _FETCH_JSON_JS = """([url, payload]) => fetch(url, {
     method: 'POST',
@@ -424,10 +431,11 @@ class ReadCapability:
     makes every subsequent fetch same-origin, which needs no CORS headers
     at all."""
 
-    def __init__(self, context, page, allowed_host: str):
+    def __init__(self, context, page, allowed_host: str, portal_base: str = DEFAULT_PORTAL_BASE):
         self._context = context
         self._page = page
         self._allowed_host = allowed_host
+        self._portal_base = portal_base
         self._closed = False
         self._capability_token = object()
 
@@ -517,7 +525,9 @@ class ReadCapability:
         self._ensure_open()
         if not isinstance(code_alerte, str) or not code_alerte.strip():
             raise TypeError("read_notifications() requires a non-empty code_alerte string")
-        route = _NOTIFICATION_ROUTE_TEMPLATE.format(code=quote(code_alerte, safe=""))
+        route = _NOTIFICATION_ROUTE_TEMPLATE.format(
+            base=self._portal_base, code=quote(code_alerte, safe="")
+        )
         result = await self._fetch_json(route, {"length": "-1", "iDisplayLength": "-1"})
         if not isinstance(result, dict) or "data" not in result or not isinstance(result["data"], list):
             raise ValueError("notification fetch returned a malformed/incomplete payload -- treating as a failed poll")
@@ -548,6 +558,7 @@ async def open_reader(
     allowed_host: str,
     *,
     context_options: dict | None = None,
+    portal_base: str = DEFAULT_PORTAL_BASE,
 ) -> ReadCapability:
     if not isinstance(lease_handle, LeaseHandle):
         raise TypeError("open_reader() requires a LeaseHandle")
@@ -564,4 +575,4 @@ async def open_reader(
     except Exception:
         await context.close()
         raise
-    return ReadCapability(context, page, allowed_host)
+    return ReadCapability(context, page, allowed_host, portal_base)
