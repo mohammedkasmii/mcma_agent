@@ -1,96 +1,308 @@
-/* mcma.web.style -- plain CSS, no build step, no preprocessor. */
+/* mcma.web.style -- plain CSS, no build step, no preprocessor, no webfont.
+   The Content-Security-Policy is style-src 'self' with no 'unsafe-inline',
+   so every rule lives here and typography is limited to families already
+   present on the machine. */
 
 :root {
-  color-scheme: light dark;
-  --bg: #ffffff;
-  --fg: #1a1a1a;
-  --border: #d0d0d0;
-  --accent: #2b5fb0;
-  --danger: #b02b2b;
-}
+  /* Grounded in a mutual insurer's own identity rather than a generic
+     dashboard palette: cool paper, deep seal green, and ONE reserved
+     accent. --hand is used for exactly one thing anywhere in this file --
+     the moment the work becomes the employee's -- so its appearance is
+     always information, never decoration. */
+  --ink: #10231b;
+  --ink-soft: #4a5b53;
+  --paper: #f4f6f3;
+  --card: #ffffff;
+  --seal: #17614a;
+  --seal-dark: #0f4432;
+  --hand: #a85a12;
+  --hand-wash: #fdf5ea;
+  --stop: #8f2c2c;
+  --rule: #d5ded8;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #16181c;
-    --fg: #e6e6e6;
-    --border: #3a3d42;
-  }
+  --measure: 46rem;
 }
 
 * { box-sizing: border-box; }
 
+html { -webkit-text-size-adjust: 100%; }
+
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--fg);
+  background: var(--paper);
+  color: var(--ink);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-  line-height: 1.4;
+  font-size: 16px;
+  line-height: 1.55;
 }
 
-header, section {
-  padding: 1rem 1.5rem;
-  border-bottom: 1px solid var(--border);
+/* -- masthead ---------------------------------------------------------- */
+
+.masthead {
+  background: var(--seal);
+  color: #eef4f0;
+  border-bottom: 3px solid var(--seal-dark);
 }
 
-.disclaimer {
-  font-size: 0.85rem;
-  opacity: 0.8;
+.masthead-inner {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 0.85rem 1.25rem;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
 }
 
-nav {
-  padding: 0.5rem 1.5rem;
+.wordmark {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.wordmark-sub {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.05rem;
+  font-style: italic;
+  opacity: 0.85;
+}
+
+.jump {
+  margin-left: auto;
   display: flex;
   gap: 1rem;
+  font-size: 0.85rem;
 }
 
-nav a { color: var(--accent); }
+.jump a {
+  color: #cfe3d9;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  padding-bottom: 1px;
+}
 
-form label {
-  display: block;
-  margin-bottom: 0.5rem;
+.jump a:hover,
+.jump a:focus-visible { color: #ffffff; border-bottom-color: currentColor; }
+
+/* -- layout ------------------------------------------------------------ */
+
+main {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.panel {
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 1.15rem 1.25rem 1.3rem;
+}
+
+.panel h2 {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.18rem;
+  font-weight: 700;
+  margin: 0 0 0.15rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.note {
+  margin: 0.55rem 0 1rem;
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+}
+
+/* -- forms ------------------------------------------------------------- */
+
+.row-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  align-items: stretch;
+}
+
+.row-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+input, select {
+  font: inherit;
+  font-weight: 400;
+  color: var(--ink);
+  background: #fdfdfc;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #b9c7bf;
+  border-radius: 2px;
+  min-width: 0;
+}
+
+input:focus-visible,
+select:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--seal);
+  outline-offset: 2px;
 }
 
 button {
-  padding: 0.4rem 0.9rem;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--accent);
-  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  padding: 0.55rem 1.1rem;
+  border-radius: 2px;
+  border: 1px solid transparent;
   cursor: pointer;
+  align-self: flex-start;
 }
 
-#problem-btn {
-  background: var(--danger);
+.primary { background: var(--seal); color: #ffffff; }
+.primary:hover { background: var(--seal-dark); }
+
+.danger { background: var(--card); color: var(--stop); border-color: var(--stop); }
+.danger:hover { background: #fbf1f1; }
+
+button[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+
+/* -- status lines ------------------------------------------------------ */
+
+.status { margin: 0.85rem 0 0; font-size: 0.88rem; min-height: 1.2em; }
+.status:empty { margin: 0; min-height: 0; }
+.status-quiet { color: var(--ink-soft); font-size: 0.82rem; }
+
+.loading-state, .empty-state { color: var(--ink-soft); font-style: italic; }
+.error-state { color: var(--stop); font-weight: 600; }
+
+/* -- plan -------------------------------------------------------------- */
+
+.plan ul { margin: 0.5rem 0 0.9rem; padding-left: 1.15rem; }
+.plan li { margin-bottom: 0.2rem; }
+
+.plan-workflow {
+  margin: 0;
+  font-weight: 600;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--rule);
 }
 
-#notifications-list {
+.plan-step, .plan-form-field { font-variant-numeric: tabular-nums; }
+
+.plan-warning {
+  color: var(--hand);
+  font-weight: 600;
   list-style: none;
-  padding: 0;
+  margin-left: -1.15rem;
+  padding-left: 1.4rem;
+  position: relative;
 }
+
+.plan-warning::before { content: "!"; position: absolute; left: 0.35rem; font-weight: 700; }
+
+/* -- the handoff ------------------------------------------------------- */
+/* The one place this interface raises its voice. Everything above is
+   preparation the machine did; this is the point where it stops and the
+   dossier becomes the employee's responsibility, so it is the only
+   panel that changes colour. */
+
+.handoff {
+  background: var(--hand-wash);
+  border-color: #e2c9a4;
+  border-left: 4px solid var(--hand);
+}
+
+.handoff h2 { border-bottom-color: #e2c9a4; }
+
+.readiness {
+  margin: 0.7rem 0 0;
+  font-weight: 600;
+  color: var(--hand);
+  min-height: 1.2em;
+}
+
+.readiness:empty { margin: 0; min-height: 0; }
+
+.instructions {
+  margin: 0.7rem 0 1rem;
+  font-size: 0.9rem;
+  color: #5c4426;
+  max-width: 58ch;
+}
+
+/* -- notifications ----------------------------------------------------- */
+
+.notifications { list-style: none; margin: 0; padding: 0; }
 
 .notification-row {
   display: flex;
-  gap: 0.75rem;
-  padding: 0.4rem 0;
-  border-bottom: 1px solid var(--border);
+  align-items: baseline;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--rule);
 }
+
+.notification-row:last-child { border-bottom: none; }
 
 .account-badge {
-  font-weight: 600;
-  min-width: 8rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--seal);
+  background: #e8f0ec;
+  border: 1px solid #c2d8ce;
+  border-radius: 2px;
+  padding: 0.1rem 0.4rem;
+  white-space: nowrap;
 }
 
-.empty-state, .loading-state, .error-state {
-  opacity: 0.75;
-  font-style: italic;
+.notification-reference { font-weight: 600; }
+
+.notification-seen-at {
+  margin-left: auto;
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
 }
 
-.error-state {
-  color: var(--danger);
+/* -- colophon ---------------------------------------------------------- */
+
+.colophon {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 0 1.25rem 2.5rem;
 }
 
-.instructions {
-  background: rgba(43, 95, 176, 0.08);
-  padding: 0.75rem;
-  border-radius: 4px;
+.colophon p {
+  margin: 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+  color: var(--ink-soft);
+  font-size: 0.82rem;
+  max-width: 58ch;
+}
+
+/* -- wider screens ----------------------------------------------------- */
+
+@media (min-width: 40rem) {
+  .row-form { flex-direction: row; flex-wrap: wrap; align-items: flex-end; }
+  .row-form label { flex: 1 1 12rem; }
+  .row-form button { align-self: auto; }
+}
+
+/* [hidden] must win over the display values set above, or a button the
+   script hides would stay visible. */
+[hidden] { display: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
 }

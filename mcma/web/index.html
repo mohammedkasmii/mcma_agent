@@ -4,74 +4,93 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'">
-<title>MCMA Agency Dashboard</title>
+<title>MCMA Dossiers</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header>
-  <h1>MCMA Agency Dashboard</h1>
-  <p class="disclaimer">This dashboard never validates or closes a dossier on the real portal. Final Valider/Clôture is always a human action performed directly in SinAuto.</p>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <span class="wordmark">MCMA</span>
+    <span class="wordmark-sub">Dossiers</span>
+    <nav class="jump">
+      <a href="#form-job-section">Dossier</a>
+      <a href="#plan-preview-section">Plan</a>
+      <a href="#human-handoff-section">Handoff</a>
+      <a href="#notifications-section">Notifications</a>
+    </nav>
+  </div>
 </header>
 
-<section id="login-section">
-  <h2>Sign in</h2>
-  <form id="login-form">
-    <label>Username <input type="text" id="login-username" autocomplete="username" required></label>
-    <label>Password <input type="password" id="login-password" autocomplete="current-password" required></label>
-    <button type="submit">Sign in</button>
-  </form>
-  <p id="login-status" role="status"></p>
-</section>
+<main>
 
-<nav>
-  <a href="#notifications-section">Notifications</a>
-  <a href="#form-job-section">Form job</a>
-</nav>
+  <section id="login-section" class="panel">
+    <h2>Sign in</h2>
+    <form id="login-form" class="row-form">
+      <label>Username
+        <input type="text" id="login-username" autocomplete="username" required>
+      </label>
+      <label>Password
+        <input type="password" id="login-password" autocomplete="current-password" required>
+      </label>
+      <button type="submit" class="primary">Sign in</button>
+    </form>
+    <p id="login-status" role="status" class="status"></p>
+  </section>
 
-<section id="notifications-section">
-  <h2>Notifications (all accounts)</h2>
-  <p>Notifications never start a form job automatically -- opening/viewing one is purely informational.</p>
-  <ul id="notifications-list" aria-live="polite"></ul>
-</section>
+  <section id="form-job-section" class="panel">
+    <h2>Start a dossier</h2>
+    <p class="note">Only MCMA accounts can be written to. MAMDA accounts are read-only.</p>
+    <form id="dossier-upload-form" class="row-form">
+      <label>Account
+        <select id="account-select" required>
+          <option value="">Select an account</option>
+        </select>
+      </label>
+      <label>Wexia dossier file
+        <input type="file" id="dossier-file-input" accept=".json,application/json" required>
+      </label>
+      <button type="submit" class="primary">Prepare dry run</button>
+    </form>
+    <p id="upload-status" role="status" class="status"></p>
+    <p id="current-job-id" role="status" class="status status-quiet"></p>
+  </section>
 
-<section id="form-job-section">
-  <h2>Start a form job (MCMA only)</h2>
-  <form id="dossier-upload-form">
-    <label>MCMA account
-      <select id="account-select" required>
-        <option value="">Select an account</option>
-      </select>
-    </label>
-    <label>Wexia dossier JSON file
-      <input type="file" id="dossier-file-input" accept=".json,application/json" required>
-    </label>
-    <button type="submit">Upload and create dry-run</button>
-  </form>
-  <p id="upload-status" role="status"></p>
-  <p id="current-job-id" role="status"></p>
-</section>
+  <section id="plan-preview-section" class="panel">
+    <h2>Plan</h2>
+    <p class="note">Read the rows and warnings before authorizing. Charge mutuelle and sociétaire are never shown or editable here.</p>
+    <div id="plan-preview" class="plan"></div>
+    <button id="authorize-execution-btn" type="button" class="primary" hidden>Authorize execution</button>
+    <p id="authorize-status" role="status" class="status"></p>
+  </section>
 
-<section id="plan-preview-section">
-  <h2>Plan preview</h2>
-  <p>Review the deterministic plan and any warnings before authorizing execution. No charge-mutuelle/sociétaire field is ever shown or editable here.</p>
-  <div id="plan-preview"></div>
-  <button id="authorize-execution-btn" type="button" hidden>Authorize execution</button>
-  <p id="authorize-status" role="status"></p>
-</section>
+  <section id="human-handoff-section" class="panel handoff">
+    <h2>Your review</h2>
+    <p id="readiness-label" role="status" class="readiness"></p>
+    <p class="instructions">
+      When the browser opens, check the filled rows and fields. Click
+      <strong>Valider</strong> and <strong>Clôture</strong> yourself in the
+      portal, then close the browser window. This app never clicks them for
+      you.
+    </p>
+    <div class="actions">
+      <button id="review-completed-btn" type="button" class="primary" hidden>Review completed</button>
+      <button id="problem-btn" type="button" class="danger" hidden>Problem, not completed</button>
+    </div>
+    <p id="handoff-status" role="status" class="status"></p>
+  </section>
 
-<section id="human-handoff-section">
-  <h2>Browser handoff</h2>
-  <p id="readiness-label" role="status"></p>
-  <p class="instructions">
-    When the browser opens for review: check the filled fields and rows, then
-    manually click <strong>Valider</strong> and/or <strong>Clôture</strong> in
-    the portal yourself, then close the browser window yourself. This
-    dashboard never clicks those controls for you.
-  </p>
-  <button id="review-completed-btn" type="button" hidden>Review completed</button>
-  <button id="problem-btn" type="button" hidden>Problem / not completed</button>
-  <p id="handoff-status" role="status"></p>
-</section>
+  <section id="notifications-section" class="panel">
+    <h2>Notifications</h2>
+    <p class="note">Across every account. Opening one never starts a dossier.</p>
+    <ul id="notifications-list" class="notifications" aria-live="polite"></ul>
+  </section>
+
+</main>
+
+<footer class="colophon">
+  <p>This app never validates or closes a dossier on the portal. Final Valider and Clôture are always done by you, directly in SinAuto.</p>
+</footer>
 
 <script src="/static/app.js"></script>
 </body>
