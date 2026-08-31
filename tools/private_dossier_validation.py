@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -77,13 +78,32 @@ def _validation_error_reasons(exc: ValidationError) -> list:
     return reasons
 
 
+_SCHEMA_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+_DYNAMIC_KEY_PLACEHOLDER = "<dynamic-key>"
+
+
+def _looks_like_a_schema_key(key: str) -> bool:
+    """A genuine JSON *schema* field name is a short identifier (letters/
+    digits/underscore, starting with a letter or underscore) -- Fable-
+    review-2 correction (MEDIUM finding): a dossier that encodes DATA as
+    dict keys (a claim reference, plate, filename, or date used as a map
+    key) would otherwise leak that value verbatim into the "redacted"
+    report. Anything that doesn't look like an identifier is replaced
+    with a fixed placeholder before it ever reaches the report."""
+    return bool(_SCHEMA_KEY_PATTERN.match(key))
+
+
 def _collect_key_paths(obj: Any, prefix: str = "") -> set:
     """Every key path present in the raw parsed JSON, however deep --
-    values are never inspected or returned, only the path structure."""
+    values are never inspected or returned, only the path structure. A
+    key that does not look like a schema identifier is redacted to
+    _DYNAMIC_KEY_PLACEHOLDER (never included verbatim) -- see
+    _looks_like_a_schema_key()."""
     paths = set()
     if isinstance(obj, dict):
         for key, value in obj.items():
-            path = f"{prefix}.{key}" if prefix else str(key)
+            safe_key = str(key) if _looks_like_a_schema_key(str(key)) else _DYNAMIC_KEY_PLACEHOLDER
+            path = f"{prefix}.{safe_key}" if prefix else safe_key
             paths.add(path)
             paths |= _collect_key_paths(value, path)
     elif isinstance(obj, list):

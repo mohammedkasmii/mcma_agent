@@ -185,3 +185,26 @@ def test_mcma_reaches_the_next_safe_planning_gate_as_positive_control(conn, encr
     )
     result_plan = run_execute_planning(conn, execute_id, rebuild_plan_from_retained_input=lambda: plan)
     assert result_plan is plan
+
+
+def test_idempotent_resubmit_is_also_rejected_for_a_mamda_account(conn, encryptor):
+    """Fable-review-2 correction: the MAMDA check used to run AFTER the
+    idempotency short-circuit, so a resubmit of the SAME idempotency_key
+    against an existing job row could bypass it. It now runs first,
+    regardless of whether a matching job already exists."""
+    account_id = _seed_mamda_account(conn, "acct-mamda-idem")
+    payload = {"dossier": "m"}
+    kwargs = dict(
+        conn=conn, account_id=account_id, requested_by_user_id=USER_ID, workflow_name=WORKFLOW,
+        input_hash=input_hash_for(payload), typed_input_bytes=typed_input_bytes(payload),
+        idempotency_key="idem-mamda-1", encryptor=encryptor,
+    )
+    with pytest.raises(JobAuthorizationError):
+        enqueue_dry_run(**kwargs)
+    # A second, otherwise-identical resubmit must ALSO be rejected --
+    # never short-circuit past the check just because a lookup by
+    # idempotency_key finds nothing (or, in a pre-fix world, finds a
+    # row created by some other path).
+    with pytest.raises(JobAuthorizationError) as exc_info:
+        enqueue_dry_run(**kwargs)
+    assert exc_info.value.reason_code == "MAMDA_ACCOUNT_NOT_WRITABLE"

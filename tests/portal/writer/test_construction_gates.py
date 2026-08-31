@@ -451,4 +451,22 @@ def test_mcma_writer_account_context_cannot_be_constructed_directly():
     from mcma.portal.writer import McmaWriterAccountContext
 
     with pytest.raises(RuntimeError):
-        McmaWriterAccountContext("acct-1")
+        McmaWriterAccountContext("acct-1", object())
+
+
+def test_mcma_writer_account_context_is_immutable_after_construction():
+    """Fable-review-2 correction: also proves it is no longer a
+    dataclass dataclasses.replace() could use to mint a context for a
+    different account_id while carrying over the original's valid token
+    -- __slots__ + a __setattr__ guard, the same idiom
+    VerifiedMissionWriter's own construction token already uses."""
+    import dataclasses
+
+    from mcma.portal.writer import McmaWriterAccountContext, require_mcma_writer_account
+
+    ctx = require_mcma_writer_account("acct-1", entity="MCMA", active=True)
+    with pytest.raises(AttributeError):
+        ctx.account_id = "acct-2"
+    assert not dataclasses.is_dataclass(ctx)
+    with pytest.raises(TypeError):
+        dataclasses.replace(ctx, account_id="acct-2")

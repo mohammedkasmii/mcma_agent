@@ -379,23 +379,35 @@ class NativeCalculationMismatch(WriteAborted):
 _MCMA_WRITER_ACCOUNT_TOKEN = object()
 
 
-@dataclass(frozen=True)
 class McmaWriterAccountContext:
     """Carries only an account_id -- never credentials or session material.
     Its mere existence attests that require_mcma_writer_account() already
     confirmed entity=='MCMA' and active=True for THIS account_id. Like
     VerifiedMissionWriter's construction_token (see that class's
     docstring), this is an API-usability safeguard, not a cryptographic
-    boundary -- Python provides no true private construction."""
+    boundary -- Python provides no true private construction.
 
-    account_id: str
-    _token: object = None
+    Fable-review-2 correction (LOW finding): this was previously a frozen
+    @dataclass, which `dataclasses.replace(ctx, account_id="other")`
+    could use to mint a context for an ARBITRARY account_id while
+    carrying over the original's valid `_token` (replace() copies every
+    field not explicitly overridden, private ones included). A plain
+    __slots__ class -- the exact idiom VerifiedMissionWriter's own
+    _CONSTRUCTION_TOKEN already uses -- has no dataclass machinery for
+    `replace()` to operate on at all."""
 
-    def __post_init__(self) -> None:
-        if self._token is not _MCMA_WRITER_ACCOUNT_TOKEN:
+    __slots__ = ("account_id", "_token")
+
+    def __init__(self, account_id: str, token: object) -> None:
+        if token is not _MCMA_WRITER_ACCOUNT_TOKEN:
             raise RuntimeError(
                 "McmaWriterAccountContext must be constructed via require_mcma_writer_account()"
             )
+        object.__setattr__(self, "account_id", account_id)
+        object.__setattr__(self, "_token", token)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError(f"McmaWriterAccountContext is immutable (cannot set {name!r})")
 
 
 def require_mcma_writer_account(account_id: str, *, entity: str, active: bool) -> McmaWriterAccountContext:

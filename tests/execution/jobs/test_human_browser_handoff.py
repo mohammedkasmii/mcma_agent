@@ -209,3 +209,95 @@ def test_report_review_problem_never_marks_the_job_completed(conn, encryptor):
     report_review_problem(conn, job_id, reported_by_user_id=USER_ID, reason_code="X")
     row = AutomationJobsRepository(conn).get(job_id)
     assert row["status"] != "HUMAN_CONFIRMED_COMPLETE"
+
+
+# --------------------------------------------------------------------- #
+# Fable-review-2 correction: confirm/problem race -- the SECOND call to
+# reach the job must always see the FIRST call's already-applied change
+# (via transition()'s expected_from_statuses re-check inside its own
+# BEGIN IMMEDIATE), never silently overwrite it. Two real connections to
+# the SAME database file (not one shared connection) so SQLite's own
+# locking is what actually serializes the two transitions -- proving the
+# guard holds under genuine cross-connection contention, not just
+# in-process call order.
+# --------------------------------------------------------------------- #
+
+
+def test_confirm_then_problem_race_the_loser_sees_the_winners_result(db_path, encryptor):
+    from mcma.persistence.db import open_database
+
+    conn_a = open_database(db_path)
+    conn_b = open_database(db_path)
+    try:
+        conn_a.execute(
+            "INSERT INTO accounts (account_id, label, entity, scope, active, created_at) "
+            "VALUES (?, 'Test', 'MCMA', 'OUJDA', 1, '2026-01-01T00:00:00+00:00')",
+            (ACCOUNT_ID,),
+        )
+        conn_a.execute(
+            "INSERT INTO users (user_id, username, password_hash, role, active) VALUES (?, ?, 'h', 'admin', 1)",
+            (USER_ID, USER_ID),
+        )
+        job_id = _make_ready_for_review_job(conn_a, encryptor, key="race-1")
+        transition_on_browser_closed(conn_a, job_id)  # -> AWAITING_HUMAN_CONFIRMATION
+
+        # conn_a wins the confirm.
+        result_a = confirm_review_completed(conn_a, job_id, confirmed_by_user_id=USER_ID)
+        assert result_a == "HUMAN_CONFIRMED_COMPLETE"
+
+        # conn_b's report_review_problem, arriving "after" in real time,
+        # must see the ALREADY-CONFIRMED status and fail truthfully --
+        # never flip a HUMAN_CONFIRMED_COMPLETE job to INTERRUPTED.
+        with pytest.raises(JobAuthorizationError) as exc_info:
+            report_review_problem(conn_b, job_id, reported_by_user_id=USER_ID, reason_code="TOO_LATE")
+        assert exc_info.value.reason_code == "NOT_IN_HUMAN_HANDOFF"
+
+        row = AutomationJobsRepository(conn_b).get(job_id)
+        assert row["status"] == "HUMAN_CONFIRMED_COMPLETE"  # untouched by the loser
+
+        # Exactly one audit row for the confirmation, none for the
+        # rejected problem report.
+        audit_rows = conn_b.execute(
+            "SELECT action FROM audit_events WHERE job_id = ?", (job_id,)
+        ).fetchall()
+        actions = [r["action"] for r in audit_rows]
+        assert actions.count("HUMAN_CONFIRMED_COMPLETE") == 1
+        assert "HUMAN_REPORTED_PROBLEM" not in actions
+    finally:
+        conn_a.close()
+        conn_b.close()
+
+
+def test_two_concurrent_confirms_the_second_is_idempotent_not_an_error(db_path, encryptor):
+    from mcma.persistence.db import open_database
+
+    conn_a = open_database(db_path)
+    conn_b = open_database(db_path)
+    try:
+        conn_a.execute(
+            "INSERT INTO accounts (account_id, label, entity, scope, active, created_at) "
+            "VALUES (?, 'Test', 'MCMA', 'OUJDA', 1, '2026-01-01T00:00:00+00:00')",
+            (ACCOUNT_ID,),
+        )
+        conn_a.execute(
+            "INSERT INTO users (user_id, username, password_hash, role, active) VALUES (?, ?, 'h', 'admin', 1)",
+            (USER_ID, USER_ID),
+        )
+        job_id = _make_ready_for_review_job(conn_a, encryptor, key="race-2")
+        transition_on_browser_closed(conn_a, job_id)
+
+        result_a = confirm_review_completed(conn_a, job_id, confirmed_by_user_id=USER_ID)
+        # A second, independent confirmer (e.g. a double-click from a
+        # different tab/connection) racing in must NOT raise -- it
+        # observes the job is already done and reports the same outcome.
+        result_b = confirm_review_completed(conn_b, job_id, confirmed_by_user_id=USER_ID)
+        assert result_a == result_b == "HUMAN_CONFIRMED_COMPLETE"
+
+        audit_count = conn_b.execute(
+            "SELECT COUNT(*) AS c FROM audit_events WHERE job_id = ? AND action = 'HUMAN_CONFIRMED_COMPLETE'",
+            (job_id,),
+        ).fetchone()["c"]
+        assert audit_count == 1  # the second confirmer's race did not write a duplicate audit row
+    finally:
+        conn_a.close()
+        conn_b.close()

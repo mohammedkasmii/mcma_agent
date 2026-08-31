@@ -163,6 +163,19 @@ def test_problem_report_moves_job_to_interrupted_never_completed(conn, app_and_c
     assert response.json()["status"] == "INTERRUPTED_NEEDS_HUMAN_REVIEW"
 
 
+def test_problem_report_rejects_an_oversized_reason_code(conn, app_and_client):
+    app, client, _ = app_and_client
+    user_id = create_user(conn, "iris", "pw12345", "operator")
+    grant_access(conn, user_id, OUJDA)
+    csrf = login_client(client, "iris", "pw12345")
+    job_id = _drive_to_ready_for_review(conn, OUJDA, key="rc-11")
+
+    response = client.post(
+        f"/jobs/{job_id}/problem", json={"reason_code": "x" * 201}, headers={"X-CSRF-Token": csrf}
+    )
+    assert response.status_code == 400
+
+
 def test_problem_report_rejects_client_supplied_account_id(conn, app_and_client):
     app, client, _ = app_and_client
     user_id = create_user(conn, "henry", "pw12345", "operator")

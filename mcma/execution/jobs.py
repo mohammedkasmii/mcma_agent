@@ -85,17 +85,21 @@ def _enqueue(
     parent_job_id: Optional[str] = None,
     pii_class: str = "CONTAINS_PII",
     ttl_days: int = 30,
+    authorized_by_user_id: Optional[str] = None,
 ) -> str:
+    # MAMDA read-only enforcement, defense-in-depth layer 2 (correction
+    # batch). Fable-review-2 correction: this now runs BEFORE the
+    # idempotency short-circuit below -- previously a MAMDA account with
+    # any pre-existing job under this idempotency_key (e.g. from before
+    # this enforcement shipped, or inserted by a lower-level path) would
+    # bypass this check entirely on resubmit. It is re-checked here
+    # regardless of the API (layer 1) already having checked it.
+    _require_mcma_writable_account(conn, account_id)
+
     jobs_repo = AutomationJobsRepository(conn)
     existing = jobs_repo.get_by_idempotency_key(account_id, idempotency_key)
     if existing is not None:
         return existing["job_id"]  # idempotent resubmit -- never silently re-run
-
-    # MAMDA read-only enforcement, defense-in-depth layer 2 (correction
-    # batch): re-checked here too, BEFORE any job/job_inputs/outbox row is
-    # created -- not only at the writer-construction boundary later, and
-    # never trusting that the API (layer 1) already checked this.
-    _require_mcma_writable_account(conn, account_id)
 
     job_id = uuid.uuid4().hex
     now_dt = datetime.now(timezone.utc)
@@ -116,6 +120,7 @@ def _enqueue(
             now,
             version,
             parent_job_id=parent_job_id,
+            authorized_by_user_id=authorized_by_user_id,
         )
         ciphertext = encryptor.encrypt(typed_input_bytes)  # may raise -- rolls back, no partial job
         JobInputsRepository(conn).insert(
@@ -172,11 +177,16 @@ def enqueue_execute(
     idempotency_key: str,
     encryptor: InputEncryptor,
     parent_job_id: str,
+    authorized_by_user_id: Optional[str] = None,
 ) -> str:
     """The caller (an API endpoint, INC-17) is responsible for having
     already checked that parent_job_id names a DRY_RUN_VERIFIED job of
     this SAME account_id/workflow_name -- run_execute() re-checks this
-    itself regardless (never trusts the caller alone)."""
+    itself regardless (never trusts the caller alone). `authorized_by_
+    user_id` is normally known at EXECUTE-creation time (the caller of
+    POST /executions) -- passing it here records it atomically with
+    creation, avoiding a separate non-atomic post-hoc update (Fable-
+    review-2 correction)."""
     return _enqueue(
         conn,
         account_id=account_id,
@@ -188,12 +198,25 @@ def enqueue_execute(
         idempotency_key=idempotency_key,
         encryptor=encryptor,
         parent_job_id=parent_job_id,
+        authorized_by_user_id=authorized_by_user_id,
     )
 
 
 # --------------------------------------------------------------------- #
 # Atomic transition (job row + outbox event, one transaction)
 # --------------------------------------------------------------------- #
+
+
+class JobPreconditionMismatch(JobAuthorizationError):
+    """Raised by transition() when `expected_from_statuses` is given and
+    the job's FRESHLY re-read status (inside the transaction) is no
+    longer one of them -- carries the observed status so the caller can
+    decide how to report it. `reason_code` is fixed
+    (PRECONDITION_STATUS_MISMATCH); use `.observed_status` for detail."""
+
+    def __init__(self, observed_status: str) -> None:
+        super().__init__("PRECONDITION_STATUS_MISMATCH")
+        self.observed_status = observed_status
 
 
 def transition(
@@ -209,13 +232,27 @@ def transition(
     finished_at: Optional[str] = None,
     audit_actor_user_id: Optional[str] = None,
     audit_action: Optional[str] = None,
+    expected_from_statuses: Optional[frozenset] = None,
 ) -> None:
     """`audit_actor_user_id`/`audit_action` are optional (correction batch,
     human browser handoff, section G): when `audit_action` is given, an
     audit_events row is written in the SAME transaction as the job-row
     update and outbox event -- G requires the human-confirmation
     transition to be atomic with its audit record, not a second,
-    separately-committed write."""
+    separately-committed write.
+
+    `expected_from_statuses`, when given, closes a TOCTOU race (Fable-
+    review-2 correction): the job's status is re-read INSIDE the
+    BEGIN IMMEDIATE transaction (which serializes against any other
+    writer via SQLite's own locking) and compared against this set
+    immediately before writing -- not just once, earlier, outside any
+    transaction. Two concurrent callers racing the SAME job (e.g.
+    confirm_review_completed and report_review_problem both firing from
+    a double-click or two different employees) can no longer both
+    observe the same stale status and both successfully commit a
+    transition; the second to acquire the lock sees the FIRST one's
+    already-applied change and raises JobPreconditionMismatch instead of
+    silently overwriting it."""
     jobs_repo = AutomationJobsRepository(conn)
     row = jobs_repo.get(job_id)
     if row is None:
@@ -223,6 +260,14 @@ def transition(
     account_id = row["account_id"]
     conn.execute("BEGIN IMMEDIATE")
     try:
+        if expected_from_statuses is not None:
+            fresh_status = jobs_repo.get(job_id)["status"]
+            if fresh_status not in expected_from_statuses:
+                # Let the single except-block below perform the ONE
+                # rollback -- calling ROLLBACK twice on this connection
+                # would itself raise (no active transaction), masking
+                # this precondition failure.
+                raise JobPreconditionMismatch(fresh_status)
         version = AccountStateVersionRepository(conn).bump(account_id)
         jobs_repo.update_status(
             job_id,
@@ -480,10 +525,27 @@ def transition_on_browser_closed(conn, job_id: str, *, release_lease: Optional[C
         raise ValueError("no such job_id")
     status = job_row["status"]
     if status == "READY_FOR_HUMAN_REVIEW":
-        transition(conn, job_id, "AWAITING_HUMAN_CONFIRMATION")
+        try:
+            transition(
+                conn, job_id, "AWAITING_HUMAN_CONFIRMATION",
+                expected_from_statuses=frozenset({"READY_FOR_HUMAN_REVIEW"}),
+            )
+        except JobPreconditionMismatch as exc:
+            # Fable-review-2 correction: re-checked atomically -- a
+            # concurrent caller could have already moved this job (e.g.
+            # a restart's reconciliation racing a close callback) between
+            # the read above and this transition.
+            raise JobAuthorizationError("NO_ACTIVE_BROWSER_SESSION_FOR_JOB") from exc
         return "AWAITING_HUMAN_CONFIRMATION"
     if status in _WRITE_IN_PROGRESS_STATUSES:
-        transition(conn, job_id, "INTERRUPTED_NEEDS_HUMAN_REVIEW", reason_code="BROWSER_CLOSED_BEFORE_READY", finished_at=_utcnow_iso())
+        try:
+            transition(
+                conn, job_id, "INTERRUPTED_NEEDS_HUMAN_REVIEW",
+                reason_code="BROWSER_CLOSED_BEFORE_READY", finished_at=_utcnow_iso(),
+                expected_from_statuses=_WRITE_IN_PROGRESS_STATUSES,
+            )
+        except JobPreconditionMismatch as exc:
+            raise JobAuthorizationError("NO_ACTIVE_BROWSER_SESSION_FOR_JOB") from exc
         if release_lease is not None:
             release_lease()
         return "INTERRUPTED_NEEDS_HUMAN_REVIEW"
@@ -506,14 +568,25 @@ def confirm_review_completed(
         return "HUMAN_CONFIRMED_COMPLETE"
     if job_row["status"] != "AWAITING_HUMAN_CONFIRMATION":
         raise JobAuthorizationError("REVIEW_NOT_AWAITING_CONFIRMATION")
-    transition(
-        conn,
-        job_id,
-        "HUMAN_CONFIRMED_COMPLETE",
-        finished_at=_utcnow_iso(),
-        audit_actor_user_id=confirmed_by_user_id,
-        audit_action="HUMAN_CONFIRMED_COMPLETE",
-    )
+    try:
+        transition(
+            conn,
+            job_id,
+            "HUMAN_CONFIRMED_COMPLETE",
+            finished_at=_utcnow_iso(),
+            audit_actor_user_id=confirmed_by_user_id,
+            audit_action="HUMAN_CONFIRMED_COMPLETE",
+            # Fable-review-2 correction: re-checked atomically inside the
+            # transaction -- closes a race against a concurrent
+            # report_review_problem (or a second confirm) that could
+            # otherwise both read AWAITING_HUMAN_CONFIRMATION and both
+            # successfully commit, silently overwriting one outcome.
+            expected_from_statuses=frozenset({"AWAITING_HUMAN_CONFIRMATION"}),
+        )
+    except JobPreconditionMismatch as exc:
+        if exc.observed_status == "HUMAN_CONFIRMED_COMPLETE":
+            return "HUMAN_CONFIRMED_COMPLETE"  # lost the race to another confirm -- still idempotently done
+        raise JobAuthorizationError("REVIEW_NOT_AWAITING_CONFIRMATION") from exc
     if release_lease is not None:
         release_lease()
     return "HUMAN_CONFIRMED_COMPLETE"
@@ -538,15 +611,21 @@ def report_review_problem(
         raise ValueError("no such job_id")
     if job_row["status"] not in _HUMAN_HANDOFF_STATUSES:
         raise JobAuthorizationError("NOT_IN_HUMAN_HANDOFF")
-    transition(
-        conn,
-        job_id,
-        "INTERRUPTED_NEEDS_HUMAN_REVIEW",
-        reason_code=reason_code,
-        finished_at=_utcnow_iso(),
-        audit_actor_user_id=reported_by_user_id,
-        audit_action="HUMAN_REPORTED_PROBLEM",
-    )
+    try:
+        transition(
+            conn,
+            job_id,
+            "INTERRUPTED_NEEDS_HUMAN_REVIEW",
+            reason_code=reason_code,
+            finished_at=_utcnow_iso(),
+            audit_actor_user_id=reported_by_user_id,
+            audit_action="HUMAN_REPORTED_PROBLEM",
+            # Fable-review-2 correction: re-checked atomically -- closes
+            # the same race class as confirm_review_completed's.
+            expected_from_statuses=_HUMAN_HANDOFF_STATUSES,
+        )
+    except JobPreconditionMismatch as exc:
+        raise JobAuthorizationError("NOT_IN_HUMAN_HANDOFF") from exc
     if release_lease is not None:
         release_lease()
     return "INTERRUPTED_NEEDS_HUMAN_REVIEW"

@@ -4,12 +4,40 @@ guards, idempotency."""
 
 from api_test_support import NADOR, OUJDA, create_user, grant_access, login_client
 
+# A REAL, buildable Wexia payload (Fable-review-2 correction): the
+# executions endpoint now re-derives the plan from the retained input
+# through the real builder (no more always-matching stub), so a fake
+# {"dossier": "x"} payload can no longer stand in for a genuine dry-run
+# that reaches DRY_RUN_VERIFIED and later executes.
+VALID_TYPED_INPUT = {
+    "dossier": {
+        "reference_number": "REF-1",
+        "mission_type": "normal",
+        "incident_description": "MODE NORMAL",
+        "is_reform": False,
+    },
+    "vehicule": {"license_plate": "11111-A-11"},
+    "chiffrages": [
+        {
+            "id": "CH-1",
+            "status": "approved",
+            "is_final": True,
+            "scenario_type": "repair",
+            "total_cost": 10,
+            "tax_amount": 2,
+            "lignes_pieces": [
+                {"item_type": "part", "item_name": "pare-choc avant", "part_type": "original", "subtotal": 10}
+            ],
+        }
+    ],
+}
 
-def _dry_run_body(account_id=OUJDA, key="k1"):
+
+def _dry_run_body(account_id=OUJDA, key="k1", typed_input=None):
     return {
         "account_id": account_id,
         "workflow_name": "mission_normal",
-        "typed_input": {"dossier": "x"},
+        "typed_input": typed_input if typed_input is not None else VALID_TYPED_INPUT,
         "idempotency_key": key,
     }
 
@@ -60,9 +88,15 @@ def _create_verified_dry_run(conn, client, csrf, account_id=OUJDA, key="dr-1"):
     response = client.post("/jobs/dry-runs", json=_dry_run_body(account_id, key), headers={"X-CSRF-Token": csrf})
     job_id = response.json()["job_id"]
     from mcma.execution.jobs import transition
+    from mcma.mapping.wexia import parse_wexia
+    from mcma.planning.plan import build_mission_normal_plan
 
+    # The REAL plan for the SAME payload the dry-run was created with --
+    # its plan_hash is what the executions endpoint's own real rebuild
+    # will independently recompute from the retained input.
+    plan = build_mission_normal_plan(parse_wexia(VALID_TYPED_INPUT))
     transition(conn, job_id, "PLANNING")
-    transition(conn, job_id, "PLANNED", plan_hash="planhash-1")
+    transition(conn, job_id, "PLANNED", plan_hash=plan.provenance.plan_hash, plan_snapshot=plan.canonical_json())
     transition(conn, job_id, "READ_ONLY_IDENTITY_CHECK")
     transition(conn, job_id, "DRY_RUN_VERIFIED")
     return job_id

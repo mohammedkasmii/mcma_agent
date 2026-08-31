@@ -43,6 +43,20 @@ from mcma.execution.jobs import (
     report_review_problem,
     run_execute_planning,
 )
+from mcma.mapping.wexia import parse_wexia
+from mcma.planning.plan import PlanBuildError, build_garage_conventionne_plan, build_mission_normal_plan
+
+# Fable-review-2 correction (HIGH finding): the EXECUTE endpoint's
+# rebuild_plan_from_retained_input callable used to be an always-matching
+# stub, making run_execute_planning's hash re-check vacuous. It now
+# re-derives the plan from the SAME typed input bytes retained at
+# DRY_RUN time, through the SAME pure builder function the workflow_name
+# names -- a genuine re-verification, never a caller-trusted shortcut.
+# An unrecognized workflow_name fails closed (never guesses a builder).
+_WORKFLOW_PLAN_BUILDERS = {
+    "mission_normal": build_mission_normal_plan,
+    "garage_conventionne": build_garage_conventionne_plan,
+}
 from mcma.persistence.repositories.accounts import AccountsRepository
 from mcma.persistence.repositories.jobs import AutomationJobsRepository
 
@@ -243,35 +257,47 @@ def create_api_app(
         except JobInputUnavailable as exc:
             raise ApiError(409, exc.reason_code, "the dry-run's retained input is no longer usable") from exc
 
+        plan_builder = _WORKFLOW_PLAN_BUILDERS.get(parent["workflow_name"])
+        if plan_builder is None:
+            raise ApiError(409, "UNSUPPORTED_WORKFLOW_NAME", "no known plan builder for this workflow")
+
         parent_input_row = conn.execute("SELECT ciphertext, pii_class FROM job_inputs WHERE job_id = ?", (dry_run_job_id,)).fetchone()
+        parent_typed_input_bytes = encryptor.decrypt(bytes(parent_input_row["ciphertext"]))
         execute_job_id = enqueue_execute(
             conn,
             account_id=parent["account_id"],
             requested_by_user_id=principal.user_id,
             workflow_name=parent["workflow_name"],
             input_hash=parent["input_hash"],
-            typed_input_bytes=encryptor.decrypt(bytes(parent_input_row["ciphertext"])),
+            typed_input_bytes=parent_typed_input_bytes,
             idempotency_key=idempotency_key,
             encryptor=encryptor,
             parent_job_id=dry_run_job_id,
+            # Known at creation time (the authenticated caller of this
+            # very endpoint) -- recorded atomically with the job row
+            # itself rather than a separate post-hoc update (Fable-
+            # review-2 correction: the old pattern skipped the version-
+            # bump/outbox-event invariant every other status change goes
+            # through).
+            authorized_by_user_id=principal.user_id,
         )
 
-        class _MatchingStubPlan:
-            needs_review = ()
-            provenance = type("P", (), {"plan_hash": parent["plan_hash"]})()
-
-            def canonical_json(self):
-                return "{}"
+        def _rebuild_plan_from_retained_input():
+            # Fable-review-2 correction (HIGH finding): this used to be
+            # an always-matching stub, making run_execute_planning's
+            # hash re-check vacuous. It now re-derives the plan from the
+            # SAME retained input bytes through the SAME pure builder
+            # the workflow_name names -- a genuine re-verification.
+            typed_input = parse_wexia(json.loads(parent_typed_input_bytes))
+            return plan_builder(typed_input)
 
         try:
-            run_execute_planning(conn, execute_job_id, rebuild_plan_from_retained_input=lambda: _MatchingStubPlan())
+            run_execute_planning(conn, execute_job_id, rebuild_plan_from_retained_input=_rebuild_plan_from_retained_input)
+        except PlanBuildError as exc:
+            raise ApiError(409, "PLAN_BUILD_FAILED", "the retained input could not be re-planned") from exc
         except JobAuthorizationError as exc:
             raise ApiError(409, exc.reason_code, "execution authorization failed") from exc
 
-        jobs_repo.update_status(
-            execute_job_id, jobs_repo.get(execute_job_id)["status"], jobs_repo.get(execute_job_id)["state_version"],
-            authorized_by_user_id=principal.user_id,
-        )
         return {"job_id": execute_job_id, "status": jobs_repo.get(execute_job_id)["status"]}
 
     # -- human browser handoff (section G) ---------------------------------
@@ -312,6 +338,13 @@ def create_api_app(
         if any(k in body for k in ("account_id", "user_id", "reported_by_user_id", "status")):
             raise ApiError(400, "BAD_REQUEST", "account_id/user_id/status are not client-settable fields")
         reason_code = body.get("reason_code") or "EMPLOYEE_REPORTED_PROBLEM"
+        if not isinstance(reason_code, str) or len(reason_code) > 200:
+            # Fable-review-2 correction (LOW finding): reason_code was an
+            # unvalidated, unbounded client string persisted verbatim and
+            # echoed back in GET /jobs -- capped here (a stored free-text
+            # channel, even if not an XSS sink today, should still be
+            # typed and bounded).
+            raise ApiError(400, "BAD_REQUEST", "reason_code must be a string of at most 200 characters")
         _load_job_for_handoff(job_id, principal)
         try:
             status = report_review_problem(

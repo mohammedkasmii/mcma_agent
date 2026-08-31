@@ -19,7 +19,19 @@ def test_index_is_served_with_csp_header():
     response = client.get("/")
     assert response.status_code == 200
     assert response.headers["content-security-policy"] == CONTENT_SECURITY_POLICY
+    assert response.headers["x-frame-options"] == "DENY"
     assert "text/html" in response.headers["content-type"]
+
+
+def test_index_html_is_not_reachable_through_the_static_mount():
+    """Fable-review-2 correction (MEDIUM finding): index.html used to
+    also be servable at /static/index.html with NO CSP/X-Frame-Options
+    header (a framable, clickjacking-exposed second copy of the
+    dashboard). It must now 404 there -- the only way to reach the
+    dashboard shell is GET /, which always carries both headers."""
+    client = _app()
+    response = client.get("/static/index.html")
+    assert response.status_code == 404
 
 
 def test_app_js_is_served_as_a_static_file():

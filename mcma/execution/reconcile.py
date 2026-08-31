@@ -9,10 +9,16 @@ full status CHECK).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from mcma.execution.inputs import JobInputUnavailable, retrieve_and_verify_job_input
 from mcma.execution.jobs import transition
 from mcma.persistence.leases import release_stale_leases
 from mcma.persistence.repositories.jobs import AutomationJobsRepository
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 _RETURN_TO_QUEUED_STATUSES = frozenset({"QUEUED", "PLANNING", "PLANNED", "READ_ONLY_IDENTITY_CHECK"})
 _PRE_WRITE_ABORT_STATUSES = frozenset({"ACQUIRING_ACCOUNT_LOCK", "IDENTITY_VERIFYING", "IDENTITY_VERIFIED"})
@@ -76,8 +82,12 @@ def _reconcile_one(conn, row, status: str, encryptor) -> str:
 
     if status in _INTERRUPTED_STATUSES:
         # Writes possibly partial -- never automatically resumed or
-        # replayed.
-        transition(conn, job_id, "INTERRUPTED_NEEDS_HUMAN_REVIEW")
+        # replayed. finished_at is set here (Fable-review-2 correction:
+        # previously only transition_on_browser_closed/report_review_
+        # problem set it on this SAME status, leaving a restart-produced
+        # interruption's finished_at NULL forever, inconsistent with
+        # every other path that reaches this terminal status).
+        transition(conn, job_id, "INTERRUPTED_NEEDS_HUMAN_REVIEW", finished_at=_utcnow_iso())
         _release_lease_for(conn, row["account_id"])
         return "INTERRUPTED_NEEDS_HUMAN_REVIEW"
 

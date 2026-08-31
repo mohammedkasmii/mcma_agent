@@ -33,16 +33,25 @@ class AutomationJobsRepository:
         parent_job_id: Optional[str] = None,
         plan_hash: Optional[str] = None,
         plan_snapshot: Optional[str] = None,
+        authorized_by_user_id: Optional[str] = None,
     ) -> None:
+        """`authorized_by_user_id` is normally NULL at insert (DRY_RUN has
+        no authorizer yet) -- an EXECUTE job MAY set it here, atomically
+        with its own creation, when the authorizer is already known at
+        creation time (the caller of POST /executions), rather than a
+        separate post-hoc update outside any transaction (Fable-review-2
+        correction: that pattern skipped the version-bump/outbox-event
+        invariant every other status change goes through)."""
         self._conn.execute(
             "INSERT INTO automation_jobs (job_id, account_id, requested_by_user_id, authorized_by_user_id, "
             "parent_job_id, workflow_name, mode, status, input_hash, plan_hash, plan_snapshot, "
             "idempotency_key, reason_code, created_at, started_at, finished_at, state_version) "
-            "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, NULL, ?)",
             (
                 job_id,
                 account_id,
                 requested_by_user_id,
+                authorized_by_user_id,
                 parent_job_id,
                 workflow_name,
                 mode,

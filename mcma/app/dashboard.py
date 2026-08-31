@@ -33,17 +33,23 @@ CONTENT_SECURITY_POLICY = (
 
 
 def mount_dashboard(app: FastAPI, *, web_dir: Path = _WEB_DIR) -> None:
-    """Serves mcma/web/index.html at GET / (with the CSP header) and the
-    rest of mcma/web/ (app.js, style.css) at /static/*. No route here
-    accepts unauthenticated write access to anything -- every state-
-    changing call the dashboard makes goes through mcma.app.api's own
-    authenticated/CSRF-protected endpoints; this module only serves
-    static bytes."""
+    """Serves mcma/web/index.html at GET / (with the CSP header) and
+    ONLY mcma/web/static/ (app.js, style.css) at /static/*.
+
+    Fable-review-2 correction: index.html previously lived in the SAME
+    directory StaticFiles served, so the identical document was also
+    reachable at /static/index.html with no CSP header at all (the
+    `<meta>` tag's `frame-ancestors` is ignored per spec, so that copy
+    was framable -- a clickjacking surface on the "Review completed"/
+    "Problem" buttons). index.html now lives OUTSIDE the directory this
+    mount serves, so /static/index.html is a plain 404, not a second,
+    unprotected copy of the dashboard."""
 
     @app.get("/")
     def dashboard_index():
         response = FileResponse(web_dir / "index.html")
         response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+        response.headers["X-Frame-Options"] = "DENY"
         return response
 
-    app.mount("/static", StaticFiles(directory=str(web_dir)), name="static")
+    app.mount("/static", StaticFiles(directory=str(web_dir / "static")), name="static")

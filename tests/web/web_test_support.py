@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-APP_JS_PATH = Path(__file__).resolve().parents[2] / "mcma" / "web" / "app.js"
+APP_JS_PATH = Path(__file__).resolve().parents[2] / "mcma" / "web" / "static" / "app.js"
 
 
 def run_async(coro):

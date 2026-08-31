@@ -7,15 +7,26 @@ in the normal (non-egress) suite."""
 from pathlib import Path
 
 WEB_DIR = Path(__file__).resolve().parents[2] / "mcma" / "web"
-APP_JS = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+STATIC_DIR = WEB_DIR / "static"
+APP_JS = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
 INDEX_HTML = (WEB_DIR / "index.html").read_text(encoding="utf-8")
 
 
 def test_no_typescript_or_build_step_files_exist():
-    assert not any(WEB_DIR.glob("*.ts"))
+    assert not any(WEB_DIR.rglob("*.ts"))
     assert not (WEB_DIR / "package.json").exists()
     assert not (WEB_DIR / "tsconfig.json").exists()
     assert not (WEB_DIR / "webpack.config.js").exists()
+
+
+def test_index_html_lives_outside_the_static_mount():
+    """Fable-review-2 correction: index.html must NOT be servable at
+    /static/index.html (a second, CSP-header-less copy of the dashboard
+    -- a clickjacking surface) -- structurally guaranteed by living
+    outside the directory StaticFiles serves, checked here at the
+    filesystem level (the HTTP-level 404 is checked in
+    tests/app/test_dashboard_mount.py)."""
+    assert not (STATIC_DIR / "index.html").exists()
 
 
 def test_index_references_only_local_static_assets_no_cdn():
