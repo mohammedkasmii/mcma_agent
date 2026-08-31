@@ -353,6 +353,13 @@ _ROW_LIST_ROUTES = {
     RepairWorkflow.GARAGE_CONVENTIONNE: "/SinAuto_MCMA/expertise/gestiongarage/listeDevisDet",
 }
 
+# INC-14: PORTAL_CONTRACT.md §7's recovered getAlerte/DataTable contract.
+# The path segment is a validated, percent-escaped code_alerte -- the
+# caller must supply a matching reviewed RouteContract for the exact
+# category code(s) they poll (category-scoped, same discipline as every
+# other dynamic route in this project).
+_NOTIFICATION_ROUTE_TEMPLATE = "/SinAuto_MCMA/expertise/notification/getAlerte/CodeAlerte/{code}"
+
 _FETCH_JSON_JS = """([url, payload]) => fetch(url, {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
@@ -450,6 +457,20 @@ class ReadCapability:
             raise TypeError("scrape() only accepts one or more ApprovedField members")
         pairs = [(f.value, _APPROVED_FIELD_SELECTORS[f]) for f in fields]
         return await self._page.evaluate(_SCRAPE_JS, pairs)
+
+    async def read_notifications(self, code_alerte: str) -> tuple[dict, ...]:
+        """INC-14: the recovered getAlerte/DataTable contract
+        (PORTAL_CONTRACT.md §7), read-only -- length=-1 asks for the full
+        dataset (completeness evidence for the poll-run lifecycle), never
+        a mutating request. The caller must have installed a reviewed
+        RouteContract for this exact category's route (category-scoped)."""
+        self._ensure_open()
+        if not isinstance(code_alerte, str) or not code_alerte.strip():
+            raise TypeError("read_notifications() requires a non-empty code_alerte string")
+        route = _NOTIFICATION_ROUTE_TEMPLATE.format(code=quote(code_alerte, safe=""))
+        result = await self._fetch_json(route, {"length": "-1", "iDisplayLength": "-1"})
+        data = result.get("data", []) if isinstance(result, dict) else []
+        return tuple(data)
 
     async def read_rows(self, workflow: RepairWorkflow) -> tuple[dict, ...]:
         self._ensure_open()

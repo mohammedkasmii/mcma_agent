@@ -285,11 +285,14 @@ def test_close_is_idempotent():
 # --------------------------------------------------------------------- #
 
 
-def test_public_surface_is_exactly_the_four_operations_plus_close():
+def test_public_surface_is_exactly_the_five_operations_plus_close():
+    """INC-14 disclosed extension: read_notifications() was added (the
+    recovered getAlerte/DataTable contract, read-only, category-scoped) --
+    every other operation and close() are unchanged."""
     public = {
         name for name in dir(ReadCapability) if not name.startswith("_") and callable(getattr(ReadCapability, name))
     }
-    assert public == {"search", "open", "scrape", "read_rows", "close"}
+    assert public == {"search", "open", "scrape", "read_rows", "read_notifications", "close"}
 
 
 def test_no_page_context_or_generic_request_exposed():
