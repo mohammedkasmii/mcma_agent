@@ -26,9 +26,20 @@ def hand_off_session(base_url: str, token: str, storage_state: dict) -> str:
     """The one network call this tool ever makes to the service. Returns
     the resulting session_id. No file is ever written by this function.
     account_id is never a parameter here -- it travels only inside the
-    server-issued, already account-bound token."""
+    server-issued, already account-bound token.
+
+    Fable-review correction: base_url is now required to be an explicit
+    loopback origin -- previously an operator typo or a malicious
+    base_url would exfiltrate the captured session in cleartext to an
+    arbitrary host. This is defense-in-depth for an operator-run tool,
+    not a substitute for the server's own loopback check."""
     import json
     import urllib.request
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(base_url)
+    if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+        raise ValueError(f"refusing to hand off a session to a non-loopback base_url: {base_url!r}")
 
     payload = json.dumps(
         {"token": token, "storage_state": base64.b64encode(json.dumps(storage_state).encode("utf-8")).decode("ascii")}

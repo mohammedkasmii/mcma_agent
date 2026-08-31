@@ -76,6 +76,15 @@ def create_onboarding_app(
     @app.post("/onboarding/tokens/{account_id}")
     def issue_token(account_id: str, request: Request):
         _require_loopback(request)
+        # Fable-review correction: previously issued a token for ANY
+        # account_id string with no existence check -- any local process
+        # could mint a token for an account it invented, then replace
+        # that account's vault session via /onboarding/sessions. The
+        # account must already be a real row before a token is minted
+        # for it.
+        row = conn.execute("SELECT 1 FROM accounts WHERE account_id = ?", (account_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="unknown account")
         return {"token": store.issue(account_id)}
 
     @app.post("/onboarding/sessions")

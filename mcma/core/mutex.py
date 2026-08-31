@@ -33,26 +33,41 @@ class WindowsSingleInstanceMutex:
     def __init__(self, name: str) -> None:
         self._name = f"Global\\{name}"
         self._handle = None
+        self._kernel32 = None
 
     def acquire(self) -> None:
-        import ctypes  # local import: ctypes.windll only exists on Windows
+        import ctypes  # local import: ctypes.WinDLL only exists on Windows
 
         ERROR_ALREADY_EXISTS = 183
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        # Fable-review correction: ctypes.windll.kernel32.GetLastError()
+        # is unreliable -- ctypes' own machinery can make further Win32
+        # calls between CreateMutexW and the GetLastError query,
+        # clobbering the thread's last-error value, which would let a
+        # missed ERROR_ALREADY_EXISTS make two processes both believe
+        # they hold the mutex (the single-writer guarantee failing open).
+        # WinDLL(..., use_last_error=True) + ctypes.get_last_error()
+        # captures the error atomically as part of the same call.
+        # CreateMutexW.restype is set to a proper (64-bit-safe) handle
+        # type -- an untyped return defaults to c_int and can truncate
+        # the handle on 64-bit Windows.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
         handle = kernel32.CreateMutexW(None, False, self._name)
+        last_error = ctypes.get_last_error()
         if not handle:
-            raise MutexAcquisitionError(f"CreateMutexW failed for {self._name!r}")
-        last_error = kernel32.GetLastError()
+            raise MutexAcquisitionError(f"CreateMutexW failed for {self._name!r} (error {last_error})")
         if last_error == ERROR_ALREADY_EXISTS:
-            kernel32.CloseHandle(handle)
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
             raise MutexAcquisitionError(f"another instance already holds mutex {self._name!r}")
         self._handle = handle
+        self._kernel32 = kernel32
 
     def release(self) -> None:
         if self._handle is not None:
             import ctypes
 
-            ctypes.windll.kernel32.CloseHandle(self._handle)  # type: ignore[attr-defined]
+            self._kernel32.CloseHandle(ctypes.c_void_p(self._handle))
             self._handle = None
 
     def __enter__(self) -> "WindowsSingleInstanceMutex":

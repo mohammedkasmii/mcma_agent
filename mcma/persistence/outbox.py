@@ -51,6 +51,12 @@ def cursor_is_stale(conn, cursor: int) -> bool:
     return cursor < earliest - 1
 
 
-def events_after(conn, cursor: int, account_ids: Optional[Sequence[str]] = None):
-    account_ids_tuple = tuple(account_ids) if account_ids is not None else None
-    return EventOutboxRepository(conn).events_after(cursor, account_ids_tuple)
+def events_after(conn, cursor: int, account_ids: Sequence[str]):
+    """`account_ids` is REQUIRED (Fable-review correction): the
+    lower-level repository's own `events_after` accepts `None` to mean
+    "every account, unfiltered" -- a reasonable bare-SQL primitive, but an
+    insecure default one layer up in this account-scoped module, where a
+    future caller omitting the filter would silently stream every
+    account's events. There is no "all accounts" convenience here; the
+    caller must always name the accounts it is authorized to see."""
+    return EventOutboxRepository(conn).events_after(cursor, tuple(account_ids))

@@ -23,13 +23,18 @@ cross-account pairing at the DB layer, INC-10).
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Sequence
 
 from mcma.notifications.presence import apply_category_result
 from mcma.notifications.staging import stage_or_upsert_claim
-from mcma.persistence.repositories.claims import PollRunCategoriesRepository, PollRunsRepository
+from mcma.persistence.repositories.claims import (
+    PollRunCategoriesRepository,
+    PollRunsRepository,
+    UnmatchedNotificationsRepository,
+)
 
 
 def _utcnow_iso() -> str:
@@ -78,7 +83,22 @@ async def run_poll(conn, account_id: str, reader, category_codes: Sequence[str],
 
         seen_claim_pks = set()
         for notification in rows:
-            claim_pk = stage_or_upsert_claim(conn, account_id, notification, version)
+            try:
+                if not isinstance(notification, dict):
+                    raise TypeError("notification row is not an object")
+                claim_pk = stage_or_upsert_claim(conn, account_id, notification, version)
+            except Exception:
+                # A single malformed row is staged as an opaque unmatched
+                # record and skipped -- it must never abort the whole
+                # poll (run_poll's documented never-raises contract) or
+                # silently drop evidence.
+                UnmatchedNotificationsRepository(conn).create(
+                    uuid.uuid4().hex,
+                    account_id,
+                    raw_payload=json.dumps({"malformed": True, "raw": repr(notification)[:500]}),
+                    seen_at=_utcnow_iso(),
+                )
+                continue
             if claim_pk is not None:
                 seen_claim_pks.add(claim_pk)
 

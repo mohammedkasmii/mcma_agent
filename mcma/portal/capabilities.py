@@ -463,14 +463,26 @@ class ReadCapability:
         (PORTAL_CONTRACT.md §7), read-only -- length=-1 asks for the full
         dataset (completeness evidence for the poll-run lifecycle), never
         a mutating request. The caller must have installed a reviewed
-        RouteContract for this exact category's route (category-scoped)."""
+        RouteContract for this exact category's route (category-scoped).
+
+        A response shaped unlike the expected DataTable payload (missing
+        `data`, or not an object at all -- e.g. a session-expired error
+        page/JSON) is a FAILURE, never "zero rows": silently treating it
+        as an empty-but-complete result would let a poller's caller
+        (mcma.notifications.presence's three-poll lifecycle) advance the
+        absence counter and eventually mark real, still-open notifications
+        RESOLVED_ON_PORTAL purely because the session had expired. Raising
+        here is what makes extract.py's existing except-classifies-FAILED
+        path apply to this case too (Fable review finding, INC-15
+        correction)."""
         self._ensure_open()
         if not isinstance(code_alerte, str) or not code_alerte.strip():
             raise TypeError("read_notifications() requires a non-empty code_alerte string")
         route = _NOTIFICATION_ROUTE_TEMPLATE.format(code=quote(code_alerte, safe=""))
         result = await self._fetch_json(route, {"length": "-1", "iDisplayLength": "-1"})
-        data = result.get("data", []) if isinstance(result, dict) else []
-        return tuple(data)
+        if not isinstance(result, dict) or "data" not in result or not isinstance(result["data"], list):
+            raise ValueError("notification fetch returned a malformed/incomplete payload -- treating as a failed poll")
+        return tuple(result["data"])
 
     async def read_rows(self, workflow: RepairWorkflow) -> tuple[dict, ...]:
         self._ensure_open()

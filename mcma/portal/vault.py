@@ -115,19 +115,37 @@ class AclVerifier(Protocol):
 
 class WindowsAclVerifier:
     """Verifies the vault directory grants access to no broad principal
-    (Everyone/Authenticated Users/Users) via `icacls` (a built-in Windows
-    tool -- no pywin32 dependency)."""
+    (Everyone/Authenticated Users/Users) via PowerShell's Get-Acl,
+    checked by well-known SID rather than by localized display name
+    (Fable-review correction: `icacls`'s principal names are localized --
+    e.g. "Tout le monde"/"Utilisateurs authentifiés" on French
+    Windows, plausible for this deployment -- so matching the English
+    substrings "Everyone"/"Authenticated Users" silently passes a
+    world-readable directory on a non-English system, defeating the sole
+    confidentiality control for LocalMachine DPAPI ciphertext). SIDs are
+    locale-independent: S-1-1-0 (Everyone), S-1-5-11 (Authenticated
+    Users), S-1-5-32-545 (Users)."""
 
-    _DISALLOWED_PRINCIPALS = ("Everyone", "BUILTIN\\Users", "Authenticated Users", "NT AUTHORITY\\Authenticated Users")
+    _DISALLOWED_SIDS = ("S-1-1-0", "S-1-5-11", "S-1-5-32-545")
 
     def verify_restrictive(self, path: Path) -> bool:
         import subprocess
 
-        result = subprocess.run(["icacls", str(path)], capture_output=True, text=True, timeout=10)
+        script = (
+            "$acl = Get-Acl -LiteralPath $args[0]; "
+            "$acl.Access | ForEach-Object { "
+            "  try { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } "
+            "  catch { $_.IdentityReference.Value } "
+            "}"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script, str(path)],
+            capture_output=True, text=True, timeout=15,
+        )
         if result.returncode != 0:
             return False
-        output = result.stdout
-        return not any(principal in output for principal in self._DISALLOWED_PRINCIPALS)
+        sids_granted = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+        return not any(sid in sids_granted for sid in self._DISALLOWED_SIDS)
 
 
 class TestOnlyAclVerifier:
@@ -209,21 +227,39 @@ def store_session(
     tmp_path.write_bytes(ciphertext)
     os.replace(tmp_path, final_path)  # atomic on the same filesystem
 
-    previous = conn.execute(
-        "SELECT session_id, storage_ref FROM portal_sessions WHERE account_id = ? AND status = 'ACTIVE' "
-        "ORDER BY rowid DESC LIMIT 1",
-        (account_id,),
-    ).fetchone()
-
+    # Fable-review correction: the old-row REVOKE and the new-row INSERT
+    # used to be two separate autocommit statements (db.py opens
+    # connections with isolation_level=None). A crash between them left
+    # TWO ACTIVE rows; load_and_verify_session's "most recent ACTIVE"
+    # query would still pick the new one, but revoke_session (which only
+    # ever revokes the newest ACTIVE row) would then "resurrect" the
+    # older one as the effective active session on a later revoke --
+    # revocation would not reliably force re-login. One explicit
+    # transaction makes the row-level swap atomic, matching the
+    # already-atomic file replacement above.
     session_id = uuid.uuid4().hex
-    conn.execute(
-        "INSERT INTO portal_sessions (session_id, account_id, storage_ref, status, last_validated_at, "
-        "opened_identity_fingerprint) VALUES (?, ?, ?, 'ACTIVE', ?, ?)",
-        (session_id, account_id, storage_ref, _utcnow_iso(), identity_fingerprint),
-    )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        previous = conn.execute(
+            "SELECT session_id, storage_ref FROM portal_sessions WHERE account_id = ? AND status = 'ACTIVE' "
+            "ORDER BY rowid DESC LIMIT 1",
+            (account_id,),
+        ).fetchone()
+        if previous is not None:
+            conn.execute(
+                "UPDATE portal_sessions SET status = 'REVOKED' WHERE session_id = ?", (previous["session_id"],)
+            )
+        conn.execute(
+            "INSERT INTO portal_sessions (session_id, account_id, storage_ref, status, last_validated_at, "
+            "opened_identity_fingerprint) VALUES (?, ?, ?, 'ACTIVE', ?, ?)",
+            (session_id, account_id, storage_ref, _utcnow_iso(), identity_fingerprint),
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
     if previous is not None:
-        conn.execute("UPDATE portal_sessions SET status = 'REVOKED' WHERE session_id = ?", (previous["session_id"],))
         old_path = vault_dir / f"{previous['storage_ref']}.session"
         old_path.unlink(missing_ok=True)
 

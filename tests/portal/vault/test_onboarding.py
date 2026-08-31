@@ -51,6 +51,17 @@ def test_onboarding_rejects_non_loopback_caller_paired_with_loopback_success(con
     assert allowed.status_code == 200
 
 
+def test_onboarding_rejects_unknown_account(conn, vault_dir, backend, restrictive_acl):
+    app, _ = _make_app(conn, vault_dir, backend, restrictive_acl)
+    client = TestClient(app, client=("127.0.0.1", 12345))
+    response = client.post("/onboarding/tokens/this-account-does-not-exist")
+    assert response.status_code == 404
+
+    # Positive control: the real, seeded account still works.
+    allowed = client.post(f"/onboarding/tokens/{ACCOUNT_ID}")
+    assert allowed.status_code == 200
+
+
 def test_onboarding_token_is_single_use(conn, vault_dir, backend, restrictive_acl):
     app, _ = _make_app(conn, vault_dir, backend, restrictive_acl)
     client = TestClient(app, client=("127.0.0.1", 12345))

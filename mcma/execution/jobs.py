@@ -221,11 +221,23 @@ def transition(
 # --------------------------------------------------------------------- #
 
 
+def _require_mode(job_row, expected_mode: str) -> None:
+    """Fable-review correction: without this check, run_dry_run_planning/
+    run_dry_run_identity_check could drive an EXECUTE-mode job into
+    DRY_RUN_VERIFIED, which _require_authorized_parent would then accept
+    as a valid parent for a THIRD job -- closing that gap requires
+    checking mode at both ends (here, and in _require_authorized_parent
+    below)."""
+    if job_row["mode"] != expected_mode:
+        raise JobAuthorizationError(f"WRONG_JOB_MODE_EXPECTED_{expected_mode}")
+
+
 def run_dry_run_planning(conn, job_id: str, *, build_plan: Callable[[], Any]):
     """QUEUED -> PLANNING -> {NEEDS_REVIEW | PLANNED}. `build_plan` is a
     pure callable (no I/O) returning an mcma.planning.plan.ProposedPlan-
     shaped object (duck-typed: .needs_review, .provenance.plan_hash,
     .canonical_json())."""
+    _require_mode(AutomationJobsRepository(conn).get(job_id), "DRY_RUN")
     transition(conn, job_id, "PLANNING")
     plan = build_plan()
     if plan.needs_review:
@@ -241,6 +253,7 @@ def run_dry_run_identity_check(conn, job_id: str, *, check_identity_read_only: C
     ReadCapability-shaped object -- this function never constructs, and
     never accepts, anything writer-shaped; it is a bare bool-returning
     callable, structurally incapable of writing."""
+    _require_mode(AutomationJobsRepository(conn).get(job_id), "DRY_RUN")
     transition(conn, job_id, "READ_ONLY_IDENTITY_CHECK")
     matched = check_identity_read_only()
     if matched:
@@ -264,6 +277,8 @@ def _require_authorized_parent(conn, job_row) -> dict:
     parent = jobs_repo.get(parent_id)
     if parent is None:
         raise JobAuthorizationError("MISSING_PARENT_DRY_RUN")
+    if parent["mode"] != "DRY_RUN":
+        raise JobAuthorizationError("PARENT_NOT_DRY_RUN_VERIFIED")
     if parent["status"] != "DRY_RUN_VERIFIED":
         raise JobAuthorizationError("PARENT_NOT_DRY_RUN_VERIFIED")
     if parent["account_id"] != job_row["account_id"] or parent["workflow_name"] != job_row["workflow_name"]:
@@ -283,6 +298,7 @@ def run_execute_planning(
     closed to ERROR/INPUT_CHANGED before ever acquiring the account lock."""
     jobs_repo = AutomationJobsRepository(conn)
     job_row = jobs_repo.get(job_id)
+    _require_mode(job_row, "EXECUTE")
     parent = _require_authorized_parent(conn, job_row)
 
     transition(conn, job_id, "PLANNING")
@@ -312,7 +328,21 @@ def run_execute_write(
     `acquire_lease_and_verify_identity` raises on identity mismatch/lease
     failure; `perform_writes_and_verify` returns True only when every row
     write, read-back, and the native financial verification all
-    succeeded -- False (or a raised exception) means WRITE_ABORTED."""
+    succeeded -- False (or a raised exception) means WRITE_ABORTED.
+
+    Fable-review correction: this function used to trust its caller to
+    have already run run_execute_planning (which performs the parent-
+    authorization and input_hash/plan_hash re-check) -- calling this
+    directly on a job that skipped planning bypassed that check entirely.
+    It now re-verifies both the job's own state (mode EXECUTE, status
+    PLANNED) and its parent authorization itself, so the guarantee holds
+    regardless of what the caller did or didn't call first."""
+    job_row = AutomationJobsRepository(conn).get(job_id)
+    _require_mode(job_row, "EXECUTE")
+    if job_row["status"] != "PLANNED":
+        raise JobAuthorizationError("EXECUTE_WRITE_REQUIRES_PLANNED_STATUS")
+    _require_authorized_parent(conn, job_row)
+
     transition(conn, job_id, "ACQUIRING_ACCOUNT_LOCK")
     transition(conn, job_id, "IDENTITY_VERIFYING")
     try:
@@ -323,12 +353,20 @@ def run_execute_write(
     transition(conn, job_id, "IDENTITY_VERIFIED")
 
     transition(conn, job_id, "WRITING")
+    write_exception_reason = None
     try:
         succeeded = perform_writes_and_verify(writer)
-    except Exception:
+    except Exception as exc:
         succeeded = False
+        # A diagnostic-only reason code: an exception mid-write (rows
+        # possibly already partially applied) is still WRITE_ABORTED per
+        # WORKFLOW_STATE_MODEL.md §4 (a live run's own write-time failure
+        # is a normal-runtime outcome, distinct from INTERRUPTED_NEEDS_
+        # HUMAN_REVIEW, which is reserved for crash/restart reconciliation
+        # only) -- this only records WHY, it never changes the status.
+        write_exception_reason = f"WRITE_EXCEPTION_{type(exc).__name__}"
     if not succeeded:
-        transition(conn, job_id, "WRITE_ABORTED")
+        transition(conn, job_id, "WRITE_ABORTED", reason_code=write_exception_reason)
         return "WRITE_ABORTED"
 
     transition(conn, job_id, "VERIFYING")
