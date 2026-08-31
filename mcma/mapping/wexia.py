@@ -58,6 +58,11 @@ class WexiaPieceLine(_Base):
     mcma_rubric_id: Optional[str] = None
     operation_type: Optional[str] = None
     labor_type_id: Optional[str] = None
+    # Real dossiers carry the operation here ("remplacement"/"reparation")
+    # while operation_type is null. extra="ignore" was discarding it, so
+    # glass lines that state their operation plainly still came out
+    # AMBIGUOUS_GLASS. Kept as raw text: it is evidence, not a decision.
+    repair_action: Optional[str] = None
     notes: str = ""
     subtotal: Decimal = Decimal("0")
     depreciation_amount: Decimal = Decimal("0")
@@ -83,6 +88,11 @@ class WexiaPieceLine(_Base):
 class WexiaMoLine(_Base):
     operation_type: Optional[str] = None
     labor_type_id: Optional[str] = None
+    # Real dossiers carry the operation here ("remplacement"/"reparation")
+    # while operation_type is null. extra="ignore" was discarding it, so
+    # glass lines that state their operation plainly still came out
+    # AMBIGUOUS_GLASS. Kept as raw text: it is evidence, not a decision.
+    repair_action: Optional[str] = None
     notes: str = ""
     subtotal: Decimal = Decimal("0")
 
@@ -106,6 +116,11 @@ class WexiaChiffrage(_Base):
     total_cost: Optional[Decimal] = None
     tax_amount: Optional[Decimal] = None
     final_cost: Optional[Decimal] = None
+    # Explicit archival marker. archive_cycle is modelled for fidelity but
+    # is NOT proof of archival on its own -- archived_at is the marker
+    # that says a version was retired.
+    archived_at: Optional[str] = None
+    archive_cycle: Optional[int] = None
     lignes_pieces: List[WexiaPieceLine] = Field(default_factory=list)
     lignes_mo: List[WexiaMoLine] = Field(default_factory=list)
 

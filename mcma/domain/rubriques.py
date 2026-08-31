@@ -212,16 +212,26 @@ def labour_rubrique(family: LabourFamily) -> RubriqueId:
     return _LABOUR_RUBRIQUE[family]
 
 
-def _explicit_labour_signals(norm: str) -> tuple[bool, set]:
+def _explicit_labour_signals(norm: str, *, item_type_says_labour: bool = False) -> tuple[bool, set]:
     """Returns (has_explicit_labour_marker, families named by the text).
-    'mo' matches ONLY as a standalone word — never as a substring (F15)."""
+    'mo' matches ONLY as a standalone word — never as a substring (F15).
+
+    `item_type_says_labour` supplies the MARKER, not a family. The marker
+    only ever answered "is this line labour at all", which a structured
+    item_type='labor' states more reliably than a word in free text ever
+    could -- so a line Wexia has already declared to be labour does not
+    also have to say "main d'oeuvre" in its description before its family
+    word counts. No keyword is widened: the family still has to come from
+    the existing _FAMILY_WORDS / _SELF_EXPLICIT tokens, a family word
+    alone still classifies nothing on a non-labour line, and two families
+    still contradict."""
     words = norm.split()
     families: set = set()
     for family, tokens in _SELF_EXPLICIT.items():
         if any(token in norm for token in tokens):
             families.add(family)
 
-    marker = bool(families)
+    marker = bool(families) or item_type_says_labour
     if "main d oeuvre" in norm or "mo" in words:
         marker = True
     if any(verb in words for verb in _GENERIC_LABOUR_VERBS):
@@ -260,7 +270,8 @@ def classify_labour_line(
     Without a structured family, only explicit labour expressions classify;
     generic family words alone are insufficient. Ambiguity fails closed."""
     norm = normalize_text(text)
-    marker, text_families = _explicit_labour_signals(norm)
+    is_structured_item = normalize_text(item_type) in ("labor", "labour")
+    marker, text_families = _explicit_labour_signals(norm, item_type_says_labour=is_structured_item)
 
     has_structured_val = False
     structured_families = set()
@@ -274,14 +285,19 @@ def classify_labour_line(
             else:
                 unknown_structured = True
 
-    is_structured_item = normalize_text(item_type) in ("labor", "labour")
-
     if unknown_structured:
         return NeedsReview(ReasonCode.UNKNOWN_LABOUR, detail=f"unknown structured fields: {operation_type=} {labor_type_id=}")
 
-    if is_structured_item or has_structured_val:
-        if not structured_families:
-            return NeedsReview(ReasonCode.UNKNOWN_LABOUR, detail="item_type=labour but no valid family in operation/labor fields")
+    # A STRUCTURED FIELD, when present, is authoritative -- unchanged.
+    #
+    # What changed: item_type='labor' with BOTH structured family fields
+    # genuinely absent used to stop here as UNKNOWN_LABOUR. Real Wexia
+    # dossiers carry labour that way (item_type='labor', operation_type
+    # None, labor_type_id None), so the strict text path never got to run
+    # on lines it can classify deterministically. Absent is not the same
+    # as unknown: an unrecognised NON-EMPTY structured value still fails
+    # closed above, and nothing here widens the text rules.
+    if has_structured_val:
         if len(structured_families) > 1:
             return NeedsReview(
                 ReasonCode.CONTRADICTORY_LABOUR,
@@ -296,6 +312,11 @@ def classify_labour_line(
         return Mapped(labour_rubrique(structured_family))
 
     if not marker:
+        if is_structured_item:
+            return NeedsReview(
+                ReasonCode.UNKNOWN_LABOUR,
+                detail="item_type=labour with no structured family and no explicit labour signal in text",
+            )
         return NeedsReview(ReasonCode.UNKNOWN_LABOUR, detail=f"no explicit labour signal in {text!r}")
     if len(text_families) == 1:
         return Mapped(labour_rubrique(next(iter(text_families))))

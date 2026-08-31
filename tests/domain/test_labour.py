@@ -100,10 +100,23 @@ def test_structured_labour_completeness_rules():
     assert isinstance(result, NeedsReview)
     assert result.reason is ReasonCode.UNKNOWN_LABOUR
 
-    # item_type=labour + missing operation_type/labor_type_id + notes “MO peinture” → UNKNOWN_LABOUR
+    # item_type=labour + BOTH structured fields absent + explicit "MO
+    # peinture" -> rubrique 12.
+    #
+    # CHANGED IN C.2.2, deliberately. This previously asserted
+    # UNKNOWN_LABOUR, because item_type='labor' short-circuited before the
+    # text path could run. Real Wexia dossiers carry labour exactly this
+    # way -- item_type='labor', operation_type null, labor_type_id null,
+    # no lignes_mo at all -- so the strict classifier never saw lines it
+    # can read deterministically, and "MO peinture" is about as explicit
+    # as labour text gets.
+    #
+    # An ABSENT structured field is not an UNRECOGNISED one: the line
+    # above (labor_type_id="unknown") still fails closed, and a test in
+    # tests/planning/test_real_wexia_semantics.py pins that an unknown
+    # external code can never be reinterpreted by free text.
     result = classify_labour_line(operation_type=None, labor_type_id=None, item_type="labor", text="MO peinture")
-    assert isinstance(result, NeedsReview)
-    assert result.reason is ReasonCode.UNKNOWN_LABOUR
+    assert result == Mapped(RubriqueId("12"))
 
     # item_type=part plus a conflicting structured labour family → NeedsReview
     result = classify_labour_line(operation_type="peinture", labor_type_id=None, item_type="part", text="MO mecanique")

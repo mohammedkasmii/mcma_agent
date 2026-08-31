@@ -249,13 +249,37 @@ def _detect_mode_fail_closed(dossier) -> str:
     return "conventionne" if explicit_conv else "normal"
 
 
+def _glass_operation_evidence(line) -> str:
+    """Every field that can state the operation, joined.
+
+    It used to be `line.operation_type or line.notes`, which silently
+    picked one source and dropped the rest -- so a line whose
+    operation_type was null and whose repair_action said "remplacement"
+    came out AMBIGUOUS_GLASS despite saying exactly what it was. Joining
+    is also the conflict-safe choice: contradictory evidence produces two
+    operations and classify_glass_line fails closed, where preferring one
+    field would have quietly resolved the contradiction in its favour."""
+    parts = (line.operation_type, getattr(line, "repair_action", None), line.notes)
+    return " ".join(str(part) for part in parts if part)
+
+
+def _glass_signal_text(line) -> str:
+    return f"{line.item_name} {_glass_operation_evidence(line)}"
+
+
 def _select_chiffrage(chiffrages):
     """Deterministic, fail-closed selection (G1 review H2): a chiffrage is
     used only when it is the unambiguous winner — never candidates[0] by
     payload order."""
+    # An explicitly archived version is a retired estimate, not a rival
+    # candidate. Leaving them in manufactured ambiguity between a current
+    # chiffrage and a superseded one, which fails closed on a question the
+    # dossier had already answered. archived_at is the marker;
+    # archive_cycle alone is not treated as proof.
+    live = [c for c in chiffrages if not (getattr(c, "archived_at", None) or "")]
     candidates = [
         c
-        for c in chiffrages
+        for c in live
         if c.has_lines and "honoraire" not in normalize_text(c.scenario_type)
         and "fee" not in normalize_text(c.scenario_type)
     ]
@@ -347,8 +371,8 @@ def _classify_piece(line):
             peinture = classify_peinture_materials(line.item_name)
             if peinture is not None:
                 sem_result = Mapped(peinture)
-            elif has_glass_signal(f"{line.item_name} {line.operation_type or ''} {line.notes}"):
-                sem_result = classify_glass_line(line.item_name, line.operation_type or line.notes)
+            elif has_glass_signal(_glass_signal_text(line)):
+                sem_result = classify_glass_line(line.item_name, _glass_operation_evidence(line))
             else:
                 sem_result = classify_ordinary_part(part_type=line.part_type, is_original=line.is_original)
 
