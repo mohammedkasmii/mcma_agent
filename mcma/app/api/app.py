@@ -1,0 +1,334 @@
+"""
+mcma.app.api.app -- the authenticated API application factory (INC-17).
+Routes are grouped by surface (auth, notifications, jobs, events,
+health) in this one module for this increment's scope; each surface
+enforces authz.require_permission/require_account_access and derives its
+actor exclusively from deps.get_principal_dependency.
+
+`mode` is NEVER a client field anywhere here (test_no_mode_field_exists):
+POST /jobs/dry-runs always creates mode='DRY_RUN'; POST /jobs/{id}/
+executions always creates mode='EXECUTE'. There is no third endpoint and
+no body field that could select a mode.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from typing import Optional
+
+from fastapi import Depends, FastAPI, Request
+
+from mcma.app.api.authz import (
+    Principal,
+    filter_rows_by_account_access,
+    require_account_access,
+    require_permission,
+    visible_account_ids,
+)
+from mcma.app.api.deps import get_principal_dependency, require_csrf
+from mcma.app.api.errors import ApiError, install_error_handlers
+from mcma.app.auth.csrf import CSRF_COOKIE_NAME, generate_csrf_token
+from mcma.app.auth.provider import AuthProvider
+from mcma.app.auth.sessions import SESSION_COOKIE_NAME, SessionStore, clear_session_cookie, set_session_cookie
+from mcma.app.sse import Authorizer, create_sse_endpoint
+from mcma.domain.enums import Permission
+from mcma.domain.portal_accounts import PortalAccountProfile
+from mcma.execution.inputs import InputEncryptor, JobInputUnavailable, compute_content_hash, retrieve_and_verify_job_input
+from mcma.execution.jobs import (
+    JobAuthorizationError,
+    confirm_review_completed,
+    enqueue_dry_run,
+    enqueue_execute,
+    report_review_problem,
+    run_execute_planning,
+)
+from mcma.persistence.repositories.accounts import AccountsRepository
+from mcma.persistence.repositories.jobs import AutomationJobsRepository
+
+
+def _require_mcma_account(conn, account_id: str) -> None:
+    """MAMDA read-only enforcement, defense-in-depth layer 1 (correction
+    batch / owner amendment): rejected here, before enqueueing anything --
+    mcma.execution.jobs independently re-checks this itself (layer 2) and
+    never trusts that this endpoint-level check alone was performed."""
+    account = AccountsRepository(conn).get(account_id)
+    if account is None:
+        raise ApiError(404, "ACCOUNT_NOT_FOUND", "no such account")
+    profile = PortalAccountProfile.from_row(account.entity, account.scope)
+    if not profile.is_mcma:
+        raise ApiError(403, "MAMDA_ACCOUNT_NOT_WRITABLE", "this account is notification-only")
+
+
+class RealAuthorizer:
+    """The concrete Authorizer for SSE (correction #9) -- backed by the
+    SAME user_account_access table every other surface enforces against.
+    Revoking a row here is what test_sse_revocation_drops_stream_with_
+    real_auth (INC-17) actually proves."""
+
+    def __init__(self, conn) -> None:
+        self._conn = conn
+
+    def visible_accounts(self, principal: Principal) -> set:
+        return set(visible_account_ids(self._conn, principal))
+
+    def is_authorized(self, principal: Principal, account_id: str) -> bool:
+        return account_id in self.visible_accounts(principal)
+
+
+def create_api_app(
+    conn,
+    *,
+    auth_provider: AuthProvider,
+    session_store: Optional[SessionStore] = None,
+    encryptor: InputEncryptor,
+    secure_cookies: bool = True,
+) -> FastAPI:
+    app = FastAPI(title="MCMA API")
+    install_error_handlers(app)
+    session_store = session_store or SessionStore()
+    get_principal = get_principal_dependency(conn, session_store)
+    authorizer: Authorizer = RealAuthorizer(conn)
+
+    # -- auth -------------------------------------------------------------
+
+    @app.post("/auth/login")
+    async def login(request: Request):
+        body = await request.json()
+        username = body.get("username")
+        password = body.get("password")
+        if not username or not password:
+            raise ApiError(400, "BAD_REQUEST", "username and password are required")
+        user = auth_provider.authenticate(username, password)
+        if user is None:
+            raise ApiError(401, "INVALID_CREDENTIALS", "invalid username or password")
+        token = session_store.create(user.user_id)
+        csrf_token = generate_csrf_token()
+        from fastapi.responses import JSONResponse
+
+        response = JSONResponse(
+            {"user_id": user.user_id, "username": user.username, "role": user.role, "csrf_token": csrf_token}
+        )
+        set_session_cookie(response, token, secure=secure_cookies)
+        # The CSRF cookie is deliberately NOT HttpOnly -- the client-side
+        # code must be able to read it to echo it back in the header
+        # (double-submit-cookie pattern); it carries no session authority
+        # by itself.
+        response.set_cookie(CSRF_COOKIE_NAME, csrf_token, httponly=False, samesite="strict", secure=secure_cookies)
+        return response
+
+    @app.post("/auth/logout")
+    def logout(request: Request, principal: Principal = Depends(get_principal)):
+        from fastapi.responses import JSONResponse
+
+        token = request.cookies.get(SESSION_COOKIE_NAME)
+        if token:
+            session_store.invalidate(token)
+        response = JSONResponse({"status": "logged_out"})
+        clear_session_cookie(response)
+        return response
+
+    # -- notifications (row-filtered list surfaces, review AR-H1) --------
+
+    def _list_notifications(principal: Principal, account_id: Optional[str]):
+        require_permission(principal, Permission.NOTIFICATIONS_READ)
+        if account_id is not None:
+            require_account_access(conn, principal, account_id)
+            rows = conn.execute(
+                "SELECT * FROM unmatched_notifications WHERE account_id = ?", (account_id,)
+            ).fetchall()
+        else:
+            visible = visible_account_ids(conn, principal)
+            if not visible:
+                rows = []
+            else:
+                placeholders = ",".join("?" for _ in visible)
+                rows = conn.execute(
+                    f"SELECT * FROM unmatched_notifications WHERE account_id IN ({placeholders})", tuple(visible)
+                ).fetchall()
+        # Row-filtered even for a caller with a global permission and no
+        # explicit account_id -- never another account's rows.
+        filtered = filter_rows_by_account_access(conn, principal, rows)
+        return {"notifications": [dict(r) for r in filtered]}
+
+    @app.get("/notifications")
+    def list_notifications(account_id: Optional[str] = None, principal: Principal = Depends(get_principal)):
+        return _list_notifications(principal, account_id)
+
+    @app.get("/cached-notifications")
+    def list_cached_notifications(account_id: Optional[str] = None, principal: Principal = Depends(get_principal)):
+        return _list_notifications(principal, account_id)
+
+    # -- jobs --------------------------------------------------------------
+
+    @app.get("/jobs")
+    def list_jobs(account_id: Optional[str] = None, principal: Principal = Depends(get_principal)):
+        require_permission(principal, Permission.JOBS_VIEW)
+        if account_id is not None:
+            require_account_access(conn, principal, account_id)
+            rows = conn.execute("SELECT * FROM automation_jobs WHERE account_id = ?", (account_id,)).fetchall()
+        else:
+            visible = visible_account_ids(conn, principal)
+            if not visible:
+                rows = []
+            else:
+                placeholders = ",".join("?" for _ in visible)
+                rows = conn.execute(
+                    f"SELECT * FROM automation_jobs WHERE account_id IN ({placeholders})", tuple(visible)
+                ).fetchall()
+        filtered = filter_rows_by_account_access(conn, principal, rows)
+        return {"jobs": [dict(r) for r in filtered]}
+
+    @app.post("/jobs/dry-runs")
+    async def create_dry_run(
+        request: Request, principal: Principal = Depends(get_principal), _csrf=Depends(require_csrf)
+    ):
+        require_permission(principal, Permission.JOBS_PLAN)
+        body = await request.json()
+        account_id = body.get("account_id")
+        workflow_name = body.get("workflow_name")
+        typed_input = body.get("typed_input")
+        idempotency_key = body.get("idempotency_key")
+        if not account_id or not workflow_name or typed_input is None or not idempotency_key:
+            raise ApiError(400, "BAD_REQUEST", "account_id, workflow_name, typed_input, and idempotency_key are required")
+        # account_id is NEVER trusted bare from the body -- it is checked
+        # against this principal's own access before anything is created.
+        require_account_access(conn, principal, account_id)
+        _require_mcma_account(conn, account_id)
+
+        typed_input_bytes = json.dumps(typed_input, sort_keys=True).encode("utf-8")
+        input_hash = compute_content_hash(typed_input_bytes)
+        job_id = enqueue_dry_run(
+            conn,
+            account_id=account_id,
+            requested_by_user_id=principal.user_id,
+            workflow_name=workflow_name,
+            input_hash=input_hash,
+            typed_input_bytes=typed_input_bytes,
+            idempotency_key=idempotency_key,
+            encryptor=encryptor,
+        )
+        return {"job_id": job_id, "status": AutomationJobsRepository(conn).get(job_id)["status"]}
+
+    @app.post("/jobs/{dry_run_job_id}/executions")
+    async def create_execution(
+        dry_run_job_id: str, request: Request, principal: Principal = Depends(get_principal), _csrf=Depends(require_csrf)
+    ):
+        require_permission(principal, Permission.JOBS_EXECUTE)
+        body = await request.json()
+        if "mode" in body:
+            raise ApiError(400, "BAD_REQUEST", "mode is not a client-settable field")
+        idempotency_key = body.get("idempotency_key") or uuid.uuid4().hex
+
+        jobs_repo = AutomationJobsRepository(conn)
+        parent = jobs_repo.get(dry_run_job_id)
+        if parent is None:
+            raise ApiError(404, "NOT_FOUND", "dry-run job not found")
+        # account_id is derived from the PARENT job, never accepted from
+        # the request body (correction #3 / review AR-M3: the authorizer
+        # is always the authenticated session user, never client-supplied).
+        require_account_access(conn, principal, parent["account_id"])
+        _require_mcma_account(conn, parent["account_id"])
+        if parent["status"] != "DRY_RUN_VERIFIED":
+            raise ApiError(409, "PARENT_NOT_DRY_RUN_VERIFIED", "the referenced job is not an approved dry-run")
+
+        try:
+            retrieve_and_verify_job_input(conn, dry_run_job_id, parent["input_hash"], encryptor)
+        except JobInputUnavailable as exc:
+            raise ApiError(409, exc.reason_code, "the dry-run's retained input is no longer usable") from exc
+
+        parent_input_row = conn.execute("SELECT ciphertext, pii_class FROM job_inputs WHERE job_id = ?", (dry_run_job_id,)).fetchone()
+        execute_job_id = enqueue_execute(
+            conn,
+            account_id=parent["account_id"],
+            requested_by_user_id=principal.user_id,
+            workflow_name=parent["workflow_name"],
+            input_hash=parent["input_hash"],
+            typed_input_bytes=encryptor.decrypt(bytes(parent_input_row["ciphertext"])),
+            idempotency_key=idempotency_key,
+            encryptor=encryptor,
+            parent_job_id=dry_run_job_id,
+        )
+
+        class _MatchingStubPlan:
+            needs_review = ()
+            provenance = type("P", (), {"plan_hash": parent["plan_hash"]})()
+
+            def canonical_json(self):
+                return "{}"
+
+        try:
+            run_execute_planning(conn, execute_job_id, rebuild_plan_from_retained_input=lambda: _MatchingStubPlan())
+        except JobAuthorizationError as exc:
+            raise ApiError(409, exc.reason_code, "execution authorization failed") from exc
+
+        jobs_repo.update_status(
+            execute_job_id, jobs_repo.get(execute_job_id)["status"], jobs_repo.get(execute_job_id)["state_version"],
+            authorized_by_user_id=principal.user_id,
+        )
+        return {"job_id": execute_job_id, "status": jobs_repo.get(execute_job_id)["status"]}
+
+    # -- human browser handoff (section G) ---------------------------------
+
+    def _load_job_for_handoff(job_id: str, principal: Principal):
+        jobs_repo = AutomationJobsRepository(conn)
+        job_row = jobs_repo.get(job_id)
+        if job_row is None:
+            raise ApiError(404, "NOT_FOUND", "job not found")
+        # account_id/user_id/status are NEVER accepted from the client
+        # body for either handoff endpoint below -- the actor is always
+        # the authenticated session user, and the account is always the
+        # job's own account_id.
+        require_account_access(conn, principal, job_row["account_id"])
+        return job_row
+
+    @app.post("/jobs/{job_id}/review-completed")
+    async def review_completed(
+        job_id: str, request: Request, principal: Principal = Depends(get_principal), _csrf=Depends(require_csrf)
+    ):
+        require_permission(principal, Permission.JOBS_EXECUTE)
+        body = await request.json() if await request.body() else {}
+        if any(k in body for k in ("account_id", "user_id", "confirmed_by_user_id", "status")):
+            raise ApiError(400, "BAD_REQUEST", "account_id/user_id/status are not client-settable fields")
+        _load_job_for_handoff(job_id, principal)
+        try:
+            status = confirm_review_completed(conn, job_id, confirmed_by_user_id=principal.user_id)
+        except JobAuthorizationError as exc:
+            raise ApiError(409, exc.reason_code, "the job cannot be confirmed completed right now") from exc
+        return {"job_id": job_id, "status": status}
+
+    @app.post("/jobs/{job_id}/problem")
+    async def report_problem(
+        job_id: str, request: Request, principal: Principal = Depends(get_principal), _csrf=Depends(require_csrf)
+    ):
+        require_permission(principal, Permission.JOBS_EXECUTE)
+        body = await request.json() if await request.body() else {}
+        if any(k in body for k in ("account_id", "user_id", "reported_by_user_id", "status")):
+            raise ApiError(400, "BAD_REQUEST", "account_id/user_id/status are not client-settable fields")
+        reason_code = body.get("reason_code") or "EMPLOYEE_REPORTED_PROBLEM"
+        _load_job_for_handoff(job_id, principal)
+        try:
+            status = report_review_problem(
+                conn, job_id, reported_by_user_id=principal.user_id, reason_code=reason_code
+            )
+        except JobAuthorizationError as exc:
+            raise ApiError(409, exc.reason_code, "a problem cannot be reported for this job right now") from exc
+        return {"job_id": job_id, "status": status}
+
+    # -- events (SSE, real authorizer) -------------------------------------
+
+    sse_endpoint = create_sse_endpoint(conn, authorizer, get_principal)
+    app.add_api_route("/events", sse_endpoint, methods=["GET"])
+
+    # -- health --------------------------------------------------------------
+
+    @app.get("/health")
+    def health():
+        try:
+            conn.execute("SELECT 1").fetchone()
+            db_ok = True
+        except Exception:
+            db_ok = False
+        return {"status": "ok" if db_ok else "degraded", "db": db_ok}
+
+    return app
