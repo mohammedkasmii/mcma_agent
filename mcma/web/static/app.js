@@ -750,7 +750,15 @@
       try {
         accounts = await fetchAccessibleAccounts(fetch);
         if (!accounts || accounts.length === 0) {
+          // Say so, rather than rendering an empty bar above an empty
+          // table and leaving the employee to guess.
           renderAccountBar(accountBarEl, [], null, function () {});
+          if (accountBarEl) {
+            accountBarEl.appendChild(el("span", "empty-state",
+              "Aucun compte accessible. Demandez l'accès à un administrateur."));
+          }
+          claims = [];
+          renderAll();
           return;
         }
         selectAccount(selectedAccountId || accounts[0].account_id);

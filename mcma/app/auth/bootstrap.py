@@ -95,6 +95,27 @@ def create_bootstrap_app(conn, *, token_store: Optional[BootstrapTokenStore] = N
             "INSERT INTO users (user_id, username, password_hash, role, active) VALUES (?, ?, ?, 'admin', 1)",
             (user_id, username, hash_password(password)),
         )
-        return {"user_id": user_id, "username": username}
+        # The first admin is granted every provisioned account.
+        #
+        # Without this the account was created with access to NOTHING:
+        # visible_account_ids() reads user_account_access, which was
+        # empty, so /accounts returned [] and the dashboard rendered with
+        # no accounts on it at all -- and since no endpoint grants access,
+        # there was no way out of that state short of editing the
+        # database by hand. A first admin who cannot see the office's own
+        # four accounts is not a usable starting state.
+        #
+        # This grants access to accounts that ALREADY EXIST (provisioning
+        # created them); it never creates a portal account, and it applies
+        # only to the single first admin -- every later user starts with
+        # no access and must be granted it explicitly.
+        granted = conn.execute("SELECT account_id FROM accounts").fetchall()
+        for row in granted:
+            conn.execute(
+                "INSERT OR IGNORE INTO user_account_access (user_id, account_id, granted_at) "
+                "VALUES (?, ?, ?)",
+                (user_id, row["account_id"], _utcnow().isoformat()),
+            )
+        return {"user_id": user_id, "username": username, "accounts": len(granted)}
 
     return app
