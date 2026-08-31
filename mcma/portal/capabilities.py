@@ -197,6 +197,55 @@ class LoginTimedOut(Exception):
     def __init__(self, account_id: str):
         super().__init__(f"manual login for account {account_id!r} timed out")
         self.account_id = account_id
+        self.reason = "LOGIN_TIMED_OUT"
+
+
+class LoginWindowClosed(Exception):
+    """The human closed the login window. A deliberate cancellation, not a
+    failure, and reported immediately rather than after the full
+    timeout."""
+
+    def __init__(self, account_id: str):
+        super().__init__(f"the login window for account {account_id!r} was closed")
+        self.account_id = account_id
+        self.reason = "LOGIN_WINDOW_CLOSED"
+
+
+class LoginProbeFailed(Exception):
+    """The logged-in probe failed for a reason that is neither a normal
+    navigation nor a closed window.
+
+    Carries only the ORIGINAL EXCEPTION'S TYPE NAME, never its message:
+    a browser error can quote page content, and this page is a login form
+    holding a username, a password and an OTP. The original is chained for
+    a local traceback and never reaches a caller's output."""
+
+    def __init__(self, account_id: str, cause_type: str):
+        super().__init__(f"login probe failed for account {account_id!r} ({cause_type})")
+        self.account_id = account_id
+        self.reason = f"LOGIN_PROBE_FAILED_{cause_type}"
+
+
+# Playwright raises plain Errors whose TYPE does not distinguish these
+# cases, so they are told apart by the fixed phrases its driver emits.
+# Matching on the message is not ideal; the alternative is treating a
+# routine page reload as a fatal login failure, which is what happened.
+_TRANSIENT_PROBE_PHRASES = (
+    "execution context was destroyed",
+    "cannot find context with specified id",
+    "execution context is not available",
+    "most likely because of a navigation",
+    "frame was detached",
+    "navigation",
+)
+
+_CLOSED_PROBE_PHRASES = (
+    "target closed",
+    "target page, context or browser has been closed",
+    "page has been closed",
+    "browser has been closed",
+    "context has been closed",
+)
 
 
 class LoginCapability:
@@ -230,22 +279,68 @@ class LoginCapability:
         sleep = sleep or asyncio.sleep
         elapsed = 0.0
         while True:
+            if self._page_is_closed():
+                # The human cancelled. Reported at once rather than after
+                # the remaining timeout.
+                raise LoginWindowClosed(self._account_id)
+
             if await self._is_logged_in():
+                # Session material is produced ONLY here, after the
+                # logged-in markers are positively present. A rejected
+                # password never reaches this line, so nothing partial is
+                # ever captured.
                 storage_state = await self._context.storage_state()
                 return SessionMaterial(self._account_id, storage_state)
+
             if elapsed >= timeout_seconds:
                 raise LoginTimedOut(self._account_id)
             await sleep(poll_interval_seconds)
             elapsed += poll_interval_seconds
 
+    def _page_is_closed(self) -> bool:
+        is_closed = getattr(self._page, "is_closed", None)
+        if is_closed is None:
+            return False
+        try:
+            return bool(is_closed())
+        except Exception:
+            return False
+
     async def _is_logged_in(self) -> bool:
-        return bool(await self._page.evaluate(_LOGGED_IN_MARKER_JS, list(LOGGED_IN_MARKERS)))
+        """Answers one question -- are the logged-in markers present -- and
+        treats a page that is mid-navigation as "not yet".
+
+        Submitting credentials navigates the page, which destroys the
+        JavaScript execution context this probe runs in. Letting that
+        exception escape ended the whole attempt: a mistyped password
+        closed the window and returned an error, when the employee should
+        simply have been able to try again. A rejected credential is the
+        expected case on a login form, not a fault."""
+        try:
+            return bool(await self._page.evaluate(_LOGGED_IN_MARKER_JS, list(LOGGED_IN_MARKERS)))
+        except Exception as exc:
+            if self._page_is_closed():
+                raise LoginWindowClosed(self._account_id) from exc
+            message = str(exc).lower()
+            if any(phrase in message for phrase in _CLOSED_PROBE_PHRASES):
+                raise LoginWindowClosed(self._account_id) from exc
+            if any(phrase in message for phrase in _TRANSIENT_PROBE_PHRASES):
+                # The page is loading; look again on the next tick.
+                return False
+            # Anything else is genuinely unexpected and is NOT swallowed.
+            raise LoginProbeFailed(self._account_id, type(exc).__name__) from exc
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        await self._context.close()
+        try:
+            await self._context.close()
+        except Exception:
+            # The human may already have closed the window; tearing down
+            # something that is gone is not an error worth raising over a
+            # real outcome that is being reported.
+            pass
 
 
 def portal_origin(allowed_host: str) -> str:

@@ -276,8 +276,11 @@ def create_api_app(
                 # wrong host, or closed the window -- and a bare 409 with
                 # no code makes a failure here undiagnosable.
                 reason = getattr(exc, "reason", None) or type(exc).__name__
+                # LOGIN_WINDOW_CLOSED and LOGIN_TIMED_OUT are outcomes of
+                # a login the employee saw, so they are reported as
+                # themselves rather than folded into one code.
                 raise ApiError(
-                    409, f"PORTAL_LOGIN_FAILED_{reason}",
+                    409, reason if reason.startswith("LOGIN_") else f"PORTAL_LOGIN_FAILED_{reason}",
                     "the portal login did not complete -- finish signing in "
                     "in the browser window that opened, then try again",
                 ) from exc

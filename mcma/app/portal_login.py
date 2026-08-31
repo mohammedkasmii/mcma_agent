@@ -86,9 +86,13 @@ async def capture_session_for_account(
         try:
             material = await login.perform_manual_login(timeout_seconds=timeout_seconds)
         except Exception as exc:
-            # Includes LoginTimedOut. The message deliberately carries no
-            # portal response text.
-            raise PortalLoginFailed("NOT_COMPLETED_" + type(exc).__name__) from exc
+            # A rejected password never arrives here -- perform_manual_
+            # login keeps waiting through it, so the window stays open and
+            # the employee retries. What does arrive is a real outcome:
+            # the window was closed, the timeout expired, or the probe
+            # failed unexpectedly. Each carries its own typed reason, and
+            # none of them carries portal text.
+            raise PortalLoginFailed(getattr(exc, "reason", None) or type(exc).__name__) from exc
         finally:
             await login.close()
 

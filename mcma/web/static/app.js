@@ -906,6 +906,15 @@
       if (reason === "BROWSER_UNAVAILABLE") {
         return "Le navigateur partagé n'a pas pu démarrer — redémarrez l'application";
       }
+      if (reason === "LOGIN_WINDOW_CLOSED") {
+        return "Fenêtre de connexion fermée.";
+      }
+      if (reason === "LOGIN_TIMED_OUT") {
+        return "Temps de connexion expiré.";
+      }
+      if (reason.indexOf("LOGIN_PROBE_FAILED") === 0) {
+        return "Erreur inattendue pendant la connexion — réessayez.";
+      }
       if (reason.indexOf("PORTAL_LOGIN_FAILED") === 0) {
         if (reason.indexOf("LoginTimedOut") !== -1) {
           return "Connexion " + label + " non terminée à temps dans le navigateur";
