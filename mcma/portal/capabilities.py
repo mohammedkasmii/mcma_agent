@@ -42,14 +42,14 @@ import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, Sequence, runtime_checkable
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from mcma.domain.enums import RepairWorkflow
 from mcma.portal.contracts import RouteContract
 from mcma.portal.final_endpoints import is_permanently_blocked
 from mcma.portal.identity import ObservedIdentity
 from mcma.portal.identity import observe_identity as _observe_identity
-from mcma.portal.session import open_guarded_context
+from mcma.portal.session import open_guarded_context, open_guarded_context_for_login
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from playwright.async_api import Browser
@@ -248,6 +248,28 @@ class LoginCapability:
         await self._context.close()
 
 
+def portal_origin(allowed_host: str) -> str:
+    """The origin to navigate to for `allowed_host`.
+
+    The scheme was hardcoded to http:// throughout this module, written
+    when the only reachable host was mock_server.py on loopback. Pointed
+    at the real portal that navigates to http://sinauto.mamda-mcma.ma,
+    which does not serve plain HTTP -- the page never loads, the
+    capability is closed, and the window the employee is looking at shuts
+    on about:blank with no explanation.
+
+    Loopback keeps http (the mock serves exactly that); every other host
+    is https, because a real portal carrying claimant data over plain
+    HTTP is not a case worth supporting. The guard itself is unaffected
+    either way: evaluate_request matches on host, path and method and
+    never on the scheme, so this changes where a request goes, never what
+    is permitted."""
+    hostname = urlsplit(f"//{allowed_host}").hostname
+    if hostname in ("127.0.0.1", "::1", "localhost"):
+        return f"http://{allowed_host}"
+    return f"https://{allowed_host}"
+
+
 async def open_login_session(
     browser: "Browser",
     account_id: str,
@@ -263,10 +285,13 @@ async def open_login_session(
     login_page_route = _find_single_navigation_route(
         frozen_contracts, capability="auth", operation_type=_LOGIN_PAGE_OPERATION_TYPE
     )
-    context = await open_guarded_context(browser, frozen_contracts, allowed_host, context_options)
+    # A human sign-in needs the portal's own login flow to work; see
+    # install_login_guard for exactly how that policy differs and what
+    # stays blocked.
+    context = await open_guarded_context_for_login(browser, allowed_host, context_options)
     try:
         page = await context.new_page()
-        await page.goto(f"http://{allowed_host}{login_page_route}")
+        await page.goto(f"{portal_origin(allowed_host)}{login_page_route}")
     except Exception:
         await context.close()
         raise
@@ -411,7 +436,7 @@ class ReadCapability:
             raise RuntimeError("ReadCapability is closed")
 
     def _absolute_url(self, path: str) -> str:
-        return f"http://{self._allowed_host}{path}"
+        return f"{portal_origin(self._allowed_host)}{path}"
 
     async def _fetch_json(self, route: str, payload: dict) -> dict:
         return await self._page.evaluate(_FETCH_JSON_JS, [self._absolute_url(route), payload])
@@ -535,7 +560,7 @@ async def open_reader(
     context = await open_guarded_context(browser, frozen_contracts, allowed_host, context_options)
     try:
         page = await context.new_page()
-        await page.goto(f"http://{allowed_host}{search_page_route}")
+        await page.goto(f"{portal_origin(allowed_host)}{search_page_route}")
     except Exception:
         await context.close()
         raise

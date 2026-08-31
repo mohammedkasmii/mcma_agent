@@ -134,6 +134,72 @@ async def install_portal_guard(
 
 
 # --------------------------------------------------------------------- #
+# Login guard (human-driven sign-in only)
+# --------------------------------------------------------------------- #
+# The contract-based default-deny above describes what the AGENT does: a
+# small, fixed set of routes it may call itself. A human signing in is a
+# different shape entirely -- the portal's login page loads its own
+# stylesheets, scripts, fonts and images, redirects at least once, and
+# then runs an OTP step, none of which can be enumerated in advance. Under
+# the agent's policy every one of those is denied, so the window opens on
+# a blank page and closes: the employee never gets a login form at all.
+#
+# So the login context uses its own, deliberately different policy:
+#
+#   * ONE host. Anything not on the login host is denied outright, exactly
+#     as before -- a compromised or mistyped host cannot be reached, and
+#     nothing can be exfiltrated to a third party.
+#   * The permanently-blocked final endpoints stay blocked, unconditionally
+#     (Valider, Cloture, Enregistrer, GED, ...). Even a human driving this
+#     browser cannot reach them THROUGH THIS APPLICATION.
+#   * Within those two limits, the portal's own login flow is allowed to
+#     work.
+#
+# What this does NOT do is give any capability a new power. LoginCapability
+# still exposes only perform_manual_login() and close(): no navigation to
+# an arbitrary URL, no form filling, no credential argument, no mission
+# page, and no route to a writer. The widened policy applies to the pages
+# the HUMAN loads in a visible window, not to anything the agent can drive.
+
+
+def _make_login_route_handler(allowed_host: str):
+    async def handler(route: "Route") -> None:
+        request = route.request
+        try:
+            canonical = _canonical_or_none(request)
+            if canonical is None:
+                allow = False
+            elif is_permanently_blocked(canonical.path):
+                allow = False
+            else:
+                allow = canonical.host == allowed_host
+        except Exception:
+            await _abort_never_raising(route)
+            return
+        try:
+            if allow:
+                await route.continue_()
+            else:
+                await route.abort(_POLICY_DENY_ERROR)
+        except Exception:
+            await _abort_never_raising(route)
+
+    return handler
+
+
+async def install_login_guard(context: "BrowserContext", allowed_host: str) -> None:
+    """Same failure discipline as install_portal_guard: on any failure the
+    context is closed before the exception propagates, so a partially
+    guarded context can never remain usable."""
+    try:
+        await context.route("**/*", _make_login_route_handler(allowed_host))
+        await context.route_web_socket("**/*", _deny_websocket)
+    except Exception:
+        await context.close()
+        raise
+
+
+# --------------------------------------------------------------------- #
 # WriterPolicyController -- explicit-phase, one-way policy state machine
 # (INC-09B amendment #1). This is an INTERNAL BUILDING BLOCK for
 # mcma.portal.writer's own construction sequence, not a general-purpose

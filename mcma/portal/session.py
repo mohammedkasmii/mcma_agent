@@ -13,6 +13,7 @@ from mcma.portal.contracts import RouteContract
 from mcma.portal.interception import (
     WriterPolicyController,
     hardened_context_options,
+    install_login_guard,
     install_phased_portal_guard,
     install_portal_guard,
 )
@@ -41,6 +42,21 @@ async def open_guarded_context(
     options = hardened_context_options(context_options)
     context = await browser.new_context(**options)
     await install_portal_guard(context, frozen_contracts, allowed_host)
+    return context
+
+
+async def open_guarded_context_for_login(
+    browser: "Browser",
+    allowed_host: str,
+    context_options: dict | None = None,
+) -> "BrowserContext":
+    """For LoginCapability only. Same hardened context options as every
+    other capability; the difference is the policy installed on it, which
+    permits the portal's own sign-in flow on ONE host while keeping every
+    final endpoint permanently blocked (see install_login_guard)."""
+    options = hardened_context_options(context_options)
+    context = await browser.new_context(**options)
+    await install_login_guard(context, allowed_host)
     return context
 
 
