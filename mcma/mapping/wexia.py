@@ -116,6 +116,13 @@ class WexiaChiffrage(_Base):
     total_cost: Optional[Decimal] = None
     tax_amount: Optional[Decimal] = None
     final_cost: Optional[Decimal] = None
+    # The detailed HT breakdown. Stronger evidence of HT than the
+    # ambiguously named total_cost, because every real sample satisfies
+    # line sum == total_parts_cost + total_labor_cost while total_cost
+    # means HT in some payloads and TTC in others. Missing stays None:
+    # absence is not zero.
+    total_parts_cost: Optional[Decimal] = None
+    total_labor_cost: Optional[Decimal] = None
     # Explicit archival marker. archive_cycle is modelled for fidelity but
     # is NOT proof of archival on its own -- archived_at is the marker
     # that says a version was retired.
@@ -124,7 +131,11 @@ class WexiaChiffrage(_Base):
     lignes_pieces: List[WexiaPieceLine] = Field(default_factory=list)
     lignes_mo: List[WexiaMoLine] = Field(default_factory=list)
 
-    @field_validator("total_cost", "tax_amount", "final_cost", mode="before")
+    @field_validator(
+        "total_cost", "tax_amount", "final_cost",
+        "total_parts_cost", "total_labor_cost",
+        mode="before",
+    )
     @classmethod
     def _decimals(cls, v):
         return _to_optional_decimal(v)

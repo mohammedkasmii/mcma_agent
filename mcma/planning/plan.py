@@ -249,6 +249,67 @@ def _detect_mode_fail_closed(dossier) -> str:
     return "conventionne" if explicit_conv else "normal"
 
 
+def _validate_chiffrage_totals(chiffrage, ht_sum: Decimal) -> None:
+    """Checks the mapped HT against the chiffrage's own aggregates.
+
+    total_cost cannot be trusted to mean one thing. Real payloads use it
+    BOTH ways: in most, total_cost is HT and final_cost is HT + tax; in
+    others total_cost equals final_cost, i.e. TTC. Treating it as HT
+    everywhere rejects coherent dossiers, and quietly ignoring it when it
+    disagrees would drop the only cross-check on the total.
+
+    So the shape is decided by ARITHMETIC, never by document_type,
+    scenario_type, status, filename or anything else about the dossier's
+    identity. total_cost is accepted when it equals HT, or when it equals
+    a final_cost that has itself been proven to equal HT + tax. Anything
+    else fails closed."""
+    parts = chiffrage.total_parts_cost
+    labour = chiffrage.total_labor_cost
+
+    if (parts is None) != (labour is None):
+        # One half of a breakdown says nothing. Treating the missing side
+        # as zero would silently validate against a wrong HT.
+        raise PlanBuildError(
+            "chiffrage has only one of total_parts_cost/total_labor_cost — "
+            "absent is not zero, fail closed"
+        )
+
+    if parts is not None and labour is not None:
+        aggregate_ht = Money.of(parts).amount + Money.of(labour).amount
+        if abs(ht_sum - aggregate_ht) > _CENT:
+            raise PlanBuildError(
+                f"HT sum {ht_sum} differs from total_parts_cost + total_labor_cost "
+                f"{aggregate_ht} by > 0.01"
+            )
+    else:
+        # Legacy payloads carry no breakdown; total_cost is HT there, which
+        # is the rule this validation has always applied.
+        aggregate_ht = None
+
+    tva = Money.of(chiffrage.tax_amount).amount
+    total_cost = Money.of(chiffrage.total_cost).amount
+
+    proven_ttc = None
+    if chiffrage.final_cost is not None:
+        final_cost = Money.of(chiffrage.final_cost).amount
+        if abs((ht_sum + tva) - final_cost) > _CENT:
+            raise PlanBuildError(
+                f"HT {ht_sum} + TVA {tva} differs from final_cost {final_cost} by > 0.01"
+            )
+        proven_ttc = final_cost
+
+    if abs(total_cost - ht_sum) <= _CENT:
+        return                                   # Shape A: total_cost is HT
+    if proven_ttc is not None and abs(total_cost - proven_ttc) <= _CENT:
+        return                                   # Shape B: total_cost is TTC
+    # Shape B is never inferred from total_cost merely differing from HT --
+    # without final_cost there is nothing proving what it would be.
+    raise PlanBuildError(
+        f"chiffrage total_cost {total_cost} matches neither HT {ht_sum} nor a "
+        f"proven TTC (final_cost={chiffrage.final_cost!r}) — fail closed"
+    )
+
+
 def _glass_operation_evidence(line) -> str:
     """Every field that can state the operation, joined.
 
@@ -486,11 +547,7 @@ def _build_plan_core(typed_input, expected_workflow: RepairWorkflow) -> Proposed
     # line mapped; with reviews present the plan is non-writeable anyway.
     if not reviews:
         ht_sum = sum((entry["ht"].amount for _, entry in ordered), Decimal("0"))
-        target_ht = Money.of(chiffrage.total_cost).amount
-        if abs(ht_sum - target_ht) > _CENT:
-            raise PlanBuildError(
-                f"HT sum {ht_sum} differs from chiffrage total_cost {target_ht} by > 0.01"
-            )
+        _validate_chiffrage_totals(chiffrage, ht_sum)
 
     line_hts = [entry["ht"] for _, entry in ordered]
     tva_result = tva_allocation_result(line_hts, Money.of(chiffrage.tax_amount))
