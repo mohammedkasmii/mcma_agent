@@ -19,7 +19,12 @@ account free again after release).
 import pytest
 
 from mcma.execution.browser_handoff import ActiveReviewRegistry
-from mcma.execution.jobs import enqueue_dry_run, enqueue_execute, run_execute_planning
+from mcma.execution.jobs import (
+    confirm_review_completed,
+    enqueue_dry_run,
+    enqueue_execute,
+    run_execute_planning,
+)
 from mcma.execution.runner import (
     RunnerConfig,
     _rebuild_plan,
@@ -230,9 +235,23 @@ def test_execute_reaches_ready_for_human_review_and_registers_with_the_review_re
     run_async(_run())
 
 
-def test_browser_close_after_ready_moves_to_awaiting_confirmation_and_releases_the_lease(
+def test_browser_close_after_ready_awaits_confirmation_and_keeps_the_lease_held(
     conn, vault_dir, crypto_backend, encryptor, live_mock_server
 ):
+    """Pilot-runner correction (requirement 5): closing the review window
+    is NOT the end of the handoff. This test previously asserted the
+    opposite -- that the lease was free again the instant the employee
+    closed the browser -- because the runner's own _on_close called
+    lease.release() unconditionally after transition_on_browser_closed,
+    overriding that function's documented contract ("deliberately NOT on
+    the AWAITING_HUMAN_CONFIRMATION path -- it stays held until
+    confirm_review_completed/report_review_problem so no second job can
+    concurrently use the same shared portal account while a human is
+    still mid-review"). Releasing at close reopens exactly the window
+    section 4 exists to prevent: the employee has closed the window but
+    has not yet confirmed, and a second job could take the account while
+    the first job's outcome is still unrecorded. The lease is now
+    surrendered only by the explicit human action."""
     seed_mcma_oujda_session(conn, vault_dir, crypto_backend)
     execute_job_id = _execute_job_planned(conn, encryptor, typed_input=PEC_TYPED_INPUT, key="exec-pec")
     cfg = _cfg(vault_dir, crypto_backend)
@@ -254,8 +273,15 @@ def test_browser_close_after_ready_moves_to_awaiting_confirmation_and_releases_t
 
     run_async(_run())
     assert AutomationJobsRepository(conn).get(execute_job_id)["status"] == "AWAITING_HUMAN_CONFIRMATION"
-    # Positive control: the lease is free again immediately (never left
-    # held past the human handoff it was released on).
-    lease = acquire_lease(conn, MCMA_OUJDA_ACCOUNT_ID, "another-instance")
-    lease.release()
+    # The review session itself is over -- the window is gone.
     assert not cfg.active_review_registry.is_account_active(MCMA_OUJDA_ACCOUNT_ID)
+    # But the account is still this job's until a human says otherwise.
+    with pytest.raises(LeaseNotHeld):
+        acquire_lease(conn, MCMA_OUJDA_ACCOUNT_ID, "another-instance")
+
+    # Positive control: the explicit human action IS what frees it.
+    assert confirm_review_completed(
+        conn, execute_job_id, confirmed_by_user_id="operator-1"
+    ) == "HUMAN_CONFIRMED_COMPLETE"
+    freed = acquire_lease(conn, MCMA_OUJDA_ACCOUNT_ID, "another-instance")
+    freed.release()
