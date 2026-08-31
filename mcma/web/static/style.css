@@ -239,6 +239,122 @@ button[disabled] { opacity: 0.5; cursor: not-allowed; }
   max-width: 58ch;
 }
 
+/* -- account tabs ------------------------------------------------------ */
+/* Four accounts, two entities. The employee is always working inside
+   exactly one of them, so the selected tab is the only element here
+   carrying the seal colour. */
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0 0 1rem;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 0.6rem;
+}
+
+.tab {
+  background: var(--card);
+  color: var(--ink-soft);
+  border: 1px solid var(--rule);
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.4rem 0.85rem;
+  align-self: auto;
+}
+
+.tab:hover { border-color: #b9c7bf; color: var(--ink); }
+
+.tab-selected,
+.tab-selected:hover {
+  background: var(--seal);
+  border-color: var(--seal);
+  color: #ffffff;
+}
+
+/* -- claims ------------------------------------------------------------ */
+
+.claims { list-style: none; margin: 0; padding: 0; }
+
+.claim-row {
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.claim-row:last-child { border-bottom: none; }
+
+.claim-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.claim-reference { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.claim-pill {
+  font-size: 0.72rem;
+  font-weight: 700;
+  border-radius: 2px;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid;
+  white-space: nowrap;
+}
+
+/* Status colours are semantic, not decorative: only WAITING borrows the
+   handoff accent, because it means the same thing there -- someone
+   outside this app has to act before the claim can move. */
+.claim-pill-NEW            { color: var(--seal);  background: #e8f0ec; border-color: #c2d8ce; }
+.claim-pill-IN_PROGRESS    { color: #1d4f8c;      background: #e8eef7; border-color: #c3d3e8; }
+.claim-pill-WAITING        { color: var(--hand);  background: var(--hand-wash); border-color: #e2c9a4; }
+.claim-pill-DONE           { color: #2f6b3a;      background: #e9f2ea; border-color: #c6ddc9; }
+.claim-pill-NOT_APPLICABLE { color: var(--ink-soft); background: #eef0ee; border-color: var(--rule); }
+
+.claim-meta {
+  display: flex;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+  margin-top: 0.2rem;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.claim-matricule { font-variant-numeric: tabular-nums; }
+
+.claim-categories {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin-top: 0.4rem;
+}
+
+.claim-category {
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+  background: #eef0ee;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.05rem 0.4rem;
+}
+
+.claim-controls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+}
+
+.claim-status-select { flex: 0 0 auto; }
+.claim-note-input { flex: 1 1 16rem; }
+.claim-save { align-self: auto; padding: 0.45rem 0.9rem; }
+
+.claim-saved {
+  font-size: 0.8rem;
+  color: var(--ink-soft);
+  min-width: 4.5rem;
+}
+
 /* -- notifications ----------------------------------------------------- */
 
 .notifications { list-style: none; margin: 0; padding: 0; }

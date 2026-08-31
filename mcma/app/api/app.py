@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timezone
 
 from pydantic import ValidationError
 from typing import Optional
@@ -48,6 +49,7 @@ from mcma.execution.jobs import (
 from mcma.mapping.wexia import parse_wexia
 from mcma.planning.plan import PlanBuildError, detect_workflow
 from mcma.planning.registry import default_registry, workflow_name_for
+from mcma.persistence.repositories.audit import EmployeeActionsRepository
 from mcma.persistence.repositories.accounts import AccountsRepository
 from mcma.persistence.repositories.jobs import AutomationJobsRepository
 
@@ -199,6 +201,126 @@ def create_api_app(
     @app.get("/cached-notifications")
     def list_cached_notifications(account_id: Optional[str] = None, principal: Principal = Depends(get_principal)):
         return _list_notifications(principal, account_id)
+
+    # -- claims: the employee's working list -------------------------------
+    # An employee opens one account (MCMA Oujda, MAMDA Nador, ...) and works
+    # through its claims one at a time, recording where each one stands and
+    # why. SinAuto itself offers nowhere to keep that, which is the problem
+    # this list exists to solve.
+    #
+    # employee_actions is append-only and versioned: correcting a note adds a
+    # row, never rewrites one, so "who said what, when" survives. The current
+    # state of a claim is simply its highest-version row.
+
+    CLAIM_STATUSES = frozenset({"NEW", "IN_PROGRESS", "WAITING", "DONE", "NOT_APPLICABLE"})
+
+    _CLAIMS_SELECT = (
+        "SELECT c.claim_pk, c.account_id, c.portal_claim_id, c.reference, c.insured, "
+        "c.police, c.matricule_norm, c.last_seen_version, "
+        "a.entity AS account_entity, a.scope AS account_scope, a.label AS account_label "
+        "FROM claims c JOIN accounts a ON a.account_id = c.account_id"
+    )
+
+    def _latest_actions_by_claim(claim_pks):
+        """One query for the whole page rather than one per claim."""
+        if not claim_pks:
+            return {}
+        placeholders = ",".join("?" for _ in claim_pks)
+        rows = conn.execute(
+            "SELECT e.claim_pk, e.status, e.note, e.actor_user_id, e.updated_at, e.version "
+            f"FROM employee_actions e WHERE e.claim_pk IN ({placeholders}) ORDER BY e.version",
+            tuple(claim_pks),
+        ).fetchall()
+        latest = {}
+        for row in rows:
+            latest[row["claim_pk"]] = dict(row)   # ordered by version, so last wins
+        return latest
+
+    def _categories_by_claim(claim_pks):
+        """Which alert categories each claim is currently present in -- the
+        portal's own reason for surfacing it."""
+        if not claim_pks:
+            return {}
+        placeholders = ",".join("?" for _ in claim_pks)
+        rows = conn.execute(
+            "SELECT p.claim_pk, p.category_code, c.label FROM category_presence p "
+            "LEFT JOIN categories c ON c.code_alerte = p.category_code "
+            f"WHERE p.claim_pk IN ({placeholders}) AND p.present = 1",
+            tuple(claim_pks),
+        ).fetchall()
+        by_claim = {}
+        for row in rows:
+            by_claim.setdefault(row["claim_pk"], []).append(row["label"] or row["category_code"])
+        return by_claim
+
+    @app.get("/claims")
+    def list_claims(account_id: Optional[str] = None, principal: Principal = Depends(get_principal)):
+        require_permission(principal, Permission.NOTIFICATIONS_READ)
+        if account_id is not None:
+            require_account_access(conn, principal, account_id)
+            rows = conn.execute(f"{_CLAIMS_SELECT} WHERE c.account_id = ?", (account_id,)).fetchall()
+        else:
+            visible = visible_account_ids(conn, principal)
+            if not visible:
+                rows = []
+            else:
+                placeholders = ",".join("?" for _ in visible)
+                rows = conn.execute(
+                    f"{_CLAIMS_SELECT} WHERE c.account_id IN ({placeholders})", tuple(visible)
+                ).fetchall()
+        # Row-filtered even for a caller holding a global permission and
+        # passing no account_id -- never another account's claims.
+        filtered = filter_rows_by_account_access(conn, principal, rows)
+        claim_pks = [r["claim_pk"] for r in filtered]
+        actions = _latest_actions_by_claim(claim_pks)
+        categories = _categories_by_claim(claim_pks)
+
+        claims = []
+        for row in filtered:
+            claim = dict(row)
+            action = actions.get(claim["claim_pk"])
+            claim["status"] = action["status"] if action else "NEW"
+            claim["note"] = action["note"] if action else None
+            claim["updated_at"] = action["updated_at"] if action else None
+            claim["categories"] = categories.get(claim["claim_pk"], [])
+            claims.append(claim)
+        return {"claims": claims}
+
+    @app.post("/claims/{claim_pk}/action")
+    async def set_claim_action(
+        claim_pk: str, request: Request, principal: Principal = Depends(get_principal),
+        _csrf=Depends(require_csrf),
+    ):
+        require_permission(principal, Permission.NOTIFICATIONS_UPDATE)
+        row = conn.execute("SELECT account_id FROM claims WHERE claim_pk = ?", (claim_pk,)).fetchone()
+        if row is None:
+            raise ApiError(404, "CLAIM_NOT_FOUND", "no such claim")
+        # The claim's OWN account decides access -- never a client-supplied one.
+        require_account_access(conn, principal, row["account_id"])
+
+        body = await request.json() if await request.body() else {}
+        status = body.get("status")
+        note = body.get("note")
+        if status not in CLAIM_STATUSES:
+            raise ApiError(400, "BAD_REQUEST", "status must be one of: " + ", ".join(sorted(CLAIM_STATUSES)))
+        if note is not None and not isinstance(note, str):
+            raise ApiError(400, "BAD_REQUEST", "note must be text")
+        if note is not None and len(note) > 2000:
+            raise ApiError(400, "BAD_REQUEST", "note is too long (2000 characters maximum)")
+
+        previous = conn.execute(
+            "SELECT MAX(version) AS v FROM employee_actions WHERE claim_pk = ?", (claim_pk,)
+        ).fetchone()
+        version = (previous["v"] or 0) + 1
+        EmployeeActionsRepository(conn).create(
+            uuid.uuid4().hex, claim_pk, status,
+            # The actor is the authenticated principal, never a body field.
+            actor_user_id=principal.user_id,
+            updated_at=datetime.now(timezone.utc).isoformat(),
+            version=version,
+            note=note,
+        )
+        return {"claim_pk": claim_pk, "status": status, "note": note, "version": version}
 
     # -- jobs --------------------------------------------------------------
 

@@ -58,6 +58,122 @@
     return row;
   }
 
+  // ----------------------------------------------------------------- //
+  // Claims -- the employee's working list for ONE account at a time.
+  // Every node is built with createElement/textContent, never innerHTML:
+  // claim references, insured names and notes are portal-supplied or
+  // employee-typed text and must never be parsed as markup.
+  // ----------------------------------------------------------------- //
+
+  var CLAIM_STATUSES = ["NEW", "IN_PROGRESS", "WAITING", "DONE", "NOT_APPLICABLE"];
+  var CLAIM_STATUS_LABELS = {
+    NEW: "New",
+    IN_PROGRESS: "In progress",
+    WAITING: "Waiting",
+    DONE: "Done",
+    NOT_APPLICABLE: "Not applicable"
+  };
+
+  function renderClaimRow(claim, onSave) {
+    var row = el("li", "claim-row");
+
+    var head = el("div", "claim-head");
+    head.appendChild(el("span", "claim-reference", claim.reference || claim.portal_claim_id || "(no reference)"));
+    var pill = el("span", "claim-pill claim-pill-" + (claim.status || "NEW"),
+                  CLAIM_STATUS_LABELS[claim.status] || claim.status || "New");
+    head.appendChild(pill);
+    row.appendChild(head);
+
+    if (claim.insured || claim.matricule_norm) {
+      var meta = el("div", "claim-meta");
+      if (claim.insured) meta.appendChild(el("span", "claim-insured", claim.insured));
+      if (claim.matricule_norm) meta.appendChild(el("span", "claim-matricule", claim.matricule_norm));
+      row.appendChild(meta);
+    }
+
+    if (claim.categories && claim.categories.length) {
+      var cats = el("div", "claim-categories");
+      claim.categories.forEach(function (label) {
+        cats.appendChild(el("span", "claim-category", label));
+      });
+      row.appendChild(cats);
+    }
+
+    var controls = el("div", "claim-controls");
+
+    var select = document.createElement("select");
+    select.className = "claim-status-select";
+    select.setAttribute("aria-label", "Status");
+    CLAIM_STATUSES.forEach(function (value) {
+      var option = document.createElement("option");
+      option.value = value;
+      setText(option, CLAIM_STATUS_LABELS[value]);
+      if (value === (claim.status || "NEW")) option.selected = true;
+      select.appendChild(option);
+    });
+    controls.appendChild(select);
+
+    var noteInput = document.createElement("input");
+    noteInput.type = "text";
+    noteInput.className = "claim-note-input";
+    noteInput.maxLength = 2000;
+    noteInput.placeholder = "Add a note";
+    noteInput.value = claim.note || "";
+    noteInput.setAttribute("aria-label", "Note");
+    controls.appendChild(noteInput);
+
+    var saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "primary claim-save";
+    setText(saveBtn, "Save");
+    controls.appendChild(saveBtn);
+
+    var saved = el("span", "claim-saved", "");
+    controls.appendChild(saved);
+    row.appendChild(controls);
+
+    saveBtn.addEventListener("click", async function () {
+      saveBtn.disabled = true;
+      setText(saved, "Saving...");
+      var ok = await onSave(claim.claim_pk, select.value, noteInput.value);
+      saveBtn.disabled = false;
+      if (ok) {
+        setText(saved, "Saved");
+        setText(pill, CLAIM_STATUS_LABELS[select.value] || select.value);
+        pill.className = "claim-pill claim-pill-" + select.value;
+      } else {
+        setText(saved, "Not saved");
+      }
+    });
+
+    return row;
+  }
+
+  function renderClaimList(container, claims, onSave) {
+    container.textContent = "";
+    if (!claims || claims.length === 0) {
+      container.appendChild(el("li", "empty-state", "No claims for this account yet."));
+      return;
+    }
+    claims.forEach(function (claim) {
+      container.appendChild(renderClaimRow(claim, onSave));
+    });
+  }
+
+  function renderAccountTabs(container, accounts, selectedId, onSelect) {
+    container.textContent = "";
+    accounts.forEach(function (account) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "tab" + (account.account_id === selectedId ? " tab-selected" : "");
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-selected", account.account_id === selectedId ? "true" : "false");
+      setText(button, (account.entity || "?") + " " + (account.scope || "?"));
+      button.addEventListener("click", function () { onSelect(account.account_id); });
+      container.appendChild(button);
+    });
+  }
+
   function renderNotificationList(container, notifications) {
     container.textContent = ""; // clear without innerHTML
     if (!notifications || notifications.length === 0) {
@@ -210,6 +326,11 @@
   // Authenticated + CSRF-protected action calls
   // ----------------------------------------------------------------- //
 
+  async function saveClaimAction(fetchImpl, claimPk, status, note) {
+    return postAction(fetchImpl, "/claims/" + encodeURIComponent(claimPk) + "/action",
+                      { status: status, note: note });
+  }
+
   function readCsrfCookie() {
     var match = document.cookie.match(/(?:^|; )mcma_csrf=([^;]*)/);
     return match ? decodeURIComponent(match[1]) : "";
@@ -356,19 +477,59 @@
     var currentJobId = null;
     var pollTimer = null;
 
-    async function refreshNotifications() {
-      if (!notificationsEl) return;
+    // One account at a time: the employee opens MCMA Oujda (or any of the
+    // four) and works down its claims. Loading every account at once was
+    // the old behaviour and gave no way to tell whose work was whose.
+    var selectedAccountId = null;
+    var accountTabsEl = document.getElementById("account-tabs");
+
+    async function saveClaim(claimPk, status, note) {
+      var response = await saveClaimAction(fetch, claimPk, status, note);
+      return !!(response && response.ok);
+    }
+
+    async function refreshClaims() {
+      if (!notificationsEl || !selectedAccountId) return;
       renderLoadingState(notificationsEl);
       try {
-        var response = await fetch("/notifications", { credentials: "include" });
+        var response = await fetch("/claims?account_id=" + encodeURIComponent(selectedAccountId),
+                                   { credentials: "include" });
         if (!response.ok) {
-          renderErrorState(notificationsEl, "Could not load notifications (HTTP " + response.status + ")");
+          renderErrorState(notificationsEl, "Could not load claims (HTTP " + response.status + ")");
           return;
         }
         var data = await response.json();
-        renderNotificationList(notificationsEl, data.notifications);
+        renderClaimList(notificationsEl, data.claims, saveClaim);
       } catch (err) {
-        renderErrorState(notificationsEl, "Could not load notifications -- check connection");
+        renderErrorState(notificationsEl, "Could not load claims -- check connection");
+      }
+    }
+
+    function selectAccount(accountId, accounts) {
+      selectedAccountId = accountId;
+      if (accountTabsEl) {
+        renderAccountTabs(accountTabsEl, accounts, selectedAccountId, function (id) {
+          selectAccount(id, accounts);
+        });
+      }
+      refreshClaims();
+    }
+
+    async function refreshNotifications() {
+      if (!accountTabsEl) return;
+      try {
+        var accounts = await fetchAccessibleAccounts(fetch);
+        if (!accounts || accounts.length === 0) {
+          accountTabsEl.textContent = "";
+          if (notificationsEl) {
+            notificationsEl.textContent = "";
+            notificationsEl.appendChild(el("li", "empty-state", "No accounts are available to you."));
+          }
+          return;
+        }
+        selectAccount(selectedAccountId || accounts[0].account_id, accounts);
+      } catch (err) {
+        if (notificationsEl) renderErrorState(notificationsEl, "Could not load accounts -- check connection");
       }
     }
 
