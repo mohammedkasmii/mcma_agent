@@ -32,7 +32,7 @@ from mcma.domain.rubriques import (
     resolve_explicit_rubrique,
 )
 from mcma.domain.enums import FormFieldSelector, RepairWorkflow
-from mcma.domain.values import IdSinistre, InsurerReference, RegistrationPlate, RubriqueId
+from mcma.domain.values import FormFieldIntent, IdSinistre, InsurerReference, RegistrationPlate, RubriqueId
 
 # ---------------------------------------------------------------------------
 # Non-table header fields (correction batch, section J) -- evidence matrix
@@ -133,29 +133,11 @@ class RowOp:
             raise ValueError("RowOp source pointer cannot be empty")
 
 
-@dataclass(frozen=True)
-class FormFieldIntent:
-    """One non-table header-field write (correction batch, section J).
-    `selector` is drawn from the FIXED FormFieldSelector enum -- never a
-    caller-supplied string, so a plan can never name an arbitrary DOM id.
-    Bound to AuthorizedExecution exactly like RowOp: it is plan data,
-    consumed only inside a VerifiedMissionWriter reachable solely through
-    the authorized EXECUTE path (mcma.execution.jobs.run_execute_write) --
-    this module never touches a browser itself. Never a
-    charge-mutuelle/sociétaire or final-action field (structurally
-    impossible: FormFieldSelector's fixed member list contains neither)."""
-
-    selector: FormFieldSelector
-    value: str
-    applicable_workflows: Tuple[RepairWorkflow, ...]
-
-    def __post_init__(self):
-        if not isinstance(self.selector, FormFieldSelector):
-            raise TypeError("FormFieldIntent.selector must be a FormFieldSelector")
-        if not isinstance(self.value, str) or not self.value:
-            raise ValueError("FormFieldIntent.value must be a non-empty string")
-        if not self.applicable_workflows:
-            raise ValueError("FormFieldIntent requires at least one applicable workflow")
+# FormFieldIntent moved to mcma.domain.values (pilot-integration
+# correction) so mcma.portal.writer can consume it too without violating
+# "persistence/portal may import only domain and core" -- re-exported
+# here for backward compatibility (existing imports of
+# `from mcma.planning.plan import FormFieldIntent` keep working).
 
 
 @dataclass(frozen=True)

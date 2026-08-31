@@ -434,6 +434,27 @@ HTML_TEMPLATE = """
             <label><input type="checkbox" id="DevisTvaRecupI" checked> TVA Recuperable</label>
         </fieldset>
 
+        <!-- Correction batch (pilot-integration, section 7): the five
+             recovered non-table header fields (PORTAL_CONTRACT.md §4-5)
+             this project has confirmed evidence for -- shared across both
+             workflows regardless of mode, per that same section. -->
+        <fieldset>
+            <legend>Informations vehicule / mission</legend>
+            <label>Kilometrage:</label> <input type="text" id="Kilometrage" value="0">
+            <label>Valeur Venale:</label> <input type="text" id="ValeurVenale" value="0">
+            <label>Valeur Venale Estimee:</label> <input type="text" id="ValeurVenaleEstime" value="0">
+            <label>Nbre Jour Immobilisation:</label> <input type="text" id="NbreJourImmobilisation" value="0">
+            <label>Part Responsabilite:</label>
+            <select id="PartResponsabilite">
+                <option value="0">0</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+            </select>
+            <br><br>
+            <label>Observation Mission:</label><br>
+            <textarea id="ObservationMission" rows="3" cols="60"></textarea>
+        </fieldset>
+
         <!-- ================= GARAGE CONVENTIONNE / PEC ================= -->
         <div id="sectionGarageConventionne">
             <fieldset>

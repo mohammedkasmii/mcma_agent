@@ -94,8 +94,8 @@ from typing import NoReturn, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 from mcma.core.money import Money
-from mcma.domain.enums import RepairWorkflow
-from mcma.domain.values import RubriqueId
+from mcma.domain.enums import FormFieldSelector, RepairWorkflow
+from mcma.domain.values import FormFieldIntent, RubriqueId
 from mcma.portal.capabilities import LeaseHandle, SearchIdentifiers
 from mcma.portal.contracts import RouteContract, contracts_for_workflow
 from mcma.portal.final_endpoints import is_permanently_blocked
@@ -150,6 +150,11 @@ class WriterPlanData:
 
     repair_workflow: RepairWorkflow
     row_intents: Tuple[PortalRowIntent, ...]
+    # Correction batch (section 7, pilot-integration): the five
+    # confirmed non-table header fields for THIS workflow. Empty by
+    # default -- existing callers/tests that never plan a form field are
+    # unaffected.
+    form_field_intents: Tuple[FormFieldIntent, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.repair_workflow, RepairWorkflow):
@@ -163,6 +168,23 @@ class WriterPlanData:
             if intent.rubrique_id in seen:
                 raise ValueError("duplicate rubrique_id in WriterPlanData")
             seen.add(intent.rubrique_id)
+
+        form_field_intents = tuple(self.form_field_intents)
+        object.__setattr__(self, "form_field_intents", form_field_intents)
+        if not all(isinstance(i, FormFieldIntent) for i in form_field_intents):
+            raise TypeError("WriterPlanData.form_field_intents must contain only FormFieldIntent")
+        seen_selectors: set = set()
+        for intent in form_field_intents:
+            if intent.selector in seen_selectors:
+                raise ValueError("duplicate FormFieldSelector in WriterPlanData")
+            seen_selectors.add(intent.selector)
+            # Workflow applicability explicit (section 7 design
+            # requirement): a field planned for a DIFFERENT workflow than
+            # this WriterPlanData's own can never silently reach the DOM.
+            if self.repair_workflow not in intent.applicable_workflows:
+                raise ValueError(
+                    f"FormFieldIntent {intent.selector!r} is not applicable to {self.repair_workflow!r}"
+                )
 
     def intent_for(self, rubrique_id: RubriqueId) -> Optional[PortalRowIntent]:
         for intent in self.row_intents:
@@ -1016,6 +1038,64 @@ class VerifiedMissionWriter:
                         await self._terminal_abort(RowReadBackMismatch("TauxVetuste"))
                 except Exception:
                     await self._terminal_abort(RowReadBackMismatch("TauxVetuste"))
+
+    # -- Non-table header fields (section 7, pilot-integration correction) -
+
+    async def fill_form_fields(self) -> None:
+        """Fills every FormFieldIntent from the approved plan (zero or
+        more -- a plan with none is a legitimate no-op) via real DOM
+        events (Playwright .fill()/.select_option(), which dispatch the
+        same input/change events a human's keystrokes would). Fixed
+        selector allowlist only (FormFieldSelector's enum members) --
+        this method cannot be called with a caller-supplied selector
+        string; the intents come entirely from the already-approved
+        WriterPlanData. No direct charge-mutuelle/sociétaire or final-
+        action selector exists in FormFieldSelector's member list, so
+        neither can ever reach this method."""
+        self._ensure_open()
+        for intent in self._writer_plan.form_field_intents:
+            await self._fill_one_form_field(intent)
+        await self._recheck_lease()
+
+    async def _fill_one_form_field(self, intent: FormFieldIntent) -> None:
+        selector = f"#{intent.selector.value}"
+        locator = self._page.locator(selector)
+        try:
+            count = await locator.count()
+        except Exception:
+            await self._terminal_abort(RowWriteUncertain(f"could not locate {selector}"))
+        if count != 1:
+            await self._terminal_abort(RowAmbiguous(f"{selector} is not scoped to exactly one element"))
+        try:
+            tag_name = await locator.evaluate("el => el.tagName.toLowerCase()")
+        except Exception:
+            await self._terminal_abort(RowWriteUncertain(f"could not inspect {selector}"))
+        try:
+            if tag_name == "select":
+                await locator.select_option(intent.value)
+            else:
+                await locator.fill(intent.value)
+        except Exception:
+            await self._terminal_abort(RowWriteUncertain(f"could not fill {selector}"))
+
+    async def verify_form_fields(self) -> None:
+        """Exact DOM read-back (section 7 design requirement) BEFORE
+        READY_FOR_HUMAN_REVIEW -- an INDEPENDENT fresh read of each
+        planned field, never the value verify_row/fill_form_fields
+        already held in memory. Non-table fields may not persist until
+        the human performs the manual portal action, which is exactly
+        why the browser stays open through READY_FOR_HUMAN_REVIEW/
+        AWAITING_HUMAN_CONFIRMATION rather than being closed here."""
+        self._ensure_open()
+        for intent in self._writer_plan.form_field_intents:
+            selector = f"#{intent.selector.value}"
+            locator = self._page.locator(selector)
+            try:
+                observed = await locator.evaluate("el => el.value")
+            except Exception:
+                await self._terminal_abort(RowReadBackMismatch(f"could not read back {selector}"))
+            if observed != intent.value:
+                await self._terminal_abort(RowReadBackMismatch(f"{selector} read-back mismatch"))
 
     # -- Native financial calculation -------------------------------------
 

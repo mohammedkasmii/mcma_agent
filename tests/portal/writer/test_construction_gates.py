@@ -340,7 +340,11 @@ def test_no_public_preflight_method_exists_on_verified_mission_writer():
     assert not hasattr(VerifiedMissionWriter, "preflight_pec_rows")
 
 
-def test_public_surface_is_exactly_the_eight_documented_operations_plus_close():
+def test_public_surface_is_exactly_the_ten_documented_operations_plus_close():
+    """Pilot-integration correction (section 7): fill_form_fields/
+    verify_form_fields join the original eight -- the non-table header-
+    field write/read-back pair, mirroring add_normal_row+read_row/
+    verify_row's own fill-then-verify shape exactly."""
     public_methods = {
         name
         for name in dir(VerifiedMissionWriter)
@@ -351,6 +355,8 @@ def test_public_surface_is_exactly_the_eight_documented_operations_plus_close():
         "edit_conventionne_row",
         "read_row",
         "verify_row",
+        "fill_form_fields",
+        "verify_form_fields",
         "trigger_native_recalc",
         "read_financial_summary",
         "verify_financial_summary",
@@ -376,7 +382,10 @@ def test_operations_accept_no_lease_handle_argument():
     for name in ("add_normal_row", "edit_conventionne_row", "read_row", "verify_row"):
         sig = inspect.signature(getattr(VerifiedMissionWriter, name))
         assert "lease_handle" not in sig.parameters
-    for name in ("trigger_native_recalc", "read_financial_summary", "verify_financial_summary", "close"):
+    for name in (
+        "trigger_native_recalc", "read_financial_summary", "verify_financial_summary", "close",
+        "fill_form_fields", "verify_form_fields",
+    ):
         sig = inspect.signature(getattr(VerifiedMissionWriter, name))
         assert list(sig.parameters) == ["self"]
 
