@@ -174,14 +174,46 @@ _LOGIN_PAGE_OPERATION_TYPE = "login_page"
 # this agent will navigate to. A code is validated against the recovered
 # pattern here AND again by the caller, and can only ever be substituted
 # into the one fixed getAlerte route.
-_CATEGORY_LINKS_JS = """() => {
+# The alert list is populated by its own read; FrontExpert does not
+# arrive with it filled in. The baseline made that request through the
+# portal's own actualierAlertes()/jQuery .load(); this issues the same
+# fixed reviewed read directly instead, so the boundary is a contract in
+# this repository rather than a function name on someone else's page.
+#
+# The response is parsed with DOMParser into a DETACHED document. It is
+# never inserted into the live page: DOMParser does not execute scripts,
+# so a hostile fragment cannot run, and nothing from it can touch the
+# document the capability is standing on.
+_CATEGORY_SURFACE_JS = """([url, prefix]) => fetch(url, {
+    method: 'GET',
+    headers: {'X-Requested-With': 'XMLHttpRequest'}
+}).then(r => r.text()).then(html => {
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    const links = parsed.querySelectorAll('a[href*="notification/alerte/"]');
+    const codes = [];
+    links.forEach(a => {
+        const href = a.getAttribute('href') || '';
+        // Only links belonging to THIS account's own application count. A
+        // hostile <a> on the alert list could otherwise contribute a code
+        // -- harmless, since a code can only reach the reviewed host and
+        // the fixed route, but there is no reason to accept it at all.
+        if (href.indexOf(prefix) === -1) return;
+        const match = href.match(/alerte\\/([A-Za-z0-9\\-]+)/i);
+        if (match) codes.push(match[1]);
+    });
+    return codes;
+}).catch(() => null)"""
+
+_CATEGORY_LINKS_JS = """(prefix) => {
     const links = document.querySelectorAll(
         '#listeAlertes a[href*="notification/alerte/"], '
         + '#listeAlertes a[href*="notification/notification/alerte/"]'
     );
     const codes = [];
     links.forEach(a => {
-        const match = (a.getAttribute('href') || '').match(/alerte\\/([A-Za-z0-9\\-]+)/i);
+        const href = a.getAttribute('href') || '';
+        if (href.indexOf(prefix) === -1) return;
+        const match = href.match(/alerte\\/([A-Za-z0-9\\-]+)/i);
         if (match) codes.push(match[1]);
     });
     return codes;
@@ -646,11 +678,27 @@ class ReadCapability:
         before any read can happen, which is why discovery and fetching
         use two separate contexts."""
         self._ensure_open()
-        raw = await self._page.evaluate(_CATEGORY_LINKS_JS)
-        if not isinstance(raw, list):
-            return ()
+
+        # The reviewed read first -- this is what actually populates the
+        # surface. A guarded context with no contract for it returns None
+        # here rather than raising, so a blocked read is simply "no codes
+        # from this source" and never a crash.
+        collected = []
+        surface_route = self._notification_surface_route()
+        fetched = await self._page.evaluate(
+            _CATEGORY_SURFACE_JS, [self._absolute_url(surface_route), surface_route]
+        )
+        if isinstance(fetched, list):
+            collected.extend(fetched)
+
+        # Then the live page, for a portal that populated the navbar on
+        # its own. Costs no request and cannot introduce a route.
+        in_page = await self._page.evaluate(_CATEGORY_LINKS_JS, surface_route)
+        if isinstance(in_page, list):
+            collected.extend(in_page)
+
         codes = []
-        for value in raw:
+        for value in collected:
             if not isinstance(value, str):
                 continue
             candidate = value.strip()
@@ -659,6 +707,9 @@ class ReadCapability:
             if len(codes) >= _MAX_DISCOVERED_CATEGORIES:
                 break
         return tuple(codes)
+
+    def _notification_surface_route(self) -> str:
+        return f"{self._portal_base}/expertise/notification/alerte"
 
     async def read_notifications(self, code_alerte: str) -> tuple[dict, ...]:
         """INC-14: the recovered getAlerte/DataTable contract

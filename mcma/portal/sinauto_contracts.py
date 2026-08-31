@@ -109,14 +109,32 @@ def auth_contracts(host: str = DEFAULT_SINAUTO_HOST, entity: str = "MCMA") -> tu
 
 
 def category_discovery_contracts(host: str, entity: str = "MCMA") -> tuple[RouteContract, ...]:
-    """The landing page alone. Category discovery reads the DOM of a page
-    already loaded, so it needs no route of its own -- and being given no
-    getAlerte contract is what makes discovery structurally unable to
-    fetch anything it discovers."""
+    """Exactly two reads: the landing page, and the alert list itself.
+
+    The landing page alone was not enough. FrontExpert does not arrive
+    with #listeAlertes populated -- the baseline explicitly refreshed the
+    navbar before parsing category links -- so a discovery context holding
+    only the landing-page contract would have the alert-list request
+    denied by its own guard and report NO_CATEGORIES for a perfectly
+    healthy authenticated account.
+
+    Source for the route: browser/notifications.py at baseline 0290fe9
+    loads '/SinAuto_MCMA/expertise/notification/alerte' into #listeAlertes.
+    The PATH is recovered verbatim; the METHOD is inferred, because jQuery
+    .load(url) with no data argument issues a GET. That inference is the
+    one piece here not directly observed from a recorded request, and it
+    is the thing to check first if discovery returns nothing onsite.
+
+    Still ZERO getAlerte routes: this context can populate and read the
+    category list, and remains structurally incapable of fetching any
+    category it finds."""
     host = sinauto_allowed_host(host)
+    base = portal_base_for(entity)
     return (
-        _c(host, f"{portal_base_for(entity)}/expertise/frontexpert", "GET",
+        _c(host, f"{base}/expertise/frontexpert", "GET",
            capability="read", operation_type="search_page"),
+        _c(host, f"{base}/expertise/notification/alerte", "GET",
+           capability="read", operation_type="notification_categories"),
     )
 
 
