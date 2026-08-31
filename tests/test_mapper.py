@@ -1,6 +1,5 @@
 import os
 import sys
-import json
 import pytest
 from decimal import Decimal
 
@@ -83,18 +82,14 @@ def mapper():
 
 @pytest.fixture
 def se00009_data():
-    candidate_paths = [
-        os.path.join(os.path.dirname(__file__), "..", "input_dossier", "dossier-se00009.json"),
-        os.path.join(os.getcwd(), "input_dossier", "dossier-se00009.json"),
-        os.path.join(os.path.dirname(__file__), "dossier-se00009.json"),
-    ]
-    for p in candidate_paths:
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                pass
+    """Pilot-integration correction: this fixture used to try loading a
+    REAL file from input_dossier/ first, falling back to synthetic data
+    only if that file was absent -- meaning a machine that happened to
+    have input_dossier/ populated ran this automated test against real
+    claimant data, silently and non-reproducibly. It now always returns
+    the committed synthetic fixture; input_dossier/ is never referenced
+    by any automated test (see test_no_automated_test_references_input_
+    dossier)."""
     return FALLBACK_SE00009_DATA
 
 

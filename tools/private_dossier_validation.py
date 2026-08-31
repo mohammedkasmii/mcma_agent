@@ -47,14 +47,19 @@ from mcma.domain.enums import RepairWorkflow
 from mcma.mapping.wexia import WexiaInput, parse_wexia
 from mcma.planning.plan import PlanBuildError, build_garage_conventionne_plan, build_mission_normal_plan
 
-# Office/city-routing NAME denylist (checked against unsupported KEY
-# PATH NAMES only -- never against any value) -- section E of the
-# correction batch: never infer account routing from dossier content,
-# and this script must not silently assume such a field exists either.
-_ROUTING_NAME_HINTS = (
-    "oujda", "nador", "office", "bureau", "agence", "agency", "ville",
-    "city", "region", "site", "branch", "succursale",
-)
+# Office/city-routing NAME hints, grouped into FIXED categories (checked
+# against unsupported KEY PATH NAMES only -- never against any value).
+# Pilot-integration correction: the report used to list the raw matched
+# key PATHS (e.g. "dossier.expertise_city"); it now reports only the
+# count of distinct paths matching each fixed category below -- never
+# the path text itself, so a future field name (however specific it is)
+# can never leak through this report even indirectly.
+_ROUTING_HINT_CATEGORIES = {
+    "named_office_oujda_or_nador": ("oujda", "nador"),
+    "city_or_ville": ("ville", "city"),
+    "office_or_agency_or_branch": ("office", "bureau", "agence", "agency", "branch", "succursale", "site"),
+    "region": ("region",),
+}
 
 _KNOWN_TOP_LEVEL_KEYS = {"dossier", "vehicule", "chiffrages", "observations_expert", "assureur"}
 
@@ -162,7 +167,9 @@ def validate_directory(input_dir: Path) -> dict:
     needs_review_reasons = Counter()
     unsupported_key_paths = Counter()
     determinism_mismatches = 0
-    routing_hint_key_paths: set = set()
+    # Per category: the SET of distinct key paths matched -- only its
+    # length (never its contents) is ever placed into the report.
+    routing_hint_paths_by_category: dict = {category: set() for category in _ROUTING_HINT_CATEGORIES}
 
     known_paths = _known_key_paths()
 
@@ -193,8 +200,9 @@ def validate_directory(input_dir: Path) -> dict:
             if key_path not in known_paths:
                 unsupported_key_paths[key_path] += 1
                 last_segment = key_path.rsplit(".", 1)[-1].lower()
-                if any(hint in last_segment for hint in _ROUTING_NAME_HINTS):
-                    routing_hint_key_paths.add(key_path)
+                for category, hints in _ROUTING_HINT_CATEGORIES.items():
+                    if any(hint in last_segment for hint in hints):
+                        routing_hint_paths_by_category[category].add(key_path)
 
         try:
             typed_input = parse_wexia(raw)
@@ -244,14 +252,17 @@ def validate_directory(input_dir: Path) -> dict:
         "validation_error_reason_counts": {f"{loc} ({t})": n for (loc, t), n in validation_error_reasons.items()},
         "unsupported_key_path_counts": dict(unsupported_key_paths),
         "determinism_mismatches": determinism_mismatches,
-        "possible_account_routing_key_paths": sorted(routing_hint_key_paths),
+        "routing_hint_category_counts": {
+            category: len(paths) for category, paths in routing_hint_paths_by_category.items()
+        },
         "note": (
-            "possible_account_routing_key_paths lists ONLY unsupported "
-            "key path NAMES that superficially resemble an office/city "
-            "concept -- never a value. An empty list means no such "
-            "field name was found; it is NOT proof no routing signal "
-            "exists under a differently-named key, and this script must "
-            "never be used to infer routing on its own."
+            "routing_hint_category_counts reports ONLY the COUNT of "
+            "distinct unsupported key path NAMES matching each fixed "
+            "category -- never the path text itself, never a value. All "
+            "zero means no such field name was found in any of these "
+            "fixed categories; it is NOT proof no routing signal exists "
+            "under a differently-named key, and this script must never "
+            "be used to infer routing on its own."
         ),
     }
     return report

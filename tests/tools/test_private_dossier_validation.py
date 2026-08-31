@@ -5,10 +5,13 @@ leak the value verbatim into the "redacted" report). Synthetic data
 only -- this tool is never exercised against input_dossier/ in automated
 tests."""
 
+import json
+
 from tools.private_dossier_validation import (
     _DYNAMIC_KEY_PLACEHOLDER,
     _collect_key_paths,
     _looks_like_a_schema_key,
+    validate_directory,
 )
 
 
@@ -43,3 +46,36 @@ def test_normal_nested_schema_still_reports_real_field_paths():
     assert "dossier.mileage_km" in paths
     assert "dossier.assureur.nom" in paths
     assert _DYNAMIC_KEY_PLACEHOLDER not in "".join(paths)
+
+
+def test_routing_hints_are_reported_as_fixed_category_counts_never_raw_paths(tmp_path):
+    """Pilot-integration correction: possible_account_routing_key_paths
+    (a raw path list) was replaced with routing_hint_category_counts --
+    fixed category names with counts only, never the matched key path
+    text itself."""
+    (tmp_path / "d1.json").write_text(
+        json.dumps({"dossier": {"expertise_city": "x", "reference_number": "R1", "is_reform": False}}),
+        encoding="utf-8",
+    )
+    report = validate_directory(tmp_path)
+    assert "possible_account_routing_key_paths" not in report
+    assert "routing_hint_category_counts" in report
+    assert report["routing_hint_category_counts"]["city_or_ville"] == 1
+    assert report["routing_hint_category_counts"]["named_office_oujda_or_nador"] == 0
+    # routing_hint_category_counts itself is category-name -> int only --
+    # the matched path text never appears THERE (unsupported_key_path_
+    # counts is a SEPARATE, deliberately schema-shaped field that is
+    # allowed to show real field names -- that is its documented purpose).
+    assert all(isinstance(v, int) for v in report["routing_hint_category_counts"].values())
+    assert "expertise_city" not in json.dumps(report["routing_hint_category_counts"])
+
+
+def test_dynamic_key_never_appears_in_a_full_validate_directory_report(tmp_path):
+    (tmp_path / "d1.json").write_text(
+        json.dumps({"dossier": {"claim-REF-98765": {"amount": 100}, "is_reform": False}}),
+        encoding="utf-8",
+    )
+    report = validate_directory(tmp_path)
+    serialized = json.dumps(report)
+    assert "claim-REF-98765" not in serialized
+    assert _DYNAMIC_KEY_PLACEHOLDER in serialized
