@@ -899,6 +899,26 @@
       }
     }
 
+    function loginFailureText(label, reason) {
+      if (reason === "BROWSER_NOT_READY") {
+        return "Le navigateur démarre encore — réessayez dans quelques secondes";
+      }
+      if (reason === "BROWSER_UNAVAILABLE") {
+        return "Le navigateur partagé n'a pas pu démarrer — redémarrez l'application";
+      }
+      if (reason.indexOf("PORTAL_LOGIN_FAILED") === 0) {
+        if (reason.indexOf("LoginTimedOut") !== -1) {
+          return "Connexion " + label + " non terminée à temps dans le navigateur";
+        }
+        if (reason.indexOf("LOGIN_PAGE_UNREACHABLE") !== -1) {
+          return "Page de connexion " + label + " injoignable";
+        }
+        return "Connexion " + label + " non terminée";
+      }
+      if (reason) return "Connexion " + label + " impossible (" + reason + ")";
+      return "Connexion " + label + " impossible";
+    }
+
     async function startPortalLogin(accountId) {
       if (!accountId) return;
       var syncText = document.getElementById("syncText");
@@ -909,14 +929,24 @@
         var response = await openPortalLogin(fetch, accountId);
         if (response && response.ok) {
           setText(syncText, "Session " + label + " enregistrée");
-          // The dot on the chip is driven by session state, so re-reading
+          // The dot on the card is driven by session state, so re-reading
           // the accounts is what makes the result visible.
           await refreshNotifications();
-        } else {
-          setText(syncText, "Connexion " + label + " non terminée");
+          return;
         }
+        // Say WHICH failure this was. "non terminée" for a browser that
+        // never started blames the employee for something they were
+        // never shown.
+        var reason = "";
+        try {
+          var body = await response.json();
+          reason = (body && body.error) || "";
+        } catch (parseError) {
+          reason = "";
+        }
+        setText(syncText, loginFailureText(label, reason));
       } catch (err) {
-        setText(syncText, "Connexion " + label + " impossible");
+        setText(syncText, "Connexion " + label + " impossible — application injoignable");
       }
     }
 

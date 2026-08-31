@@ -22,6 +22,7 @@ from typing import Optional
 
 from fastapi import Depends, FastAPI, Request
 
+from mcma.app.browser_supervisor import BrowserNotReady, BrowserUnavailable
 from mcma.app.api.authz import (
     Principal,
     filter_rows_by_account_access,
@@ -253,6 +254,19 @@ def create_api_app(
             require_account_access(conn, principal, account_id)
             try:
                 session_id = await portal_login_opener(account_id)
+            except BrowserNotReady as exc:
+                # Transient and NOT the employee's doing: telling them the
+                # sign-in failed when no window ever opened is simply
+                # untrue.
+                raise ApiError(
+                    503, "BROWSER_NOT_READY",
+                    "le navigateur demarre encore -- reessayez dans quelques secondes",
+                ) from exc
+            except BrowserUnavailable as exc:
+                raise ApiError(
+                    503, "BROWSER_UNAVAILABLE",
+                    "le navigateur partage n'a pas pu demarrer -- redemarrez l'application",
+                ) from exc
             except Exception as exc:
                 # The exception TYPE is reported and its message is not:
                 # a portal failure page can contain the username that was

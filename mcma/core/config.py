@@ -88,6 +88,11 @@ class Settings:
     # opt in deliberately, and would not.
     local_single_user_mode: bool = False
 
+    # How long startup waits for the shared browser before failing. The
+    # application does not serve traffic until this succeeds, so the
+    # employee never sees a dashboard whose login buttons cannot work.
+    browser_startup_timeout_seconds: float = 60.0
+
     # Alert categories polled for every account. Empty by default: a
     # category is only reachable if a reviewed contract was installed for
     # that exact code (mcma.portal.sinauto_contracts), so this list is

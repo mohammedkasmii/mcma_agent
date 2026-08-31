@@ -48,10 +48,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from pathlib import Path
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 from mcma.app.api.app import create_api_app
+from mcma.app.browser_supervisor import BrowserSupervisor, BrowserUnavailable
 from mcma.app.auth.bootstrap import create_bootstrap_app
 from mcma.app.auth.provider import LocalUserAuthProvider
 from mcma.app.dashboard import mount_dashboard
@@ -99,7 +103,7 @@ def build_encryptor(settings: Settings) -> InputEncryptor:
     return get_input_encryptor(_test_only_plaintext_backend=settings.dev_mode)
 
 
-def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=None, browser_holder=None):
+def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=None, supervisor=None):
     """Assembles the one ASGI app: authenticated API + dashboard + the two
     loopback-only sub-apps. The sub-apps enforce their own loopback checks
     internally (mcma.app.auth.bootstrap._require_loopback,
@@ -109,9 +113,9 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
         """Runs the login capture on the process's ONE browser -- the same
         one the runner uses -- so the window the employee signs into is a
         real, visible browser on their own machine."""
-        browser = browser_holder.get("browser") if browser_holder else None
-        if browser is None:
-            raise RuntimeError("no browser is available yet")
+        # Raises BrowserNotReady / BrowserUnavailable, which the API
+        # reports as themselves -- never as a failed portal login.
+        browser = supervisor.get()
         return await capture_session_for_account(
             conn, browser, account_id,
             instance_id=settings.instance_id,
@@ -138,7 +142,7 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
         auth_provider=LocalUserAuthProvider(conn),
         encryptor=encryptor,
         secure_cookies=True,
-        portal_login_opener=_open_portal_login if browser_holder is not None else None,
+        portal_login_opener=_open_portal_login if supervisor is not None else None,
         local_user_id=local_user_id,
     )
     if lifespan is not None:
@@ -167,7 +171,8 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
 
 
 async def run_job_poll_loop(
-    conn, cfg: RunnerConfig, encryptor: InputEncryptor, settings: Settings, browser_holder=None
+    conn, cfg: RunnerConfig, encryptor: InputEncryptor, settings: Settings,
+    supervisor: "BrowserSupervisor | None" = None,
 ) -> None:
     """Drains QUEUED DRY_RUN jobs and PLANNED EXECUTE jobs forever, on the
     caller's event loop, until cancelled at shutdown.
@@ -183,11 +188,20 @@ async def run_job_poll_loop(
     means something outside any single job went wrong. The loop keeps
     running -- stopping it would silently strand every future job -- but
     it never retries faster than the poll interval."""
-    async with launch_browser(headless=settings.headless_browser) as browser:
-        # Published so the portal-login endpoint can open its window on
-        # this same browser rather than starting a second one.
-        if browser_holder is not None:
-            browser_holder["browser"] = browser
+    try:
+        browser_context = launch_browser(headless=settings.headless_browser)
+        browser = await browser_context.__aenter__()
+    except Exception as exc:
+        # A launch failure must reach startup, not die inside this task.
+        if supervisor is not None:
+            supervisor.mark_failed(exc)
+        raise
+
+    try:
+        # Published here, once, so login, notification reads, the dossier
+        # runner and the human handoff all share ONE browser.
+        if supervisor is not None:
+            supervisor.mark_ready(browser)
         since_notification_poll = settings.notification_poll_interval_seconds
         while True:
             try:
@@ -212,8 +226,16 @@ async def run_job_poll_loop(
             except asyncio.CancelledError:
                 raise
             except Exception:
-                pass
+                # Per-job failures are already landed truthfully by the
+                # poll functions themselves, so reaching here means
+                # something outside any single job went wrong. The loop
+                # keeps running -- stopping it would strand every future
+                # job -- but the failure is reported rather than
+                # swallowed.
+                logger.exception("job poll pass failed")
             await asyncio.sleep(settings.poll_interval_seconds)
+    finally:
+        await browser_context.__aexit__(None, None, None)
 
 
 def build_runner_config(settings: Settings) -> RunnerConfig:
@@ -305,13 +327,26 @@ def main(settings: Optional[Settings] = None) -> None:  # pragma: no cover - rea
     cfg = build_runner_config(settings)
     tls_config = build_tls_config(settings)
 
-    browser_holder: dict = {}
+    supervisor = BrowserSupervisor()
 
     @contextlib.asynccontextmanager
     async def _lifespan(app):
         task = asyncio.create_task(
-            run_job_poll_loop(runner_conn, cfg, encryptor, settings, browser_holder)
+            run_job_poll_loop(runner_conn, cfg, encryptor, settings, supervisor)
         )
+        # Observed even if nothing ever awaits it, so a browser that dies
+        # later cannot leave a healthy-looking dashboard behind.
+        supervisor.watch(task)
+        # The application does not accept traffic until the browser is up.
+        # Serving first is what let a login click race startup and be
+        # reported as a failed portal sign-in.
+        try:
+            await supervisor.wait_until_ready(settings.browser_startup_timeout_seconds)
+        except BrowserUnavailable:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+            raise
         try:
             yield
         finally:
@@ -319,7 +354,7 @@ def main(settings: Optional[Settings] = None) -> None:  # pragma: no cover - rea
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-    app = build_app(api_conn, settings, encryptor, lifespan=_lifespan, browser_holder=browser_holder)
+    app = build_app(api_conn, settings, encryptor, lifespan=_lifespan, supervisor=supervisor)
     try:
         serve(app, tls_config)
     finally:
