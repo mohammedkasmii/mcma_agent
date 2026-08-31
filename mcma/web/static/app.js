@@ -285,42 +285,174 @@
   }
 
   function renderAccountBar(container, accounts, selectedId, onSelect, onConnect) {
+    // One card per portal account, each stating plainly whether it is
+    // connected and offering the one action that changes that. The four
+    // accounts are the first thing an employee deals with every morning,
+    // so they are shown as cards rather than compressed into chips.
     if (!container) return;
     container.textContent = "";
     accounts.forEach(function (account) {
       var isMamda = account.entity === "MAMDA";
-      var chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "account-chip"
-        + (isMamda ? " account-chip-mamda" : "")
-        + (account.account_id === selectedId ? " account-chip-active" : "");
-      chip.setAttribute("role", "tab");
-      chip.setAttribute("aria-selected", account.account_id === selectedId ? "true" : "false");
+      var connected = !!account.session_active;
 
-      chip.appendChild(el("span", "account-session-dot"
-        + (account.session_active ? " account-session-dot-live" : "")));
-      chip.appendChild(el("span", null, (account.entity || "?") + " " + (account.scope || "?")));
+      var card = document.createElement("button");
+      card.type = "button";
+      card.className = "account-card"
+        + (isMamda ? " account-card-mamda" : "")
+        + (account.account_id === selectedId ? " account-card-active" : "");
+      card.setAttribute("role", "tab");
+      card.setAttribute("aria-selected", account.account_id === selectedId ? "true" : "false");
+      card.addEventListener("click", function () { onSelect(account.account_id); });
+
+      var name = el("div", "account-card-name",
+                    (account.entity || "?") + " " + (account.scope || "?"));
+      card.appendChild(name);
+
+      var state = el("div", "account-card-state");
+      state.appendChild(el("span", "account-dot" + (connected ? " account-dot-live" : "")));
+      state.appendChild(el("span", null, connected ? "Connecté" : "Non connecté"));
+      card.appendChild(state);
+
       if (isMamda) {
-        // Visible, permanently: a MAMDA account can be read but a form
-        // job can never be started against one.
-        chip.appendChild(el("span", "account-readonly-tag", "lecture seule"));
+        card.appendChild(el("div", "account-card-tag", "Lecture seule"));
       }
-      chip.addEventListener("click", function () { onSelect(account.account_id); });
 
-      if (!account.session_active) {
-        var connect = document.createElement("button");
-        connect.type = "button";
-        connect.className = "account-chip-connect";
-        setText(connect, "connexion");
-        connect.addEventListener("click", function (event) {
-          // The chip itself selects; this selects AND signs in.
-          event.stopPropagation();
-          onSelect(account.account_id);
-          if (typeof onConnect === "function") onConnect(account.account_id);
-        });
-        chip.appendChild(connect);
+      var action = document.createElement("span");
+      action.className = "account-card-action";
+      setText(action, connected ? "Reconnecter" : "Se connecter");
+      action.addEventListener("click", function (event) {
+        // The card selects; this selects AND signs in.
+        event.stopPropagation();
+        onSelect(account.account_id);
+        if (typeof onConnect === "function") onConnect(account.account_id);
+      });
+      card.appendChild(action);
+
+      container.appendChild(card);
+    });
+  }
+
+  // ----------------------------------------------------------------- //
+  // The dashboard proper: KPI cards, category tabs, status filters,
+  // search, and the claims table. Ported from the original static/
+  // dashboard, with two changes that matter: every cell is built with
+  // createElement/textContent instead of innerHTML (portal-supplied
+  // sociétaire names and references must never be parsed as markup --
+  // see tests/web/test_escaping.py), and everything is scoped to ONE of
+  // the four portal accounts at a time.
+  // ----------------------------------------------------------------- //
+
+  var ACTION_FILTERS = {
+    ALL: function () { return true; },
+    TODO: function (c) { return !c.status || c.status === "NEW"; },
+    IN_PROGRESS: function (c) { return c.status === "IN_PROGRESS" || c.status === "WAITING"; },
+    DONE: function (c) { return c.status === "DONE" || c.status === "NOT_APPLICABLE"; }
+  };
+
+  var STATUS_FR = {
+    NEW: "À Traiter",
+    IN_PROGRESS: "En Cours",
+    WAITING: "En Attente",
+    DONE: "Traité",
+    NOT_APPLICABLE: "Sans Suite"
+  };
+
+  function claimMatchesSearch(claim, needle) {
+    if (!needle) return true;
+    var haystack = [claim.reference, claim.insured, claim.police, claim.matricule_norm,
+                    claim.portal_claim_id].join(" ").toLowerCase();
+    return haystack.indexOf(needle.toLowerCase()) !== -1;
+  }
+
+  function renderKpis(claims) {
+    var total = claims.length;
+    var done = claims.filter(function (c) { return c.status === "DONE"; }).length;
+    var categories = {};
+    claims.forEach(function (c) {
+      (c.categories || []).forEach(function (cat) { categories[cat] = true; });
+    });
+    var pct = total ? Math.round((done / total) * 100) : 0;
+
+    function put(id, value) {
+      var node = document.getElementById(id);
+      if (node) setText(node, value);
+    }
+
+    put("kpiTotal", String(total));
+    put("kpiTodo", String(total - done));
+    put("kpiCategories", String(Object.keys(categories).length));
+
+    // kpiDone CONTAINS the percentage span, so its text cannot simply be
+    // replaced -- doing that removes the span before it can be written.
+    var doneEl = document.getElementById("kpiDone");
+    var pctEl = document.getElementById("kpiProgressPct");
+    if (doneEl) {
+      doneEl.textContent = String(done) + " ";
+      if (pctEl) {
+        setText(pctEl, "(" + pct + "%)");
+        doneEl.appendChild(pctEl);
       }
-      container.appendChild(chip);
+    }
+  }
+
+  function renderCategoryTabs(container, claims, selected, onSelect) {
+    if (!container) return;
+    var counts = {};
+    claims.forEach(function (c) {
+      (c.categories || []).forEach(function (cat) { counts[cat] = (counts[cat] || 0) + 1; });
+    });
+    container.textContent = "";
+
+    function tab(label, count, value) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "tab-btn" + (value === selected ? " active" : "");
+      setText(button, label + " ");
+      var badge = el("span", "tab-badge", String(count));
+      button.appendChild(badge);
+      button.addEventListener("click", function () { onSelect(value); });
+      return button;
+    }
+
+    container.appendChild(tab("Toutes les alertes", claims.length, "ALL"));
+    Object.keys(counts).sort().forEach(function (cat) {
+      container.appendChild(tab(cat, counts[cat], cat));
+    });
+  }
+
+  function renderClaimsTable(tbody, claims, onEdit) {
+    tbody.textContent = "";
+    claims.forEach(function (claim) {
+      var tr = document.createElement("tr");
+
+      var suivi = document.createElement("td");
+      var pill = el("span", "status-badge claim-pill-" + (claim.status || "NEW"),
+                    STATUS_FR[claim.status] || STATUS_FR.NEW);
+      suivi.appendChild(pill);
+      var edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "btn-icon";
+      setText(edit, "\u270e");
+      edit.title = "Modifier le suivi";
+      edit.addEventListener("click", function () { onEdit(claim); });
+      suivi.appendChild(edit);
+      tr.appendChild(suivi);
+
+      function cell(value, className) {
+        var td = document.createElement("td");
+        if (className) td.className = className;
+        setText(td, value == null || value === "" ? "\u2014" : String(value));
+        return td;
+      }
+
+      tr.appendChild(cell(claim.reference || claim.portal_claim_id, "cell-ref"));
+      tr.appendChild(cell(claim.updated_at));
+      tr.appendChild(cell(claim.insured, "cell-name"));
+      tr.appendChild(cell(claim.police));
+      tr.appendChild(cell(claim.matricule_norm, "cell-mono"));
+      tr.appendChild(cell((claim.categories || []).join(", ")));
+      tr.appendChild(cell(claim.note));
+      tbody.appendChild(tr);
     });
   }
 

@@ -776,61 +776,83 @@ body {
 
 [hidden] { display: none !important; }
 
-/* -- account switcher -------------------------------------------------- */
-/* Four portal accounts reached through one SinAuto login page. The
-   employee is always inside exactly one of them, and MAMDA is visibly
-   distinct because it can be read but never written to. */
+/* -- account cards ----------------------------------------------------- */
+/* Four portal accounts, reached through one host but two applications.
+   Each card states its own connection state and carries the one action
+   that changes it. MAMDA is visibly distinct because it can be read but
+   never written to. */
 
 .account-bar {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 0.75rem;
     margin-bottom: 1.25rem;
 }
 
-.account-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
+.account-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.3rem;
+    text-align: left;
     background: var(--bg-card);
     border: 1px solid var(--border-color);
-    border-radius: var(--radius-full);
+    border-radius: var(--radius-md);
     color: var(--text-secondary);
     font-family: var(--font-main);
-    font-size: 0.8rem;
-    font-weight: 600;
-    padding: 0.45rem 0.95rem;
+    padding: 0.9rem 1rem;
     cursor: pointer;
 }
 
-.account-chip:hover { border-color: var(--border-hover); color: var(--text-primary); }
+.account-card:hover { border-color: var(--border-hover); }
 
-.account-chip-active {
-    background: var(--color-blue-bg);
+.account-card-active {
     border-color: var(--brand-primary);
+    background: var(--color-blue-bg);
+}
+
+.account-card-mamda.account-card-active {
+    border-color: var(--color-purple);
+    background: var(--color-purple-bg);
+}
+
+.account-card-name {
+    font-size: 0.95rem;
+    font-weight: 700;
     color: var(--text-primary);
 }
 
-.account-chip-mamda.account-chip-active {
-    background: var(--color-purple-bg);
-    border-color: var(--color-purple);
+.account-card-state {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
 }
 
-.account-session-dot {
-    width: 7px;
-    height: 7px;
+.account-dot {
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: var(--color-rose);
 }
 
-.account-session-dot-live { background: var(--color-emerald); }
+.account-dot-live { background: var(--color-emerald); }
 
-.account-readonly-tag {
+.account-card-tag {
     font-size: 0.65rem;
     font-weight: 700;
     color: var(--color-purple);
 }
+
+.account-card-action {
+    margin-top: 0.45rem;
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--brand-primary);
+    border-bottom: 1px solid currentColor;
+}
+
+.account-card-action:hover { color: var(--text-primary); }
 
 /* -- handoff ----------------------------------------------------------- */
 /* The one moment the interface raises its voice: the agent has finished
