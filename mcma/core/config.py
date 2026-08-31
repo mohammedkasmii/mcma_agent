@@ -6,6 +6,7 @@ it. Fail-closed defaults only; no secrets ever live here.
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,15 @@ class Settings:
     # The API binds loopback until INC-18 introduces TLS-only LAN serving.
     api_host: str = "127.0.0.1"
     api_port: int = 8000
+
+    # INC-18 (ADR-0008): TLS is required for LAN deployment. No default
+    # cert/key path is ever guessed -- None means "not configured", and
+    # mcma.app.serve fails closed (refuses to start) rather than serving
+    # plaintext when either is missing. subnet_allowlist is defense-in-
+    # depth ONLY (empty by default) and never disables authentication.
+    tls_cert_path: Optional[Path] = None
+    tls_key_path: Optional[Path] = None
+    subnet_allowlist: Tuple[str, ...] = ()
 
 
 def load_settings() -> Settings:
