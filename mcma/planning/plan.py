@@ -23,6 +23,7 @@ from mcma.core.money import Money
 from mcma.domain.normalize import normalize_text
 from mcma.domain.results import Mapped, NeedsReview, ReasonCode, tva_allocation_result
 from mcma.domain.rubriques import (
+    MODE_NORMAL_ALLOWED_RUBRIQUES,
     classify_colle,
     classify_glass_line,
     classify_labour_line,
@@ -598,7 +599,36 @@ def _build_plan_core(typed_input, expected_workflow: RepairWorkflow) -> Proposed
 
 
 def build_mission_normal_plan(typed_input) -> ProposedPlan:
-    return _build_plan_core(typed_input, RepairWorkflow.MODE_NORMAL)
+    plan = _build_plan_core(typed_input, RepairWorkflow.MODE_NORMAL)
+    _enforce_mode_normal_rubrique_policy(plan)
+    return plan
+
+
+def _enforce_mode_normal_rubrique_policy(plan: ProposedPlan) -> None:
+    """Refuses any Mode Normal row outside the agency's mapping surface.
+
+    The classifiers already only produce allowed rubriques -- this is a
+    backstop, not a fix. It exists because the old mapper's
+    SYSTEM_RUBRIQUE_MATRIX derived 4/5/6, 10/11 and 13/14/15 from an
+    item's physical family, so a "moteur original" became a mechanical
+    rubrique instead of an origin one, and that mistake is easy to
+    reintroduce one plausible-looking keyword at a time. A row outside the
+    policy is a fail-closed error rather than a NeedsReview: it means a
+    classifier is producing something the agency's rule has no place for,
+    which is a defect in this system, not a question about the dossier.
+
+    Mode Normal only. Garage Conventionné maps against pre-existing portal
+    rows and is deliberately left alone."""
+    offenders = sorted(
+        {step.rubrique_id.value for step in plan.steps}
+        - {r.value for r in MODE_NORMAL_ALLOWED_RUBRIQUES},
+        key=int,
+    )
+    if offenders:
+        raise PlanBuildError(
+            f"Mode Normal produced rubrique(s) outside the agency mapping policy: "
+            f"{offenders} — fail closed"
+        )
 
 
 def build_garage_conventionne_plan(typed_input) -> ProposedPlan:

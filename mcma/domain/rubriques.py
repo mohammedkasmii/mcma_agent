@@ -384,3 +384,63 @@ def resolve_explicit_rubrique(raw_id) -> MapResult:
     if candidate in _LINE_ASSIGNABLE_RUBRIQUES:
         return Mapped(RubriqueId(candidate))
     return NeedsReview(ReasonCode.UNKNOWN_RUBRIC_ID, detail=f"mcma_rubric_id={raw_id!r}")
+
+
+# ---------------------------------------------------------------------------
+# Mode Normal automatic mapping policy (agency-confirmed)
+# ---------------------------------------------------------------------------
+# The 28-rubrique catalog above is MCMA's full chart of accounts. It is NOT
+# the surface this system may map to automatically in Mode Normal, and
+# conflating the two is the mistake the old mapper made: its
+# SYSTEM_RUBRIQUE_MATRIX read the physical family out of an item's name or
+# system and produced 4/5/6, 10/11 or 13/14/15 from it, so a "moteur
+# original" became a mechanical-parts rubrique instead of an origin one.
+# BUSINESS_RULES.md records that as a contradiction.
+#
+# The agency's actual rule is much smaller, and origin-driven:
+#
+#   ordinary piece  -> 1 / 2 / 3, decided ONLY by origin
+#   normal labour   -> 7 / 8 / 12 / 28
+#   exceptions      -> 16, 17, 18, 19-24, 25, 26, 27, each needing its own
+#                      explicit semantic signal
+#
+# These sets exist so the policy is stated once, visibly, and enforced --
+# rather than being an emergent property of several classifiers that a
+# later change could quietly widen.
+
+# Ordinary pieces. Origin decides, and nothing else does: not the item
+# name, system, category, description or notes.
+MODE_NORMAL_PART_RUBRIQUES = frozenset({RubriqueId("1"), RubriqueId("2"), RubriqueId("3")})
+
+# The four normal Main d'oeuvre families.
+MODE_NORMAL_LABOUR_RUBRIQUES = frozenset(
+    {RubriqueId("7"), RubriqueId("8"), RubriqueId("12"), RubriqueId("28")}
+)
+
+# Dedicated exceptions. Each requires its own explicit signal -- paint
+# MATERIALS rather than a painted part, a glass component plus an
+# operation, an adhesive product. Marbre and parallelisme are operations,
+# deliberately not a fifth and sixth labour family.
+MODE_NORMAL_EXCEPTION_RUBRIQUES = frozenset(
+    {
+        RubriqueId("16"),                                    # peintures et ingredients
+        RubriqueId("17"),                                    # passage au marbre
+        RubriqueId("18"),                                    # parallelisme et equilibrage
+        RubriqueId("19"), RubriqueId("20"),                  # vitre
+        RubriqueId("21"), RubriqueId("22"),                  # pare-brise
+        RubriqueId("23"), RubriqueId("24"),                  # lunette arriere
+        RubriqueId("25"), RubriqueId("26"), RubriqueId("27"),  # colle
+    }
+)
+
+MODE_NORMAL_ALLOWED_RUBRIQUES = (
+    MODE_NORMAL_PART_RUBRIQUES
+    | MODE_NORMAL_LABOUR_RUBRIQUES
+    | MODE_NORMAL_EXCEPTION_RUBRIQUES
+)
+
+# Present in the catalog, never produced automatically in Mode Normal.
+# 9 is an aggregate total and is not a line target in any workflow.
+MODE_NORMAL_FORBIDDEN_RUBRIQUES = frozenset(
+    RubriqueId(code) for code in RUBRIQUE_CATALOG
+) - MODE_NORMAL_ALLOWED_RUBRIQUES
