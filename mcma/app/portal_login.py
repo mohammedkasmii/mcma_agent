@@ -37,7 +37,13 @@ from mcma.portal.vault import store_session
 
 class PortalLoginFailed(Exception):
     """The human did not complete the login in time, or the browser could
-    not be opened. Carries no portal text and no credential material."""
+    not be opened. Carries no portal text and no credential material --
+    only a short fixed reason, so a caller can tell the failures apart
+    without ever surfacing what the portal said."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 async def capture_session_for_account(
@@ -66,14 +72,14 @@ async def capture_session_for_account(
                 browser, account_id, auth_contracts(allowed_host), allowed_host
             )
         except Exception as exc:
-            raise PortalLoginFailed("could not open the portal login page") from exc
+            raise PortalLoginFailed("LOGIN_PAGE_UNREACHABLE") from exc
 
         try:
             material = await login.perform_manual_login(timeout_seconds=timeout_seconds)
         except Exception as exc:
             # Includes LoginTimedOut. The message deliberately carries no
             # portal response text.
-            raise PortalLoginFailed("login was not completed") from exc
+            raise PortalLoginFailed("NOT_COMPLETED_" + type(exc).__name__) from exc
         finally:
             await login.close()
 

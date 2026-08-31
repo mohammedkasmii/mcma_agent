@@ -282,3 +282,41 @@ def test_accounts_report_which_are_writable(conn, app_and_client):
     accounts = {a["account_id"]: a for a in client.get("/accounts").json()["accounts"]}
     assert accounts[OUJDA]["writable"] is True
     assert accounts[MAMDA_OUJDA]["writable"] is False
+
+
+def test_login_failure_reports_a_reason_without_leaking_portal_text(conn):
+    """A bare 409 with no code made a login failure undiagnosable -- the
+    operator could not tell "too slow" from "wrong host" from "window
+    closed". The reason is reported; the portal's own words are not."""
+    class _Failed(Exception):
+        def __init__(self):
+            super().__init__("Mot de passe incorrect pour ahmed.benali")
+            self.reason = "NOT_COMPLETED_LoginTimedOut"
+
+    async def _opener(account_id):
+        raise _Failed()
+
+    client = _app_with_login(conn, _opener)
+    user_id = create_user(conn, "alice", "pw12345", "operator")
+    grant_access(conn, user_id, OUJDA)
+    csrf = login_client(client, "alice", "pw12345")
+
+    response = client.post(f"/accounts/{OUJDA}/login", headers=csrf_headers(csrf))
+    assert response.status_code == 409
+    assert "LoginTimedOut" in response.text        # diagnosable
+    assert "ahmed" not in response.text            # but never the portal's text
+    assert "Mot de passe" not in response.text
+
+
+def test_the_login_host_is_the_real_portal_not_the_mock():
+    """Logging in and filling a form are different questions: the login
+    window must open at the real portal even while form filling is still
+    bound to the loopback mock by the G5 gate."""
+    from mcma.core.config import Settings
+    from mcma.portal.sinauto_contracts import DEFAULT_SINAUTO_HOST, sinauto_allowed_host
+
+    settings = Settings()
+    assert settings.portal_host == DEFAULT_SINAUTO_HOST
+    assert sinauto_allowed_host(settings.portal_host) == DEFAULT_SINAUTO_HOST
+    # And the two really are separate settings.
+    assert settings.allowed_host != settings.portal_host

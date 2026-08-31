@@ -50,6 +50,18 @@ class Settings:
     # dev_mode below and RELEASE_GATES.md G5.
     allowed_host: str = "127.0.0.1:8080"
 
+    # The host used for LOGGING IN and for READING notifications, which is
+    # a different question from where form filling is allowed to go.
+    # Signing a human in and reading an alert list cannot alter a claim,
+    # so those legitimately reach the real portal today; writing a row is
+    # what G5/INC-23 gates, and that path is bound to allowed_host above
+    # and independently refuses a non-loopback host.
+    #
+    # Kept as a literal rather than importing the constant from
+    # mcma.portal.sinauto_contracts: mcma.core is the bottom layer and
+    # may not import upward. sinauto_allowed_host() validates it.
+    portal_host: str = "sinauto.mamda-mcma.ma"
+
     # How often the runner drains QUEUED/PLANNED jobs. Not a correctness
     # parameter: nothing depends on a job being picked up within any
     # particular time, and every state transition is durable regardless.

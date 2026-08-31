@@ -102,7 +102,7 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
         return await capture_session_for_account(
             conn, browser, account_id,
             instance_id=settings.instance_id,
-            allowed_host=settings.allowed_host,
+            allowed_host=settings.portal_host,
             vault_dir=settings.vault_dir,
             crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.dev_mode),
             acl_verifier=WindowsAclVerifier(),
@@ -179,7 +179,7 @@ async def run_job_poll_loop(
                     await poll_all_accounts(
                         conn, browser, settings.notification_category_codes,
                         instance_id=settings.instance_id,
-                        allowed_host=settings.allowed_host,
+                        allowed_host=settings.portal_host,
                         vault_dir=settings.vault_dir,
                         crypto_backend=cfg.crypto_backend,
                     )

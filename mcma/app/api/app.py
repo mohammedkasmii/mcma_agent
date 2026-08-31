@@ -238,11 +238,18 @@ def create_api_app(
             try:
                 session_id = await portal_login_opener(account_id)
             except Exception as exc:
-                # No portal text is ever surfaced: a login failure page can
-                # contain the username that was typed.
+                # The exception TYPE is reported and its message is not:
+                # a portal failure page can contain the username that was
+                # typed, but "LoginTimedOut" versus "UnreviewedHost"
+                # versus "TargetClosedError" is exactly what tells an
+                # operator whether they were too slow, pointed at the
+                # wrong host, or closed the window -- and a bare 409 with
+                # no code makes a failure here undiagnosable.
+                reason = getattr(exc, "reason", None) or type(exc).__name__
                 raise ApiError(
-                    409, "PORTAL_LOGIN_FAILED",
-                    "the portal login was not completed -- open the browser window and finish signing in",
+                    409, f"PORTAL_LOGIN_FAILED_{reason}",
+                    "the portal login did not complete -- finish signing in "
+                    "in the browser window that opened, then try again",
                 ) from exc
             return {"account_id": account_id, "session_id": session_id}
 

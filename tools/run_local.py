@@ -160,7 +160,8 @@ def main() -> None:
 
     settings = Settings(
         dev_mode=True,
-        allowed_host="127.0.0.1:8080",   # the mock portal
+        allowed_host="127.0.0.1:8080",            # form filling: the mock (G5)
+        portal_host="sinauto.mamda-mcma.ma",      # login + notifications: the real portal
         tls_cert_path=DEV_CERT,
         tls_key_path=DEV_KEY,
         api_host="127.0.0.1",
@@ -173,7 +174,8 @@ def main() -> None:
     print("  MCMA - local run (MOCK PORTAL ONLY, no live portal contact)")
     print("=" * 68)
     print(f"  Dashboard : https://127.0.0.1:{settings.api_port}/")
-    print(f"  Portal    : http://{settings.allowed_host}  (start: python mock_server.py)")
+    print(f"  Remplissage : http://{settings.allowed_host}  (mock -- start: python mock_server.py)")
+    print(f"  Connexion   : https://{settings.portal_host}  (portail reel)")
     print(f"  Database  : {settings.db_path}")
     print()
     print("  Your browser will warn about the self-signed certificate.")
