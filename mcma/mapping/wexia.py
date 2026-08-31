@@ -39,6 +39,17 @@ class _Base(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
 
+def _null_to_empty_string(v):
+    """Correction batch (private dossier validation finding): a JSON
+    `null` in a text field is a common encoding of "absent", not a type
+    error -- normalized to "" here so a real dossier's `notes: null`
+    doesn't reject the ENTIRE dossier at the typed boundary. This is a
+    general robustness fix (null-vs-absent is unrelated to any specific
+    dossier's content) -- the redacted validation-error report that
+    surfaced it named only the field PATH and error TYPE, never a value."""
+    return "" if v is None else v
+
+
 class WexiaPieceLine(_Base):
     item_type: str = "part"
     item_name: str = ""
@@ -56,6 +67,11 @@ class WexiaPieceLine(_Base):
     def _decimals(cls, v):
         return _to_decimal(v)
 
+    @field_validator("notes", mode="before")
+    @classmethod
+    def _notes_null_to_empty(cls, v):
+        return _null_to_empty_string(v)
+
     @property
     def is_labour(self) -> bool:
         return (
@@ -69,6 +85,11 @@ class WexiaMoLine(_Base):
     labor_type_id: Optional[str] = None
     notes: str = ""
     subtotal: Decimal = Decimal("0")
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def _notes_null_to_empty(cls, v):
+        return _null_to_empty_string(v)
 
     @field_validator("subtotal", mode="before")
     @classmethod
