@@ -6,6 +6,7 @@ reach the file -- proven with markers obvious enough that a failure
 message says exactly what leaked.
 """
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -18,11 +19,15 @@ from capture_sinauto_write_evidence import (  # noqa: E402
     BLOCKED,
     MCMA_BASE,
     PORTAL_HOST,
+    PROBE_FUNCTIONS,
+    WORKFLOWS,
     Capture,
     field_names,
     is_blocked,
     is_in_scope,
     normalize_path,
+    probe_dom,
+    safe_field_names,
 )
 
 SECRETS = (
@@ -35,8 +40,8 @@ SECRETS = (
 )
 
 
-def _document_text(capture, selectors=None, functions=None):
-    return json.dumps(capture.to_document(selectors or {}, functions or {}))
+def _document_text(capture, selectors=None, functions=None, workflow="mode-normal"):
+    return json.dumps(capture.to_document(workflow, selectors or {}, functions or {}))
 
 
 # --------------------------------------------------------------------- #
@@ -220,21 +225,193 @@ def test_the_tool_never_writes_python_or_contracts():
     source = (Path(__file__).resolve().parents[3] / "tools"
               / "capture_sinauto_write_evidence.py").read_text(encoding="utf-8")
     assert "RouteContract(" not in source
-    assert ".py" not in source.split("OUTPUT_DIR =")[1].split("\n")[0]
-    assert "write-contract-capture-" in source        # JSON only
+    # Output is JSON under var/evidence, never Python.
+    assert 'OUTPUT_DIR = REPO_ROOT / "var" / "evidence"' in source
+    assert 'write-contract-{workflow}-{stamp}.json' in source
+    assert ".write_text" in source and "mcma/" not in source.split("OUTPUT_DIR")[1]
 
 
 def test_dom_probes_report_presence_only_from_a_fixed_list():
-    from capture_sinauto_write_evidence import PROBE_FUNCTIONS, PROBE_SELECTORS
-
     source = (Path(__file__).resolve().parents[3] / "tools"
               / "capture_sinauto_write_evidence.py").read_text(encoding="utf-8")
-    # Booleans, never contents.
-    assert "document.querySelector(s) !== null" in source
-    assert ".value" not in source
-    assert ".textContent" not in source
-    assert ".innerHTML" not in source
+    # Assert on the JS that actually runs in the page, not on the whole
+    # Python file -- selectors.values() is not a DOM read.
+    scripts = [line for line in source.splitlines() if "=> Object.fromEntries" in line]
+    assert len(scripts) == 2
+    joined = "\n".join(scripts)
+    assert "document.querySelector(s) !== null" in joined
+    assert "typeof window[n] === 'function'" in joined
+    for forbidden in (".value", ".textContent", ".innerHTML", "outerHTML"):
+        assert forbidden not in joined
     # Fixed lists; globals are never enumerated.
-    assert all(s.startswith("#") for s in PROBE_SELECTORS)
+    for selectors in WORKFLOWS.values():
+        assert all(s.startswith("#") for s in selectors)
     assert "Object.keys(window)" not in source
     assert len(PROBE_FUNCTIONS) == 3
+
+
+
+# --------------------------------------------------------------------- #
+# C.2.1 -- the DOM probe must run while the page is OPEN
+# --------------------------------------------------------------------- #
+
+
+class _OpenPage:
+    """Answers evaluate() only while it is open, exactly as a real page
+    does -- so a probe that waits for the close event fails here."""
+
+    def __init__(self, present=()):
+        self.closed = False
+        self._present = set(present)
+        self.evaluate_calls = 0
+
+    async def evaluate(self, script, arg=None):
+        self.evaluate_calls += 1
+        if self.closed:
+            raise RuntimeError("Target page, context or browser has been closed")
+        if "querySelector" in script:
+            return {s: s in self._present for s in arg}
+        return {n: n in self._present for n in arg}
+
+
+def test_the_dom_probe_runs_against_an_open_page():
+    """The bug this fixes: probing after the close event collected network
+    shapes and silently lost every piece of DOM evidence -- which is most
+    of what the audit says is missing."""
+    page = _OpenPage(present={"#MontantHT", "DevisCalculerMontantCharge"})
+    selectors, functions = asyncio.run(probe_dom(page, "mode-normal"))
+
+    assert page.closed is False
+    assert page.evaluate_calls == 2
+    assert selectors["#MontantHT"] is True
+    assert selectors["#VehRepareI"] is False
+    assert functions["DevisCalculerMontantCharge"] is True
+
+
+def test_probing_a_closed_page_fails_loudly_rather_than_returning_nothing():
+    page = _OpenPage()
+    page.closed = True
+    with pytest.raises(RuntimeError):
+        asyncio.run(probe_dom(page, "mode-normal"))
+
+
+def test_probe_results_are_booleans_only():
+    page = _OpenPage(present={"#MontantHT"})
+    selectors, functions = asyncio.run(probe_dom(page, "garage-conventionne"))
+    assert all(isinstance(v, bool) for v in selectors.values())
+    assert all(isinstance(v, bool) for v in functions.values())
+
+
+# --------------------------------------------------------------------- #
+# Workflow is explicit and labelled
+# --------------------------------------------------------------------- #
+
+
+def test_only_the_two_approved_workflows_exist():
+    assert sorted(WORKFLOWS) == ["garage-conventionne", "mode-normal"]
+
+
+def test_each_workflow_probes_its_own_selectors():
+    """A union across two dossiers would answer the wrong question."""
+    normal = set(WORKFLOWS["mode-normal"])
+    pec = set(WORKFLOWS["garage-conventionne"])
+    assert "#VehRepareI" in normal and "#VehRepareI" not in pec
+    assert "#MontantHTValide" in pec and "#MontantHTValide" not in normal
+    # Shared header fields appear in both.
+    assert "#Kilometrage" in normal and "#Kilometrage" in pec
+
+
+def test_the_output_document_is_labelled_with_its_workflow():
+    for workflow in WORKFLOWS:
+        document = Capture().to_document(workflow, {}, {})
+        assert document["workflow"] == workflow
+
+
+def test_an_unknown_workflow_is_refused():
+    with pytest.raises(KeyError):
+        asyncio.run(probe_dom(_OpenPage(), "something-else"))
+
+
+def test_probe_selectors_and_functions_are_fixed_lists():
+    for selectors in WORKFLOWS.values():
+        assert all(s.startswith("#") for s in selectors)
+    assert PROBE_FUNCTIONS == (
+        "CalculerMntArrete", "CalculerMontantDommage", "DevisCalculerMontantCharge",
+    )
+
+
+# --------------------------------------------------------------------- #
+# The blocklist is production's, and path handling is hardened
+# --------------------------------------------------------------------- #
+
+
+def test_the_blocklist_is_the_production_object_not_a_copy():
+    from mcma.portal.final_endpoints import PERMANENTLY_BLOCKED_ENDPOINTS
+
+    assert BLOCKED is PERMANENTLY_BLOCKED_ENDPOINTS
+
+
+@pytest.mark.parametrize("path", [
+    f"{MCMA_BASE}/expertise/%2e%2e/enregistrerMission",
+    f"{MCMA_BASE}//expertise/cloturerMission",
+    f"{MCMA_BASE}/expertise/../expertise/validerDevis",
+    f"{MCMA_BASE}/expertise/./ajouterDocument",
+])
+def test_encoded_and_traversal_paths_cannot_bypass_blocking(path):
+    """A path that cannot be canonicalized is treated as blocked. Refusing
+    an ambiguous request costs a retry; allowing one could close a claim."""
+    assert is_blocked(path) is True
+
+
+def test_ordinary_portal_traffic_is_not_blocked():
+    """Hardening the path check must not default-deny the whole portal."""
+    for path in (
+        f"{MCMA_BASE}/expertise/frontexpert",
+        f"{MCMA_BASE}/expertise/gestionExpert/createRapportDefDet",
+        f"{MCMA_BASE}/expertise/gestiongarage/updateDevisDet",
+        f"{MCMA_BASE}/css/portal.css",
+    ):
+        assert is_blocked(path) is False
+
+
+# --------------------------------------------------------------------- #
+# Query keys get the same treatment as body keys
+# --------------------------------------------------------------------- #
+
+
+def test_query_values_never_persist_and_malformed_keys_are_dropped():
+    capture = Capture()
+    capture.record_request(
+        "GET",
+        f"https://{PORTAL_HOST}{MCMA_BASE}/expertise/x"
+        "?ref=CLAIM_699001&CLIENT_JOHN_DOE+bad+key=1&ok=2",
+        None, None,
+    )
+    text = _document_text(capture)
+    for secret in SECRETS:
+        assert secret not in text
+    assert capture.events[0]["query_field_names"] == ["ok", "ref"]
+
+
+def test_safe_field_names_drops_anything_that_is_not_a_name():
+    assert safe_field_names(["good_name", "also.good[0]", "bad key", "x" * 200, ""]) == [
+        "also.good[0]", "good_name",
+    ]
+
+
+@pytest.mark.parametrize("raw", [
+    "SECRET_PASSWORD",
+    "OTP_123456",
+    "REGISTRATION_77001_C_3",
+    "CLIENT_JOHN_DOE",
+    "SECRET_PASSWORD&OTP_123456",
+    "login CLIENT_JOHN_DOE password SECRET_PASSWORD",
+])
+def test_a_malformed_bare_body_can_never_become_a_field_name(raw):
+    """parse_qsl turns a bare fragment into one enormous "key", and keys
+    ARE persisted. A form field must have arrived as a real name=value
+    pair."""
+    names = field_names("application/x-www-form-urlencoded", raw)
+    assert names == ["<unparseable>"]
+    for secret in SECRETS:
+        assert secret not in json.dumps(names)

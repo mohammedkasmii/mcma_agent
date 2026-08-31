@@ -42,6 +42,7 @@ this is a standalone operator script.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import sys
@@ -52,6 +53,18 @@ from urllib.parse import parse_qsl, urlsplit
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+# The permanent final-action list is production's, not a copy. A second
+# tuple here would drift the moment an endpoint is added to one and not
+# the other, and the copy that lags is the one that lets a final action
+# through.
+from mcma.portal.canonical import canonicalize_request  # noqa: E402
+from mcma.portal.final_endpoints import (  # noqa: E402
+    PERMANENTLY_BLOCKED_ENDPOINTS,
+    is_permanently_blocked,
+)
+
+BLOCKED = PERMANENTLY_BLOCKED_ENDPOINTS
+
 PORTAL_HOST = "sinauto.mamda-mcma.ma"
 # MCMA only. MAMDA writes are prohibited, so MAMDA traffic can never be
 # write-contract evidence and is not collected at all.
@@ -59,17 +72,31 @@ MCMA_BASE = "/SinAuto_MCMA"
 
 OUTPUT_DIR = REPO_ROOT / "var" / "evidence"
 
-# Selector presence only -- booleans, never values. Drawn from the
-# evidence matrix's unconfirmed and read-back lists.
-PROBE_SELECTORS = (
-    # Mode Normal row lifecycle
+# Selector presence only -- booleans, never values.
+#
+# Split BY WORKFLOW. A single union across two dossiers would answer the
+# wrong question: what is needed is whether #MontantHTValide exists on a
+# PEC page, not whether it existed on one of the two pages someone
+# happened to open. Each run observes ONE approved dossier.
+
+_HEADER_SELECTORS = (
+    "#Kilometrage", "#ValeurVenale", "#ValeurVenaleEstime",
+    "#NbreJourImmobilisation", "#PartResponsabilite", "#ObservationMission",
+)
+
+_MODE_NORMAL_SELECTORS = (
+    # Row lifecycle
     "#VehRepareI", "#IdRubrique", "#MontantHT", "#Taxe", "#tableRapportDet",
-    # Mode Normal financial summary
+    # Financial summary -- READ evidence only. #MontantChargeMutuelle and
+    # #MontantChargeSocietaire are probed for PRESENCE; writing them is
+    # the prohibited charge-split overwrite (BUSINESS_RULES.md B.3).
     "#MontantReparation", "#MontantTVA", "#MontantTTC", "#TauxVetuste",
-    "#MontantVetuste", "#MontantFranchise", "#MontantRemise",
-    "#MontantChargeMutuelle", "#MontantChargeSocietaire", "#MontantArrete",
-    "#BaseIndemnite",
-    # PEC
+    "#MontantVetuste", "#MontantFranchise", "#PartResponsabilite",
+    "#MontantRemise", "#MontantChargeMutuelle", "#MontantChargeSocietaire",
+    "#MontantArrete", "#BaseIndemnite",
+) + _HEADER_SELECTORS
+
+_GARAGE_CONVENTIONNE_SELECTORS = (
     "#DevisDetTable", "#DevisDetTableVal", "#blocDevisValide",
     "#MontantHTValide", "#TaxeValide", "#MontantTTCValide",
     "#TauxVetusteValide", "#MontantVetusteValide",
@@ -77,24 +104,19 @@ PROBE_SELECTORS = (
     "#DevisMontantVetusteTotal", "#DevisMontantFranchise",
     "#DevisMontantRemise", "#DevisPartResponsabilite",
     "#DevisMontantChargeMutuelle", "#DevisMontantChargeSocietaire",
-    # Header fields -- four of these are UNCONFIRMED and this settles it
-    "#Kilometrage", "#ValeurVenale", "#ValeurVenaleEstime",
-    "#NbreJourImmobilisation", "#PartResponsabilite", "#ObservationMission",
-)
+    "#MontantArrete", "#BaseIndemnite",
+) + _HEADER_SELECTORS
 
-# Existence only, for the calculation triggers the baseline called
-# defensively. A fixed list -- globals are never enumerated.
+# Existence only, for the triggers the baseline called defensively. A
+# fixed list -- globals are never enumerated.
 PROBE_FUNCTIONS = (
     "CalculerMntArrete", "CalculerMontantDommage", "DevisCalculerMontantCharge",
 )
 
-# Never sent, even by a human's misclick, even during evidence capture.
-BLOCKED = (
-    "garageModifierValDevis", "validerDevis", "deleteDevisDet",
-    "expertCloturerMission", "cloturerMission", "enregistrerMission",
-    "expertEnregistrerMission", "ajouterDocument", "deleteDocument",
-    "cloturerTraitement",
-)
+WORKFLOWS = {
+    "mode-normal": _MODE_NORMAL_SELECTORS,
+    "garage-conventionne": _GARAGE_CONVENTIONNE_SELECTORS,
+}
 
 _NUMERIC_SEGMENT = re.compile(r"^\d+$")
 
@@ -129,6 +151,17 @@ def normalize_path(path: str) -> str:
     return "/".join(out)
 
 
+def safe_field_names(candidates) -> list[str]:
+    """Keeps only names that look like names, and drops everything else.
+
+    Applied to query keys as well as body keys: parse_qsl will happily
+    return a whole malformed fragment as a single key, and a key is
+    persisted while a value is not -- so an unfiltered key is a way for
+    raw material to reach the file through the one field that gets
+    written down."""
+    return sorted({name for name in candidates if _FIELD_NAME.match(name)})
+
+
 def field_names(content_type: str | None, body: str | None) -> list[str]:
     """Parses a body for its KEYS and drops the values immediately. The
     values are never bound to a name that outlives this function."""
@@ -144,7 +177,11 @@ def field_names(content_type: str | None, body: str | None) -> list[str]:
             candidates = [name for name, _value in parse_qsl(body, keep_blank_values=True)]
     except Exception:
         candidates = []
-    names = sorted({name for name in candidates if _FIELD_NAME.match(name)})
+    # A form field must have arrived as an actual name=value pair. A bare
+    # fragment with no "=" is not a field, whatever it looks like.
+    if "json" not in (content_type or "").lower():
+        candidates = [name for name in candidates if f"{name}=" in (body or "")]
+    names = safe_field_names(candidates)
     if not names:
         # Nothing that looks like a field name. Say so, and say nothing
         # else -- never fall back to the raw text.
@@ -157,8 +194,41 @@ def is_in_scope(url: str) -> bool:
     return parts.hostname == PORTAL_HOST and parts.path.startswith(MCMA_BASE + "/")
 
 
-def is_blocked(path: str) -> bool:
-    return any(name in path for name in BLOCKED)
+def canonical_path_or_none(url: str) -> str | None:
+    """The path as production canonicalizes it, or None if the path is
+    suspicious -- encoded separators, traversal segments, duplicate
+    slashes.
+
+    Only the PATH rules are wanted here, so method/content-type/body are
+    passed as a plain GET: canonicalize_request also rejects bodies with
+    duplicate field names, and applying that to a live portal would abort
+    ordinary page traffic that has nothing to do with final actions."""
+    canonical = canonicalize_request(
+        raw_url=url, raw_method="GET", raw_content_type=None, raw_body=None
+    )
+    return canonical.path if canonical is not None else None
+
+
+def is_blocked(url_or_path: str) -> bool:
+    """Fail safe. A path we cannot canonicalize is treated as blocked
+    rather than allowed: an encoded or traversal-laden path is exactly how
+    a final action would slip past a substring check, and refusing an
+    ambiguous request costs a retry while allowing one could close a
+    claim."""
+    candidate = url_or_path
+    if "://" in url_or_path:
+        canonical = canonical_path_or_none(url_or_path)
+        if canonical is None:
+            return True
+        candidate = canonical
+    elif urlsplit(f"https://{PORTAL_HOST}{url_or_path}").path != url_or_path:
+        return True
+    else:
+        canonical = canonical_path_or_none(f"https://{PORTAL_HOST}{url_or_path}")
+        if canonical is None:
+            return True
+        candidate = canonical
+    return is_permanently_blocked(candidate)
 
 
 class Capture:
@@ -175,7 +245,9 @@ class Capture:
             "method": method,
             "path_template": normalize_path(urlsplit(url).path),
             "content_type": (content_type or "").split(";")[0] or None,
-            "query_field_names": sorted({k for k, _ in parse_qsl(urlsplit(url).query)}),
+            "query_field_names": safe_field_names(
+                k for k, _ in parse_qsl(urlsplit(url).query, keep_blank_values=True)
+            ),
             "body_field_names": field_names(content_type, body),
         })
 
@@ -195,8 +267,9 @@ class Capture:
             "path_template": normalize_path(urlsplit(url).path),
         })
 
-    def to_document(self, selectors: dict, functions: dict) -> dict:
+    def to_document(self, workflow: str, selectors: dict, functions: dict) -> dict:
         return {
+            "workflow": workflow,
             "captured_at": datetime.now(timezone.utc).isoformat(),
             "host": PORTAL_HOST,
             "base": MCMA_BASE,
@@ -211,30 +284,58 @@ class Capture:
         }
 
 
-async def _run() -> None:  # pragma: no cover - operator-driven session
-    from playwright.async_api import async_playwright
+INSTRUCTIONS = {
+    "mode-normal": (
+        "1. Connectez-vous (mot de passe + OTP)",
+        "2. Ouvrez un dossier de test MODE NORMAL approuvé",
+        "3. Ajoutez UNE ligne représentative (Ajouter, remplir, coche)",
+        "4. Déclenchez le calcul comme vous le faites normalement",
+        "5. LAISSEZ LE NAVIGATEUR OUVERT et revenez ici",
+    ),
+    "garage-conventionne": (
+        "1. Connectez-vous (mot de passe + OTP)",
+        "2. Ouvrez un dossier de test GARAGE CONVENTIONNÉ approuvé",
+        "3. Modifiez UNE ligne validée représentative (crayon, coche)",
+        "4. Déclenchez le calcul comme vous le faites normalement",
+        "5. LAISSEZ LE NAVIGATEUR OUVERT et revenez ici",
+    ),
+}
 
-    from mcma.portal.sinauto_contracts import portal_base_for  # noqa: F401  (path sanity)
+
+async def probe_dom(page, workflow: str):
+    """Boolean presence for the workflow's fixed lists. Runs while the
+    page is still OPEN -- the previous version probed after the close
+    event, when page.evaluate can no longer work, so it collected network
+    shapes and silently lost every piece of DOM evidence, which is most of
+    what the audit says is missing."""
+    selectors = await page.evaluate(
+        "(list) => Object.fromEntries(list.map(s => [s, document.querySelector(s) !== null]))",
+        list(WORKFLOWS[workflow]),
+    )
+    functions = await page.evaluate(
+        "(list) => Object.fromEntries(list.map(n => [n, typeof window[n] === 'function']))",
+        list(PROBE_FUNCTIONS),
+    )
+    return selectors, functions
+
+
+async def _run(workflow: str) -> None:  # pragma: no cover - operator-driven session
+    from playwright.async_api import async_playwright
 
     capture = Capture()
 
     print()
     print("=" * 70)
-    print("  CAPTURE DE CONTRAT — OBSERVATION SEULE")
+    print(f"  CAPTURE DE CONTRAT — {workflow.upper()} — OBSERVATION SEULE")
     print("=" * 70)
-    print("  Ce script ne remplit rien et ne clique sur rien.")
+    print("  CET OUTIL NE CLIQUE NI NE REMPLIT RIEN.")
     print("  Vous faites toutes les actions vous-même.")
     print()
-    print("  1. Connectez-vous (mot de passe + OTP)")
-    print("  2. Ouvrez le dossier de test approuvé")
-    print("  3. Ajoutez UNE ligne Mode Normal (Ajouter, remplir, coche)")
-    print("  4. Modifiez UNE ligne Garage Conventionné (crayon, coche)")
-    print("  5. Déclenchez le calcul si demandé")
+    for line in INSTRUCTIONS[workflow]:
+        print(f"  {line}")
     print()
     print("  Les actions finales (Valider, Clôture, Enregistrer, GED)")
-    print("  sont bloquées par ce script et ne partiront jamais.")
-    print()
-    print("  Fermez le navigateur quand vous avez terminé.")
+    print("  sont bloquées et ne partiront jamais.")
     print("=" * 70)
     print()
 
@@ -248,12 +349,11 @@ async def _run() -> None:  # pragma: no cover - operator-driven session
             if not is_in_scope(url):
                 await route.continue_()      # not ours; not recorded either
                 return
-            path = urlsplit(url).path
-            if is_blocked(path):
+            if is_blocked(url):
                 # Aborted truthfully. A fake 200 would tell the portal's
                 # own JavaScript that a final action succeeded.
                 capture.record_blocked(request.method, url)
-                print(f"[BLOQUÉ] {request.method} {normalize_path(path)}")
+                print(f"[BLOQUÉ] {request.method} {normalize_path(urlsplit(url).path)}")
                 await route.abort("blockedbyclient")
                 return
             capture.record_request(
@@ -277,33 +377,35 @@ async def _run() -> None:  # pragma: no cover - operator-driven session
         page = await context.new_page()
         await page.goto(f"https://{PORTAL_HOST}{MCMA_BASE}/")
 
-        closed = {"value": False}
-        page.on("close", lambda _p: closed.update(value=True))
-        while not closed["value"]:
-            await page.wait_for_timeout(1000)
+        # The page stays open for this. Blocking on input() would freeze
+        # the event loop that is servicing the browser, so it runs on a
+        # thread.
+        await asyncio.get_running_loop().run_in_executor(
+            None,
+            input,
+            "\n>>> Appuyez sur Entrée lorsque le dossier est prêt pour la capture DOM... ",
+        )
 
         selectors, functions = {}, {}
         try:
-            selectors = await page.evaluate(
-                "(list) => Object.fromEntries(list.map(s => [s, document.querySelector(s) !== null]))",
-                list(PROBE_SELECTORS),
-            )
-            functions = await page.evaluate(
-                "(list) => Object.fromEntries(list.map(n => [n, typeof window[n] === 'function']))",
-                list(PROBE_FUNCTIONS),
-            )
+            selectors, functions = await probe_dom(page, workflow)
+            print("[*] Capture DOM terminée. Vous pouvez fermer le navigateur.")
         except Exception:
-            print("[!] La page était déjà fermée : sondes DOM non collectées.")
+            print("[!] Capture DOM impossible (page fermée ?). Réessayez sans fermer.")
 
         await browser.close()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out = OUTPUT_DIR / f"write-contract-capture-{stamp}.json"
-    out.write_text(json.dumps(capture.to_document(selectors, functions), indent=2), encoding="utf-8")
+    out = OUTPUT_DIR / f"write-contract-{workflow}-{stamp}.json"
+    out.write_text(
+        json.dumps(capture.to_document(workflow, selectors, functions), indent=2),
+        encoding="utf-8",
+    )
 
     print()
     print(f"[*] {len(capture.events)} évènements enregistrés (noms de champs seulement).")
+    print(f"[*] {sum(1 for v in selectors.values() if v)}/{len(selectors)} sélecteurs présents.")
     if capture.blocked:
         print(f"[*] {len(capture.blocked)} action(s) finale(s) bloquée(s).")
     print(f"[*] Fichier : {out}")
@@ -311,9 +413,15 @@ async def _run() -> None:  # pragma: no cover - operator-driven session
 
 
 def main() -> None:  # pragma: no cover - operator entry point
-    import asyncio
+    import argparse
 
-    asyncio.run(_run())
+    parser = argparse.ArgumentParser(description="Observe SinAuto write contracts. Never acts.")
+    parser.add_argument(
+        "--workflow", required=True, choices=sorted(WORKFLOWS),
+        help="which approved test dossier this run observes",
+    )
+    args = parser.parse_args()
+    asyncio.run(_run(args.workflow))
 
 
 if __name__ == "__main__":  # pragma: no cover
