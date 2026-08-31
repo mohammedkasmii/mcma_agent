@@ -109,16 +109,44 @@ class WexiaDossier(_Base):
     # None = marker absent from the payload; the builder fails closed on it
     # (G1 review H4 — the exclusion flag must never default to permissive).
     is_reform: Optional[bool] = None
+    # Correction batch (section J, non-table header fields) — fallbacks
+    # only; the vehicule-level/chiffrage-level/observations_expert-level
+    # values are preferred where both exist (docs/recovery/PORTAL_CONTRACT.md
+    # §5, recovered baseline mapper/wexia_mapper.py:383,393,454,443-444).
+    mileage_km: Optional[int] = None
+    market_value: Optional[int] = None
+    responsibility_rate: Optional[int] = None
+    expert_observations: Optional[str] = None
 
 
 class WexiaVehicule(_Base):
     license_plate: Optional[str] = None
+    mileage_km: Optional[int] = None
+    market_value: Optional[int] = None
+
+
+class WexiaObservationsExpert(_Base):
+    """Correction batch (section J): the CONFIRMED source of
+    #ObservationMission is observations_expert.texte, NOT
+    dossier.incident_description -- those are distinct fields in the raw
+    Wexia payload (recovered baseline mapper/wexia_mapper.py:442-445), and
+    incident_description is used elsewhere only as an internal mode-
+    detection signal (mcma.planning.plan._detect_mode_fail_closed), never
+    as form-field content."""
+
+    texte: Optional[str] = None
+
+
+class WexiaAssureur(_Base):
+    responsibility_rate: Optional[int] = None
 
 
 class WexiaInput(_Base):
     dossier: WexiaDossier = Field(default_factory=WexiaDossier)
     vehicule: WexiaVehicule = Field(default_factory=WexiaVehicule)
     chiffrages: List[WexiaChiffrage] = Field(default_factory=list)
+    observations_expert: WexiaObservationsExpert = Field(default_factory=WexiaObservationsExpert)
+    assureur: WexiaAssureur = Field(default_factory=WexiaAssureur)
 
     @property
     def registration_raw(self) -> Optional[str]:

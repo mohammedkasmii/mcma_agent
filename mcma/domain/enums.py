@@ -50,3 +50,25 @@ class Permission(Enum):
 class RepairWorkflow(Enum):
     MODE_NORMAL = "mode_normal"
     GARAGE_CONVENTIONNE = "garage_conventionne"
+
+
+@unique
+class FormFieldSelector(Enum):
+    """Correction batch (owner amendment, section J) -- the FIXED,
+    exhaustive allowlist of non-table header-field DOM ids a
+    FormFieldIntent may name. A plan can never reference an arbitrary
+    caller-supplied selector string; only these five (of the ten
+    recovered in docs/recovery/PORTAL_CONTRACT.md §5) currently have
+    both a confirmed single-valued JSON source AND a confirmed selector
+    with no portal-computed-value ambiguity -- see mcma.planning.plan's
+    module docstring for the evidence matrix and the fields deliberately
+    NOT implemented here (MontantReparation/MontantTVA/MontantTTC are
+    likely portal-derived; VehRepareI/TypeReforme have no confirmed JSON
+    source mapping in any recovered evidence)."""
+
+    KILOMETRAGE = "Kilometrage"
+    VALEUR_VENALE = "ValeurVenale"
+    VALEUR_VENALE_ESTIME = "ValeurVenaleEstime"
+    NBRE_JOUR_IMMOBILISATION = "NbreJourImmobilisation"
+    PART_RESPONSABILITE = "PartResponsabilite"
+    OBSERVATION_MISSION = "ObservationMission"

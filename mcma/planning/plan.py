@@ -31,10 +31,48 @@ from mcma.domain.rubriques import (
     has_glass_signal,
     resolve_explicit_rubrique,
 )
-from mcma.domain.enums import RepairWorkflow
+from mcma.domain.enums import FormFieldSelector, RepairWorkflow
 from mcma.domain.values import IdSinistre, InsurerReference, RegistrationPlate, RubriqueId
 
-BUILDER_VERSION = "inc05-2"
+# ---------------------------------------------------------------------------
+# Non-table header fields (correction batch, section J) -- evidence matrix
+# ---------------------------------------------------------------------------
+# docs/recovery/PORTAL_CONTRACT.md §5 lists TEN recovered selectors. Of
+# those, only the five below have BOTH a confirmed, unambiguous single-
+# valued JSON source AND no evidence of being portal-computed --
+# implemented here as FormFieldIntent. The remaining five are deliberately
+# NOT implemented (never guessed):
+#   - MontantReparation / MontantTVA / MontantTTC: recovered baseline
+#     mapper/wexia_mapper.py writes these, but browser/form_filler.py
+#     calls trigger_mcma_calculations() immediately after filling text
+#     fields, strongly suggesting the portal recalculates these itself --
+#     UNCONFIRMED whether writing them is safe or even meaningful; do not
+#     write them if native calculation owns them.
+#   - VehRepareI: PORTAL_CONTRACT.md §4 confirms it as a SHARED
+#     mission-option/header field (never a workflow detector), but no
+#     recovered evidence maps ANY Wexia JSON field to it -- the baseline
+#     mapper hardcodes it to a constant (True) with no JSON source at
+#     all, which is a business-rule assumption, not an evidenced mapping,
+#     and no such rule is confirmed here.
+#   - TypeReforme: no recovered evidence maps dossier.is_reform (or
+#     anything else) to this selector; reform dossiers are already
+#     excluded upstream (_build_plan_core raises PlanBuildError before
+#     any plan exists), and the baseline mapper never writes it either.
+# Each implemented field's confirmed source (recovered baseline
+# mapper/wexia_mapper.py line references in parentheses):
+#   Kilometrage            <- vehicule.mileage_km, else dossier.mileage_km (:383)
+#   ValeurVenale/Estime    <- vehicule.market_value, else dossier.market_value (:393; dual-write :392-396)
+#   NbreJourImmobilisation <- chiffrage.estimated_days, only when > 0 (:388-390)
+#   PartResponsabilite     <- dossier.responsibility_rate, else assureur.responsibility_rate;
+#                             constrained to {0, 50, 100} -- NeedsReview otherwise, never guessed (:454-459)
+#   ObservationMission     <- observations_expert.texte, else dossier.expert_observations (:442-445)
+# All five are shared header fields present on every mission regardless
+# of workflow (PORTAL_CONTRACT.md §4-5) -- FormFieldIntent.applicable_
+# workflows lists both for all five today.
+
+_VALID_RESPONSIBILITY_RATES = frozenset({"0", "50", "100"})
+
+BUILDER_VERSION = "inc05-3"
 
 _CENT = Decimal("0.01")
 
@@ -96,6 +134,31 @@ class RowOp:
 
 
 @dataclass(frozen=True)
+class FormFieldIntent:
+    """One non-table header-field write (correction batch, section J).
+    `selector` is drawn from the FIXED FormFieldSelector enum -- never a
+    caller-supplied string, so a plan can never name an arbitrary DOM id.
+    Bound to AuthorizedExecution exactly like RowOp: it is plan data,
+    consumed only inside a VerifiedMissionWriter reachable solely through
+    the authorized EXECUTE path (mcma.execution.jobs.run_execute_write) --
+    this module never touches a browser itself. Never a
+    charge-mutuelle/sociétaire or final-action field (structurally
+    impossible: FormFieldSelector's fixed member list contains neither)."""
+
+    selector: FormFieldSelector
+    value: str
+    applicable_workflows: Tuple[RepairWorkflow, ...]
+
+    def __post_init__(self):
+        if not isinstance(self.selector, FormFieldSelector):
+            raise TypeError("FormFieldIntent.selector must be a FormFieldSelector")
+        if not isinstance(self.value, str) or not self.value:
+            raise ValueError("FormFieldIntent.value must be a non-empty string")
+        if not self.applicable_workflows:
+            raise ValueError("FormFieldIntent requires at least one applicable workflow")
+
+
+@dataclass(frozen=True)
 class Provenance:
     input_hash: str
     plan_hash: str
@@ -109,6 +172,7 @@ class ProposedPlan:
     steps: Tuple[RowOp, ...]
     needs_review: Tuple[NeedsReview, ...]
     provenance: Provenance
+    form_field_intents: Tuple[FormFieldIntent, ...] = ()
 
     @property
     def is_writeable(self) -> bool:
@@ -233,6 +297,56 @@ def _select_chiffrage(chiffrages):
     return candidates[0]
 
 
+_BOTH_WORKFLOWS: Tuple[RepairWorkflow, ...] = (RepairWorkflow.MODE_NORMAL, RepairWorkflow.GARAGE_CONVENTIONNE)
+
+
+def _build_form_field_intents(typed_input, chiffrage) -> Tuple[Tuple[FormFieldIntent, ...], list]:
+    """Correction batch (section J) -- see the module-level evidence-matrix
+    comment above BUILDER_VERSION for exactly why each of these five (and
+    only these five) is implemented. Returns (intents, extra_needs_review)
+    -- PartResponsabilite present but outside {0, 50, 100} becomes a
+    NeedsReview entry (never guessed, never a hard PlanBuildError: the
+    rest of the plan can still be produced/reviewed as normal)."""
+    intents: list = []
+    extra_reviews: list = []
+    dossier = typed_input.dossier
+    vehicule = typed_input.vehicule
+
+    km = vehicule.mileage_km if vehicule.mileage_km is not None else dossier.mileage_km
+    if km is not None:
+        intents.append(FormFieldIntent(FormFieldSelector.KILOMETRAGE, str(int(km)), _BOTH_WORKFLOWS))
+
+    market_value = vehicule.market_value if vehicule.market_value is not None else dossier.market_value
+    if market_value is not None:
+        intents.append(FormFieldIntent(FormFieldSelector.VALEUR_VENALE, str(int(market_value)), _BOTH_WORKFLOWS))
+        intents.append(
+            FormFieldIntent(FormFieldSelector.VALEUR_VENALE_ESTIME, str(int(market_value)), _BOTH_WORKFLOWS)
+        )
+
+    days = chiffrage.estimated_days
+    if days is not None and int(days) > 0:
+        intents.append(FormFieldIntent(FormFieldSelector.NBRE_JOUR_IMMOBILISATION, str(int(days)), _BOTH_WORKFLOWS))
+
+    rate = dossier.responsibility_rate if dossier.responsibility_rate is not None else typed_input.assureur.responsibility_rate
+    if rate is not None:
+        rate_str = str(int(rate))
+        if rate_str in _VALID_RESPONSIBILITY_RATES:
+            intents.append(FormFieldIntent(FormFieldSelector.PART_RESPONSABILITE, rate_str, _BOTH_WORKFLOWS))
+        else:
+            extra_reviews.append(
+                NeedsReview(
+                    ReasonCode.INVALID_RESPONSIBILITY_RATE,
+                    detail=f"responsibility_rate {rate_str!r} is not one of 0/50/100 — fail closed, never guessed",
+                )
+            )
+
+    obs_text = typed_input.observations_expert.texte or dossier.expert_observations
+    if obs_text:
+        intents.append(FormFieldIntent(FormFieldSelector.OBSERVATION_MISSION, str(obs_text), _BOTH_WORKFLOWS))
+
+    return tuple(intents), extra_reviews
+
+
 def _classify_piece(line):
     """Classification order: explicit id → structured labour → colle → glass →
     ordinary part (origin only)."""
@@ -311,6 +425,9 @@ def _build_plan_core(typed_input, expected_workflow: RepairWorkflow) -> Proposed
     groups: dict = {}
     reviews: list = []
     seen_pointers: dict = {}
+
+    form_field_intents, form_field_reviews = _build_form_field_intents(typed_input, chiffrage)
+    reviews.extend(form_field_reviews)
 
     def _add(rubrique: RubriqueId, ht: Money, vetuste: Money, pointer: str):
         entry = groups.setdefault(
@@ -398,6 +515,7 @@ def _build_plan_core(typed_input, expected_workflow: RepairWorkflow) -> Proposed
                 "repair_workflow": expected_workflow,
                 "steps": list(steps),
                 "needs_review": list(needs_review),
+                "form_field_intents": list(form_field_intents),
                 "builder_version": BUILDER_VERSION,
                 "input_hash": input_hash,
             }
@@ -412,6 +530,7 @@ def _build_plan_core(typed_input, expected_workflow: RepairWorkflow) -> Proposed
         steps=steps,
         needs_review=needs_review,
         provenance=provenance,
+        form_field_intents=form_field_intents,
     )
 
 
