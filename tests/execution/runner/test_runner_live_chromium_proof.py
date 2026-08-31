@@ -177,7 +177,7 @@ def _execute_job_planned(conn, encryptor, *, typed_input, key, account_id=MCMA_O
     transition(conn, dry_run_job_id, "PLANNING")
     parent_row = AutomationJobsRepository(conn).get(dry_run_job_id)
     plan = _rebuild_plan(conn, parent_row, encryptor)
-    transition(conn, dry_run_job_id, "DRY_RUN_VERIFIED", plan_hash=plan.provenance.plan_hash, plan_snapshot=plan.canonical_json())
+    transition(conn, dry_run_job_id, "DRY_RUN_VERIFIED", plan_hash=plan.provenance.plan_hash)
 
     parent = AutomationJobsRepository(conn).get(dry_run_job_id)
     execute_job_id = enqueue_execute(

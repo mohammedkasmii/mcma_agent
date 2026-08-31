@@ -261,35 +261,3 @@ def test_the_session_vault_still_uses_local_machine_scope():
     source = inspect.getsource(DpapiLocalMachineBackend)
     assert "LOCAL_MACHINE" in source
     assert "CURRENT_USER" not in source
-
-
-@pytest.mark.skip(reason="PII_IN_PLAN_SNAPSHOT_PENDING_FOLLOW_UP: found while implementing C.1, out of scope here")
-def test_PII_IN_PLAN_SNAPSHOT_PENDING_FOLLOW_UP():
-    """KNOWN FINDING, recorded rather than fixed here.
-
-    Encrypting job_inputs.ciphertext does NOT make the database free of
-    claimant data. automation_jobs.plan_snapshot stores
-    ProposedPlan.canonical_json() verbatim, and that JSON contains the
-    vehicle registration and the claim identifier. Reproduced against the
-    real Mode Normal planner:
-
-        {"expected_identity": {"id_sinistre": {"value": "699001"},
-         "registration": {"normalized": "77001C3", "raw": "77001-C-3"}},
-         ...}
-
-    written by mcma.execution.jobs at the PLANNED and NEEDS_REVIEW
-    transitions (jobs.py:363, 365, 461).
-
-    So after this phase a copy of var/mcma.sqlite3 still discloses which
-    vehicle and which claim each job concerns, though no longer the full
-    dossier -- amounts, insured name and line items are only in the
-    encrypted column.
-
-    Not fixed here because plan_snapshot is documented as display/audit
-    data that several paths read, and changing its shape is a separate
-    decision with its own migration. Options for that follow-up: encrypt
-    the column like job_inputs, store only the plan_hash and rebuild the
-    snapshot on demand, or redact the identity block before persisting.
-
-    Belongs with the G-PDR work (INC-20/21), which is where at-rest
-    protection for persisted claimant data is specified."""

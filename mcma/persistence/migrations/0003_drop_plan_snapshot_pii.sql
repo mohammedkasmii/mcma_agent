@@ -1,0 +1,18 @@
+-- Forward-only. automation_jobs.plan_snapshot stored the full
+-- ProposedPlan JSON, which carries the vehicle registration and the claim
+-- identifier in the clear:
+--
+--   {"expected_identity": {"id_sinistre": {"value": "699001"},
+--    "registration": {"raw": "77001-C-3"}}, ...}
+--
+-- Nothing needs it. The runner explicitly refuses to treat it as
+-- execution authority and rebuilds from the encrypted retained input;
+-- execution authorization compares plan_hash, which is kept. The one
+-- consumer was the dashboard's plan preview, now served on demand from
+-- the encrypted input by GET /jobs/{job_id}/plan.
+--
+-- Existing installations already ran 0001/0002, so the rows they wrote
+-- must be cleared here rather than by editing those files. The column is
+-- kept (nullable, no longer written) so this is a data change only -- no
+-- table rebuild, and re-running is a no-op.
+UPDATE automation_jobs SET plan_snapshot = NULL WHERE plan_snapshot IS NOT NULL;

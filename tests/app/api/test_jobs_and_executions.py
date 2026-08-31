@@ -153,7 +153,7 @@ def _create_verified_dry_run(conn, client, csrf, account_id=OUJDA, key="dr-1"):
     # will independently recompute from the retained input.
     plan = build_mission_normal_plan(parse_wexia(VALID_TYPED_INPUT))
     transition(conn, job_id, "PLANNING")
-    transition(conn, job_id, "PLANNED", plan_hash=plan.provenance.plan_hash, plan_snapshot=plan.canonical_json())
+    transition(conn, job_id, "PLANNED", plan_hash=plan.provenance.plan_hash)
     transition(conn, job_id, "READ_ONLY_IDENTITY_CHECK")
     transition(conn, job_id, "DRY_RUN_VERIFIED")
     return job_id

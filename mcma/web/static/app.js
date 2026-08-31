@@ -533,6 +533,17 @@
     return SUCCESS_STATUSES.indexOf(status) !== -1;
   }
 
+  async function fetchJobPlan(fetchImpl, jobId) {
+    try {
+      var response = await fetchImpl("/jobs/" + encodeURIComponent(jobId) + "/plan",
+                                     { credentials: "include" });
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (err) {
+      return null;
+    }
+  }
+
   async function fetchJobById(fetchImpl, jobId) {
     var response = await fetchImpl("/jobs?job_id=" + encodeURIComponent(jobId), { credentials: "include" });
     if (!response.ok) {
@@ -569,21 +580,19 @@
   // ----------------------------------------------------------------- //
   // Plan preview -- built via createElement/textContent only, exactly
   // like renderNotificationRow. No charge-mutuelle/sociétaire field ever
-  // appears here (ProposedPlan/plan_snapshot structurally cannot carry
-  // one -- see mcma.planning.plan.RowOp's own docstring).
+  // appears here (ProposedPlan structurally cannot carry one -- see
+  // mcma.planning.plan.RowOp's own docstring).
+  //
+  // The plan now arrives from GET /jobs/{id}/plan, rebuilt on demand from
+  // the encrypted retained input. It used to be read from the job row's
+  // plan_snapshot column, which meant a vehicle registration and a claim
+  // id sat in the database in the clear so this panel could be rendered.
   // ----------------------------------------------------------------- //
 
-  function renderPlanPreview(container, job) {
+  function renderPlanPreview(container, plan) {
     container.textContent = "";
-    if (!job || !job.plan_snapshot) {
+    if (!plan) {
       container.appendChild(el("p", "empty-state", "No plan yet."));
-      return;
-    }
-    var plan;
-    try {
-      plan = JSON.parse(job.plan_snapshot);
-    } catch (err) {
-      container.appendChild(el("p", "error-state", "Plan preview unavailable."));
       return;
     }
     var steps = plan.steps || [];
@@ -1083,7 +1092,9 @@
     async function pollCurrentJob() {
       if (!currentJobId || !readinessLabelEl) return;
       var job = await updateReadinessDisplay(fetch, readinessLabelEl, currentJobId);
-      if (planPreviewEl) renderPlanPreview(planPreviewEl, job);
+      if (planPreviewEl) {
+        renderPlanPreview(planPreviewEl, await fetchJobPlan(fetch, currentJobId));
+      }
       setAuthorizeButtonVisible(job);
       setHandoffButtonsVisible(job);
     }
@@ -1214,6 +1225,7 @@
     readinessLabel: readinessLabel,
     isReadyLooking: isReadyLooking,
     fetchJobById: fetchJobById,
+    fetchJobPlan: fetchJobPlan,
     updateReadinessDisplay: updateReadinessDisplay,
     renderPlanPreview: renderPlanPreview,
     renderLoadingState: renderLoadingState,

@@ -42,15 +42,17 @@ def test_render_plan_preview_shows_steps_and_warnings_never_charge_fields(dashbo
                 """() => {
                     const container = document.createElement('div');
                     document.body.appendChild(container);
-                    const job = {
-                        plan_snapshot: JSON.stringify({
-                            repair_workflow: 'mode_normal',
-                            steps: [{rubrique_id: '3', ht: '10.00'}],
-                            needs_review: [{reason: 'AMBIGUOUS_GLASS', detail: 'x'}],
-                            form_field_intents: [{selector: 'Kilometrage', value: '50000'}],
-                        }),
+                    // The plan now arrives from GET /jobs/{id}/plan as an
+                    // object, not as JSON text on the job row -- that
+                    // column held a registration and a claim id in the
+                    // clear and no longer exists in responses.
+                    const plan = {
+                        repair_workflow: 'mode_normal',
+                        steps: [{rubrique_id: '3', ht: '10.00'}],
+                        needs_review: [{reason: 'AMBIGUOUS_GLASS', detail: 'x'}],
+                        form_field_intents: [{selector: 'Kilometrage', value: '50000'}],
                     };
-                    window.mcmaDashboard.renderPlanPreview(container, job);
+                    window.mcmaDashboard.renderPlanPreview(container, plan);
                     return {
                         text: container.textContent,
                         html: container.innerHTML,

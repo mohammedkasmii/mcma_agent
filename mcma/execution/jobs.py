@@ -360,9 +360,9 @@ def run_dry_run_planning(conn, job_id: str, *, build_plan: Callable[[], Any]):
     transition(conn, job_id, "PLANNING")
     plan = build_plan()
     if plan.needs_review:
-        transition(conn, job_id, "NEEDS_REVIEW", plan_hash=plan.provenance.plan_hash, plan_snapshot=plan.canonical_json())
+        transition(conn, job_id, "NEEDS_REVIEW", plan_hash=plan.provenance.plan_hash)
     else:
-        transition(conn, job_id, "PLANNED", plan_hash=plan.provenance.plan_hash, plan_snapshot=plan.canonical_json())
+        transition(conn, job_id, "PLANNED", plan_hash=plan.provenance.plan_hash)
     return plan
 
 
@@ -458,9 +458,9 @@ def run_execute_planning(
         raise JobAuthorizationError("INPUT_CHANGED")
 
     if plan.needs_review:
-        transition(conn, job_id, "NEEDS_REVIEW", plan_hash=plan.provenance.plan_hash, plan_snapshot=plan.canonical_json())
+        transition(conn, job_id, "NEEDS_REVIEW", plan_hash=plan.provenance.plan_hash)
     else:
-        transition(conn, job_id, "PLANNED", plan_hash=plan.provenance.plan_hash, plan_snapshot=plan.canonical_json())
+        transition(conn, job_id, "PLANNED", plan_hash=plan.provenance.plan_hash)
     return plan
 
 

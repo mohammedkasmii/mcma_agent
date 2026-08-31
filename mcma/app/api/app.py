@@ -461,6 +461,87 @@ def create_api_app(
 
     # -- jobs --------------------------------------------------------------
 
+    # An explicit allowlist, not dict(row). Serializing the whole row made
+    # every column public by default -- which is how plan_snapshot, holding
+    # a vehicle registration and a claim id, reached the browser. Adding a
+    # sensitive column to this table must not silently publish it, so a new
+    # field appears here only when someone decides it should.
+    _JOB_FIELDS = (
+        "job_id",
+        "account_id",
+        "parent_job_id",
+        "workflow_name",
+        "mode",
+        "status",
+        "reason_code",
+        "plan_hash",       # the dashboard shows it; it is a digest, not content
+        "created_at",
+        "started_at",
+        "finished_at",
+    )
+
+    def _job_projection(row) -> dict:
+        return {field: row[field] for field in _JOB_FIELDS if field in row.keys()}
+
+    @app.get("/jobs/{job_id}/plan")
+    def get_job_plan(job_id: str, principal: Principal = Depends(get_principal)):
+        """The plan preview, rebuilt on demand from the encrypted retained
+        input rather than read from a stored copy.
+
+        The dashboard genuinely needs this -- it is the panel an employee
+        reads before authorizing a fill -- but keeping a plaintext copy on
+        disk forever to serve a screen that is looked at once is the wrong
+        trade. Rebuilding costs a decrypt and a pure planner call, goes
+        through the same account authorization as everything else, and
+        leaves nothing behind."""
+        require_permission(principal, Permission.JOBS_VIEW)
+        row = AutomationJobsRepository(conn).get(job_id)
+        if row is None:
+            raise ApiError(404, "JOB_NOT_FOUND", "no such job")
+        require_account_access(conn, principal, row["account_id"])
+
+        try:
+            typed_input_bytes = retrieve_and_verify_job_input(
+                conn, job_id, row["input_hash"], encryptor
+            )
+        except JobInputUnavailable as exc:
+            # Expired or already deleted retention -- normal, not an error
+            # worth a stack trace.
+            raise ApiError(410, "PLAN_INPUT_UNAVAILABLE", "the retained input is no longer available") from exc
+
+        try:
+            plan = default_registry().get(row["workflow_name"])(parse_wexia(json.loads(typed_input_bytes)))
+        except PlanBuildError as exc:
+            raise ApiError(409, "PLAN_BUILD_FAILED", "the retained input could not be re-planned") from exc
+
+        # A DISPLAY projection: what will be written, and what needs a
+        # human's attention. Deliberately no expected_identity -- the
+        # registration and claim id are exactly the PII this change is
+        # removing from storage, and the employee already knows which
+        # dossier they uploaded.
+        return {
+            "job_id": job_id,
+            "plan_hash": plan.provenance.plan_hash,
+            "repair_workflow": plan.repair_workflow.value,
+            "steps": [
+                {
+                    "rubrique_id": step.rubrique_id.value,
+                    "ht": str(step.ht.amount),
+                    "tva": str(step.tva.amount),
+                    "vetuste": str(step.vetuste.amount),
+                }
+                for step in plan.steps
+            ],
+            "form_field_intents": [
+                {"selector": intent.selector, "value": str(intent.value)}
+                for intent in getattr(plan, "form_field_intents", ())
+            ],
+            "needs_review": [
+                {"reason": item.reason, "detail": getattr(item, "detail", None)}
+                for item in plan.needs_review
+            ],
+        }
+
     @app.get("/jobs")
     def list_jobs(
         account_id: Optional[str] = None, job_id: Optional[str] = None, principal: Principal = Depends(get_principal)
@@ -486,7 +567,7 @@ def create_api_app(
                     f"SELECT * FROM automation_jobs WHERE account_id IN ({placeholders})", tuple(visible)
                 ).fetchall()
         filtered = filter_rows_by_account_access(conn, principal, rows)
-        return {"jobs": [dict(r) for r in filtered]}
+        return {"jobs": [_job_projection(r) for r in filtered]}
 
     @app.post("/jobs/dry-runs")
     async def create_dry_run(
