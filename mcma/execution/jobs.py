@@ -30,6 +30,7 @@ from mcma.persistence.repositories.accounts import AccountsRepository
 from mcma.persistence.repositories.audit import AuditEventsRepository
 from mcma.persistence.repositories.jobs import AutomationJobsRepository, JobInputsRepository
 from mcma.persistence.repositories.outbox import AccountStateVersionRepository, EventOutboxRepository
+from mcma.persistence.leases import release_lease_if_owned_by_job
 
 # Correction batch (owner amendment, human browser handoff): READY_FOR_
 # HUMAN_REVIEW is NO LONGER terminal -- it means agent work is finished
@@ -487,6 +488,62 @@ def run_execute_write(
     return "READY_FOR_HUMAN_REVIEW"
 
 
+async def run_execute_write_async(
+    conn,
+    job_id: str,
+    *,
+    acquire_lease_and_verify_identity: Callable[[], Any],
+    perform_writes_and_verify: Callable[[Any], bool],
+) -> str:
+    """Async twin of run_execute_write (pilot-runner correction), for the
+    real job runner (mcma.execution.runner) where the injected steps are
+    genuine awaitable Playwright/portal calls. run_execute_write's own
+    synchronous callables cannot be bridged onto the runner's asyncio
+    event loop from here -- Playwright's async API is tied to the loop it
+    was started on, so a callable that internally spawned its own loop/
+    thread to "go synchronous" would silently break it. This mirrors
+    run_execute_write's exact transition sequence and exception handling
+    with `await` in place of a plain call, so real browser I/O happens
+    only AFTER the corresponding transition() has already committed --
+    e.g. the lease is acquired/browser opened only once IDENTITY_
+    VERIFYING is durably recorded, and rows are only written once WRITING
+    is durably recorded -- instead of the reverse (all I/O first, state
+    caught up afterward), which left a crash mid-I/O invisible to restart
+    reconciliation. Any change to the status sequence must be made in
+    BOTH this function and run_execute_write.
+    """
+    job_row = AutomationJobsRepository(conn).get(job_id)
+    _require_mode(job_row, "EXECUTE")
+    if job_row["status"] != "PLANNED":
+        raise JobAuthorizationError("EXECUTE_WRITE_REQUIRES_PLANNED_STATUS")
+    _require_mcma_writable_account(conn, job_row["account_id"])
+    _require_authorized_parent(conn, job_row)
+
+    transition(conn, job_id, "ACQUIRING_ACCOUNT_LOCK")
+    transition(conn, job_id, "IDENTITY_VERIFYING")
+    try:
+        writer = await acquire_lease_and_verify_identity()
+    except Exception:
+        transition(conn, job_id, "IDENTITY_FAILED")
+        return "IDENTITY_FAILED"
+    transition(conn, job_id, "IDENTITY_VERIFIED")
+
+    transition(conn, job_id, "WRITING")
+    write_exception_reason = None
+    try:
+        succeeded = await perform_writes_and_verify(writer)
+    except Exception as exc:
+        succeeded = False
+        write_exception_reason = f"WRITE_EXCEPTION_{type(exc).__name__}"
+    if not succeeded:
+        transition(conn, job_id, "WRITE_ABORTED", reason_code=write_exception_reason)
+        return "WRITE_ABORTED"
+
+    transition(conn, job_id, "VERIFYING")
+    transition(conn, job_id, "READY_FOR_HUMAN_REVIEW")
+    return "READY_FOR_HUMAN_REVIEW"
+
+
 # --------------------------------------------------------------------- #
 # Human browser handoff (correction batch / owner amendment,
 # WORKFLOW_STATE_MODEL.md correction): READY_FOR_HUMAN_REVIEW means agent
@@ -589,6 +646,11 @@ def confirm_review_completed(
         raise JobAuthorizationError("REVIEW_NOT_AWAITING_CONFIRMATION") from exc
     if release_lease is not None:
         release_lease()
+    else:
+        # Restart-safe fallback (pilot-runner correction): no in-memory
+        # handle survived to be passed in -- fenced to this job's own
+        # account_leases ownership, see release_lease_if_owned_by_job.
+        release_lease_if_owned_by_job(conn, job_row["account_id"], job_id)
     return "HUMAN_CONFIRMED_COMPLETE"
 
 
@@ -628,4 +690,8 @@ def report_review_problem(
         raise JobAuthorizationError("NOT_IN_HUMAN_HANDOFF") from exc
     if release_lease is not None:
         release_lease()
+    else:
+        # Restart-safe fallback (pilot-runner correction): see
+        # confirm_review_completed's identical fallback above.
+        release_lease_if_owned_by_job(conn, job_row["account_id"], job_id)
     return "INTERRUPTED_NEEDS_HUMAN_REVIEW"

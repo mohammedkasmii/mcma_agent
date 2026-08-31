@@ -46,12 +46,12 @@ from mcma.execution.jobs import (
     JobAuthorizationError,
     run_dry_run_identity_check,
     run_dry_run_planning,
-    run_execute_write,
+    run_execute_write_async,
     transition_on_browser_closed,
 )
 from mcma.execution.lease import acquire_account_lease
 from mcma.mapping.wexia import parse_wexia
-from mcma.persistence.leases import AccountLeaseHandle, LeaseNotHeld
+from mcma.persistence.leases import AccountLeaseHandle, LeaseInvalid, LeaseNotHeld
 from mcma.persistence.repositories.accounts import AccountsRepository
 from mcma.persistence.repositories.jobs import AutomationJobsRepository
 from mcma.planning.plan import ExpectedIdentity as PlanExpectedIdentity
@@ -232,12 +232,44 @@ async def process_queued_dry_run_jobs(
 # EXECUTE: real lease + session + writer, human handoff registration
 # --------------------------------------------------------------------- #
 
+# Pilot-runner correction: the account lease used to be heartbeat-free --
+# acquired once with a fixed TTL and never renewed -- so it could expire
+# out from under a job mid-identity-check, mid-write, or (worst case)
+# while a human was still reviewing an open browser, since review time is
+# unbounded and the TTL is not. Interval is well under both TTLs used
+# below (60s dry-run, 120s execute) so a renewal always lands before the
+# lease could lapse even under scheduling jitter.
+_LEASE_HEARTBEAT_INTERVAL_SECONDS = 20
+
+
+async def _heartbeat_forever(lease: AccountLeaseHandle, *, interval_seconds: int = _LEASE_HEARTBEAT_INTERVAL_SECONDS) -> None:
+    """Renews `lease` on a fixed interval until cancelled (normal
+    shutdown -- the caller cancels this task once the lease is
+    deliberately released) or until the lease is discovered lost/
+    replaced (LeaseInvalid -- another owner has since reclaimed the
+    account; nothing further this task can legitimately do). Never
+    re-acquires -- a lost lease means this job's own claim on the
+    account is gone, not that this task should paper over it."""
+    try:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            lease.heartbeat()
+    except asyncio.CancelledError:
+        raise
+    except LeaseInvalid:
+        return
+
 
 async def _open_writer_for_execute(
     conn, browser, cfg: RunnerConfig, job_row, plan: ProposedPlan
-) -> Tuple[VerifiedMissionWriter, AccountLeaseHandle]:
+) -> Tuple[VerifiedMissionWriter, AccountLeaseHandle, "asyncio.Task"]:
     account_id = job_row["account_id"]
     lease = acquire_account_lease(conn, account_id, cfg.instance_id, owner_job_id=job_row["job_id"], ttl_seconds=120)
+    # Heartbeat starts the instant the lease is acquired -- covering
+    # identity verification, writing, and (kept alive by the caller
+    # through the rest of this job's lifecycle) human handoff, not just
+    # from whenever the browser+identity gate happened to finish.
+    heartbeat_task = asyncio.create_task(_heartbeat_forever(lease))
     try:
         account = AccountsRepository(conn).get(account_id)
         if account is None:
@@ -261,8 +293,9 @@ async def _open_writer_for_execute(
             writer_account=writer_account,
             context_options={"storage_state": storage_state},
         )
-        return writer, lease
+        return writer, lease, heartbeat_task
     except Exception:
+        heartbeat_task.cancel()
         lease.release()
         raise
 
@@ -317,42 +350,42 @@ async def process_one_planned_execute(
         raise ValueError("no such job_id")
     plan = _rebuild_plan(conn, job_row, encryptor)
 
+    # Pilot-runner correction: these closures used to run their real
+    # browser/portal I/O eagerly, BEFORE run_execute_write ever ran --
+    # so every state transition below (ACQUIRING_ACCOUNT_LOCK ->
+    # IDENTITY_VERIFYING -> ... -> WRITING) got recorded retroactively,
+    # in one burst, only after all of the I/O had already happened. A
+    # crash during that I/O (a live lease acquired, or a live portal
+    # write already sent) left the job row still sitting at PLANNED --
+    # invisible to restart reconciliation. Now each closure performs its
+    # I/O only when run_execute_write_async itself invokes it, which is
+    # only AFTER the corresponding transition() has already committed.
     state: dict = {}
-    open_exc = None
-    writer = None
-    try:
-        writer, lease = await _open_writer_for_execute(conn, browser, cfg, job_row, plan)
+
+    async def _acquire_lease_and_verify_identity():
+        writer, lease, heartbeat_task = await _open_writer_for_execute(conn, browser, cfg, job_row, plan)
         state["lease"] = lease
         state["writer"] = writer
-    except Exception as exc:
-        open_exc = exc
-
-    write_result = None
-    write_exc = None
-    if open_exc is None and writer is not None:
-        try:
-            write_result = await _perform_writes_and_verify(writer, plan)
-        except Exception as exc:
-            write_exc = exc
-
-    def _acquire_lease_and_verify_identity():
-        if open_exc is not None:
-            raise open_exc
+        state["heartbeat_task"] = heartbeat_task
         return writer
 
-    def _perform(w):
-        if write_exc is not None:
-            raise write_exc
-        return bool(write_result)
+    async def _perform(writer):
+        return await _perform_writes_and_verify(writer, plan)
+
+    def _cancel_heartbeat() -> None:
+        task = state.get("heartbeat_task")
+        if task is not None:
+            task.cancel()
 
     try:
-        status = run_execute_write(
+        status = await run_execute_write_async(
             conn,
             job_id,
             acquire_lease_and_verify_identity=_acquire_lease_and_verify_identity,
             perform_writes_and_verify=_perform,
         )
     except JobAuthorizationError:
+        _cancel_heartbeat()
         lease = state.get("lease")
         if lease is not None:
             lease.release()
@@ -360,19 +393,23 @@ async def process_one_planned_execute(
 
     lease = state.get("lease")
     if status != "READY_FOR_HUMAN_REVIEW":
-        # IDENTITY_FAILED or WRITE_ABORTED -- the lease must not outlive
-        # this job's own failed attempt (section 4's lifecycle discipline
-        # applies to every exit, not only the success path).
+        # IDENTITY_FAILED or WRITE_ABORTED -- the lease (and its
+        # heartbeat) must not outlive this job's own failed attempt
+        # (section 4's lifecycle discipline applies to every exit, not
+        # only the success path).
+        _cancel_heartbeat()
         if lease is not None:
             lease.release()
         return status
 
     def _on_close(closed_job_id: str) -> None:
         def _release():
+            _cancel_heartbeat()
             if lease is not None:
                 lease.release()
 
         transition_on_browser_closed(conn, closed_job_id, release_lease=_release)
+        _cancel_heartbeat()
         if lease is not None:
             try:
                 lease.release()
@@ -381,6 +418,11 @@ async def process_one_planned_execute(
         if on_browser_closed is not None:
             on_browser_closed(closed_job_id)
 
+    # Heartbeat keeps running (started back in _open_writer_for_execute,
+    # covering identity verification and writing) straight through human
+    # handoff -- it is only ever cancelled above, in _on_close, or in a
+    # failure exit -- never left to lapse just because review time is
+    # unbounded.
     cfg.active_review_registry.register(job_id, job_row["account_id"], state["writer"], on_close=_on_close)
     return status
 

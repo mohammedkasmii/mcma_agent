@@ -153,6 +153,28 @@ def acquire_lease(
     return AccountLeaseHandle(conn, account_id, fencing_token, ttl_seconds)
 
 
+def release_lease_if_owned_by_job(conn: sqlite3.Connection, account_id: str, job_id: str) -> bool:
+    """Restart-safe fallback release (pilot-runner correction). No
+    in-memory AccountLeaseHandle survives a process restart -- its
+    fencing_token lives only in that Python object -- so a human
+    confirm/report-problem action arriving after a restart (or from any
+    caller that never held the handle, e.g. the API layer today) has no
+    handle to call .release() on, and the durable account_leases row
+    would otherwise sit until its TTL naturally expires. Fenced to
+    owner_job_id (a durable column, unlike fencing_token) so this can
+    only ever remove a lease row THIS job itself still owns -- never a
+    different, newer job's legitimately-acquired lease for the same
+    account (e.g. one that raced in after this job's own lease already
+    expired and was reclaimed). Idempotent: returns False, never raises,
+    if there is nothing left for this job to own. Returns True if a row
+    was actually deleted."""
+    cursor = conn.execute(
+        "DELETE FROM account_leases WHERE account_id = ? AND owner_job_id = ?",
+        (account_id, job_id),
+    )
+    return cursor.rowcount > 0
+
+
 def release_stale_leases(conn: sqlite3.Connection) -> int:
     """Used by restart reconciliation (INC-12, WORKFLOW_STATE_MODEL.md §7's
     'stale account_leases released first'). Returns the number released."""
