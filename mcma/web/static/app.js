@@ -160,6 +160,156 @@
     });
   }
 
+  // ----------------------------------------------------------------- //
+  // The dashboard proper: KPI cards, category tabs, status filters,
+  // search, and the claims table. Ported from the original static/
+  // dashboard, with two changes that matter: every cell is built with
+  // createElement/textContent instead of innerHTML (portal-supplied
+  // sociétaire names and references must never be parsed as markup --
+  // see tests/web/test_escaping.py), and everything is scoped to ONE of
+  // the four portal accounts at a time.
+  // ----------------------------------------------------------------- //
+
+  var ACTION_FILTERS = {
+    ALL: function () { return true; },
+    TODO: function (c) { return !c.status || c.status === "NEW"; },
+    IN_PROGRESS: function (c) { return c.status === "IN_PROGRESS" || c.status === "WAITING"; },
+    DONE: function (c) { return c.status === "DONE" || c.status === "NOT_APPLICABLE"; }
+  };
+
+  var STATUS_FR = {
+    NEW: "À Traiter",
+    IN_PROGRESS: "En Cours",
+    WAITING: "En Attente",
+    DONE: "Traité",
+    NOT_APPLICABLE: "Sans Suite"
+  };
+
+  function claimMatchesSearch(claim, needle) {
+    if (!needle) return true;
+    var haystack = [claim.reference, claim.insured, claim.police, claim.matricule_norm,
+                    claim.portal_claim_id].join(" ").toLowerCase();
+    return haystack.indexOf(needle.toLowerCase()) !== -1;
+  }
+
+  function renderKpis(claims) {
+    var total = claims.length;
+    var done = claims.filter(function (c) { return c.status === "DONE"; }).length;
+    var categories = {};
+    claims.forEach(function (c) {
+      (c.categories || []).forEach(function (cat) { categories[cat] = true; });
+    });
+    var pct = total ? Math.round((done / total) * 100) : 0;
+
+    function put(id, value) {
+      var node = document.getElementById(id);
+      if (node) setText(node, value);
+    }
+
+    put("kpiTotal", String(total));
+    put("kpiTodo", String(total - done));
+    put("kpiCategories", String(Object.keys(categories).length));
+
+    // kpiDone CONTAINS the percentage span, so its text cannot simply be
+    // replaced -- doing that removes the span before it can be written.
+    var doneEl = document.getElementById("kpiDone");
+    var pctEl = document.getElementById("kpiProgressPct");
+    if (doneEl) {
+      doneEl.textContent = String(done) + " ";
+      if (pctEl) {
+        setText(pctEl, "(" + pct + "%)");
+        doneEl.appendChild(pctEl);
+      }
+    }
+  }
+
+  function renderCategoryTabs(container, claims, selected, onSelect) {
+    if (!container) return;
+    var counts = {};
+    claims.forEach(function (c) {
+      (c.categories || []).forEach(function (cat) { counts[cat] = (counts[cat] || 0) + 1; });
+    });
+    container.textContent = "";
+
+    function tab(label, count, value) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "tab-btn" + (value === selected ? " active" : "");
+      setText(button, label + " ");
+      var badge = el("span", "tab-badge", String(count));
+      button.appendChild(badge);
+      button.addEventListener("click", function () { onSelect(value); });
+      return button;
+    }
+
+    container.appendChild(tab("Toutes les alertes", claims.length, "ALL"));
+    Object.keys(counts).sort().forEach(function (cat) {
+      container.appendChild(tab(cat, counts[cat], cat));
+    });
+  }
+
+  function renderClaimsTable(tbody, claims, onEdit) {
+    tbody.textContent = "";
+    claims.forEach(function (claim) {
+      var tr = document.createElement("tr");
+
+      var suivi = document.createElement("td");
+      var pill = el("span", "status-badge claim-pill-" + (claim.status || "NEW"),
+                    STATUS_FR[claim.status] || STATUS_FR.NEW);
+      suivi.appendChild(pill);
+      var edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "btn-icon";
+      setText(edit, "\u270e");
+      edit.title = "Modifier le suivi";
+      edit.addEventListener("click", function () { onEdit(claim); });
+      suivi.appendChild(edit);
+      tr.appendChild(suivi);
+
+      function cell(value, className) {
+        var td = document.createElement("td");
+        if (className) td.className = className;
+        setText(td, value == null || value === "" ? "\u2014" : String(value));
+        return td;
+      }
+
+      tr.appendChild(cell(claim.reference || claim.portal_claim_id, "cell-ref"));
+      tr.appendChild(cell(claim.updated_at));
+      tr.appendChild(cell(claim.insured, "cell-name"));
+      tr.appendChild(cell(claim.police));
+      tr.appendChild(cell(claim.matricule_norm, "cell-mono"));
+      tr.appendChild(cell((claim.categories || []).join(", ")));
+      tr.appendChild(cell(claim.note));
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderAccountBar(container, accounts, selectedId, onSelect) {
+    if (!container) return;
+    container.textContent = "";
+    accounts.forEach(function (account) {
+      var isMamda = account.entity === "MAMDA";
+      var chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "account-chip"
+        + (isMamda ? " account-chip-mamda" : "")
+        + (account.account_id === selectedId ? " account-chip-active" : "");
+      chip.setAttribute("role", "tab");
+      chip.setAttribute("aria-selected", account.account_id === selectedId ? "true" : "false");
+
+      chip.appendChild(el("span", "account-session-dot"
+        + (account.session_active ? " account-session-dot-live" : "")));
+      chip.appendChild(el("span", null, (account.entity || "?") + " " + (account.scope || "?")));
+      if (isMamda) {
+        // Visible, permanently: a MAMDA account can be read but a form
+        // job can never be started against one.
+        chip.appendChild(el("span", "account-readonly-tag", "lecture seule"));
+      }
+      chip.addEventListener("click", function () { onSelect(account.account_id); });
+      container.appendChild(chip);
+    });
+  }
+
   function renderAccountTabs(container, accounts, selectedId, onSelect) {
     container.textContent = "";
     accounts.forEach(function (account) {
@@ -477,59 +627,176 @@
     var currentJobId = null;
     var pollTimer = null;
 
-    // One account at a time: the employee opens MCMA Oujda (or any of the
-    // four) and works down its claims. Loading every account at once was
-    // the old behaviour and gave no way to tell whose work was whose.
+    // One account at a time. Selecting a chip re-scopes the KPIs, the
+    // category tabs, the table and the form-job target together -- there
+    // is no view that mixes two portal accounts.
     var selectedAccountId = null;
-    var accountTabsEl = document.getElementById("account-tabs");
+    var accounts = [];
+    var claims = [];
+    var categoryFilter = "ALL";
+    var actionFilter = "ALL";
+    var searchTerm = "";
 
-    async function saveClaim(claimPk, status, note) {
-      var response = await saveClaimAction(fetch, claimPk, status, note);
-      return !!(response && response.ok);
+    var accountBarEl = document.getElementById("account-bar");
+    var categoryTabsEl = document.getElementById("categoryTabs");
+    var tableBodyEl = document.getElementById("tableBody");
+    var emptyStateEl = document.getElementById("emptyState");
+    var searchInputEl = document.getElementById("searchInput");
+
+    function visibleClaims() {
+      var passes = ACTION_FILTERS[actionFilter] || ACTION_FILTERS.ALL;
+      return claims.filter(function (c) {
+        if (categoryFilter !== "ALL" && (c.categories || []).indexOf(categoryFilter) === -1) return false;
+        if (!passes(c)) return false;
+        return claimMatchesSearch(c, searchTerm);
+      });
+    }
+
+    function renderAll() {
+      renderKpis(claims);
+      renderCategoryTabs(categoryTabsEl, claims, categoryFilter, function (value) {
+        categoryFilter = value;
+        renderAll();
+      });
+      var rows = visibleClaims();
+      if (tableBodyEl) renderClaimsTable(tableBodyEl, rows, openNoteEditor);
+      if (emptyStateEl) emptyStateEl.hidden = rows.length !== 0;
+    }
+
+    function openNoteEditor(claim) {
+      var modal = document.getElementById("noteModal");
+      var refEl = document.getElementById("modalClaimRef");
+      var statusEl = document.getElementById("modalStatusSelect");
+      var noteEl = document.getElementById("modalNoteText");
+      if (!modal) return;
+      setText(refEl, "Sinistre : " + (claim.reference || claim.portal_claim_id || ""));
+      if (statusEl) statusEl.value = claim.status || "NEW";
+      if (noteEl) noteEl.value = claim.note || "";
+      modal.classList.add("active");
+      modal.dataset.claimPk = claim.claim_pk;
+    }
+
+    function closeNoteEditor() {
+      var modal = document.getElementById("noteModal");
+      if (modal) modal.classList.remove("active");
+    }
+
+    async function saveNoteFromModal() {
+      var modal = document.getElementById("noteModal");
+      if (!modal || !modal.dataset.claimPk) return;
+      var statusEl = document.getElementById("modalStatusSelect");
+      var noteEl = document.getElementById("modalNoteText");
+      var response = await saveClaimAction(fetch, modal.dataset.claimPk,
+                                           statusEl ? statusEl.value : "NEW",
+                                           noteEl ? noteEl.value : "");
+      if (response && response.ok) {
+        closeNoteEditor();
+        await refreshClaims();
+      }
     }
 
     async function refreshClaims() {
-      if (!notificationsEl || !selectedAccountId) return;
-      renderLoadingState(notificationsEl);
+      if (!selectedAccountId) return;
       try {
         var response = await fetch("/claims?account_id=" + encodeURIComponent(selectedAccountId),
                                    { credentials: "include" });
         if (!response.ok) {
-          renderErrorState(notificationsEl, "Could not load claims (HTTP " + response.status + ")");
+          claims = [];
+          renderAll();
           return;
         }
         var data = await response.json();
-        renderClaimList(notificationsEl, data.claims, saveClaim);
+        claims = data.claims || [];
+        renderAll();
       } catch (err) {
-        renderErrorState(notificationsEl, "Could not load claims -- check connection");
+        claims = [];
+        renderAll();
       }
     }
 
-    function selectAccount(accountId, accounts) {
+    function selectAccount(accountId) {
       selectedAccountId = accountId;
-      if (accountTabsEl) {
-        renderAccountTabs(accountTabsEl, accounts, selectedAccountId, function (id) {
-          selectAccount(id, accounts);
-        });
+      categoryFilter = "ALL";
+      renderAccountBar(accountBarEl, accounts, selectedAccountId, selectAccount);
+      // The form-job target follows the selected account, and stays
+      // MCMA-only: a MAMDA account can never be chosen for a write.
+      if (accountSelect) {
+        populateMcmaAccountSelect(accountSelect, accounts);
+        var selected = accounts.filter(function (a) { return a.account_id === accountId; })[0];
+        if (selected && selected.entity === "MCMA") accountSelect.value = accountId;
       }
       refreshClaims();
     }
 
     async function refreshNotifications() {
-      if (!accountTabsEl) return;
       try {
-        var accounts = await fetchAccessibleAccounts(fetch);
+        accounts = await fetchAccessibleAccounts(fetch);
         if (!accounts || accounts.length === 0) {
-          accountTabsEl.textContent = "";
-          if (notificationsEl) {
-            notificationsEl.textContent = "";
-            notificationsEl.appendChild(el("li", "empty-state", "No accounts are available to you."));
-          }
+          renderAccountBar(accountBarEl, [], null, function () {});
           return;
         }
-        selectAccount(selectedAccountId || accounts[0].account_id, accounts);
+        selectAccount(selectedAccountId || accounts[0].account_id);
       } catch (err) {
-        if (notificationsEl) renderErrorState(notificationsEl, "Could not load accounts -- check connection");
+        renderAccountBar(accountBarEl, [], null, function () {});
+      }
+    }
+
+    function showDashboard() {
+      var shell = document.getElementById("app-shell");
+      var signin = document.getElementById("login-section");
+      if (shell) shell.hidden = false;
+      if (signin) signin.hidden = true;
+    }
+
+    function wireDashboardControls() {
+      document.querySelectorAll("[data-action-filter]").forEach(function (pill) {
+        pill.addEventListener("click", function () {
+          document.querySelectorAll("[data-action-filter]").forEach(function (p) {
+            p.classList.remove("active");
+          });
+          pill.classList.add("active");
+          actionFilter = pill.getAttribute("data-action-filter");
+          renderAll();
+        });
+      });
+      if (searchInputEl) {
+        searchInputEl.addEventListener("input", function () {
+          searchTerm = searchInputEl.value;
+          renderAll();
+        });
+      }
+      var clearBtn = document.getElementById("btnClearSearch");
+      if (clearBtn && searchInputEl) {
+        clearBtn.addEventListener("click", function () {
+          searchInputEl.value = "";
+          searchTerm = "";
+          renderAll();
+        });
+      }
+      var refreshBtn = document.getElementById("btnRefreshLive");
+      if (refreshBtn) refreshBtn.addEventListener("click", function () { refreshClaims(); });
+
+      var saveNoteBtn = document.getElementById("btnSaveNote");
+      if (saveNoteBtn) saveNoteBtn.addEventListener("click", saveNoteFromModal);
+      ["btnCloseModal", "btnCancelNote"].forEach(function (id) {
+        var button = document.getElementById(id);
+        if (button) button.addEventListener("click", closeNoteEditor);
+      });
+
+      // "Importer JSON" in the header is the same upload the hidden form
+      // drives -- one code path, two affordances.
+      var uploadBtn = document.getElementById("btnUploadFile");
+      var headerFile = document.getElementById("fileInput");
+      if (uploadBtn && headerFile) {
+        uploadBtn.addEventListener("click", function () { headerFile.click(); });
+        headerFile.addEventListener("change", function () {
+          if (fileInput && headerFile.files && headerFile.files[0]) {
+            var transfer = new DataTransfer();
+            transfer.items.add(headerFile.files[0]);
+            fileInput.files = transfer.files;
+          }
+          if (uploadForm) uploadForm.dispatchEvent(new Event("submit", { cancelable: true }));
+        });
       }
     }
 
@@ -582,11 +849,12 @@
         });
         var statusEl = document.getElementById("login-status");
         if (response.ok) {
-          setText(statusEl, "Logged in.");
+          setText(statusEl, "");
+          showDashboard();
           refreshNotifications();
           refreshAccounts();
         } else {
-          setText(statusEl, "Login failed.");
+          setText(statusEl, "Identifiants incorrects.");
         }
       });
     }
@@ -654,8 +922,22 @@
       });
     }
 
-    refreshNotifications();
-    refreshAccounts();
+    wireDashboardControls();
+    // The shell stays hidden until a session exists. /accounts is the
+    // probe: if it answers, an earlier session is still valid and the
+    // employee should not be asked to sign in again.
+    (async function () {
+      try {
+        var probe = await fetch("/accounts", { credentials: "include" });
+        if (probe.ok) {
+          showDashboard();
+          refreshNotifications();
+          refreshAccounts();
+        }
+      } catch (err) {
+        // Stay on the sign-in card.
+      }
+    })();
   }
 
   if (document.readyState === "loading") {
@@ -688,5 +970,11 @@
     reportProblem: reportProblem,
     parseDossierFileText: parseDossierFileText,
     readDossierFile: readDossierFile,
+    renderKpis: renderKpis,
+    renderCategoryTabs: renderCategoryTabs,
+    renderClaimsTable: renderClaimsTable,
+    renderAccountBar: renderAccountBar,
+    claimMatchesSearch: claimMatchesSearch,
+    ACTION_FILTERS: ACTION_FILTERS,
   };
 })();

@@ -1,101 +1,272 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="fr">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'">
-<title>MCMA Dossiers</title>
-<link rel="stylesheet" href="/static/style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'">
+    <title>MCMA — Suivi des Notifications & Actions</title>
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+    <!-- Background Gradient Glows -->
+    <div class="bg-glow bg-glow-1"></div>
+    <div class="bg-glow bg-glow-2"></div>
 
-<header class="masthead">
-  <div class="masthead-inner">
-    <span class="wordmark">MCMA</span>
-    <span class="wordmark-sub">Dossiers</span>
-    <nav class="jump">
-      <a href="#form-job-section">Dossier</a>
-      <a href="#plan-preview-section">Plan</a>
-      <a href="#human-handoff-section">Handoff</a>
-      <a href="#notifications-section">Notifications</a>
-    </nav>
-  </div>
-</header>
+    <section class="signin-card" id="login-section">
+      <h2>Connexion</h2>
+      <form id="login-form">
+        <label>Utilisateur
+          <input type="text" id="login-username" autocomplete="username" required>
+        </label>
+        <label>Mot de passe
+          <input type="password" id="login-password" autocomplete="current-password" required>
+        </label>
+        <button type="submit" class="btn btn-primary">Se connecter</button>
+      </form>
+      <p id="login-status" role="status" class="status-line"></p>
+    </section>
 
-<main>
+    <div class="app-container" id="app-shell" hidden>
+        <!-- Top Header Navigation -->
+        <header class="app-header">
+            <div class="header-brand">
+                <div class="brand-logo">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="brand-title">MCMA Sinistres</h1>
+                    <p class="brand-subtitle">Tableau de Bord des Notifications & Suivi des Actions</p>
+                </div>
+            </div>
 
-  <section id="login-section" class="panel">
-    <h2>Sign in</h2>
-    <form id="login-form" class="row-form">
-      <label>Username
-        <input type="text" id="login-username" autocomplete="username" required>
-      </label>
-      <label>Password
-        <input type="password" id="login-password" autocomplete="current-password" required>
-      </label>
-      <button type="submit" class="primary">Sign in</button>
-    </form>
-    <p id="login-status" role="status" class="status"></p>
-  </section>
+            <div class="header-actions">
+                <div class="sync-status" id="syncStatus">
+                    <span class="pulse-dot"></span>
+                    <span id="syncText">Prêt</span>
+                </div>
+                <button class="btn btn-secondary" id="btnUploadFile" title="Charger un fichier JSON local">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                    <span>Importer JSON</span>
+                </button>
+                <input type="file" id="fileInput" accept=".json" hidden>
+                <input type="file" id="dossier-file-input" accept=".json,application/json" hidden>
+                <select id="account-select" hidden>
+                    <option value="">Select an account</option>
+                </select>
 
-  <section id="form-job-section" class="panel">
-    <h2>Start a dossier</h2>
-    <p class="note">Only MCMA accounts can be written to. MAMDA accounts are read-only.</p>
-    <form id="dossier-upload-form" class="row-form">
-      <label>Account
-        <select id="account-select" required>
-          <option value="">Select an account</option>
-        </select>
-      </label>
-      <label>Wexia dossier file
-        <input type="file" id="dossier-file-input" accept=".json,application/json" required>
-      </label>
-      <button type="submit" class="primary">Prepare dry run</button>
-    </form>
-    <p id="upload-status" role="status" class="status"></p>
-    <p id="current-job-id" role="status" class="status status-quiet"></p>
-  </section>
+                <button class="btn btn-secondary" id="btnReauth" title="Renouveler la session MCMA (Login + SMS OTP)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                    </svg>
+                    <span>Connexion MCMA</span>
+                </button>
 
-  <section id="plan-preview-section" class="panel">
-    <h2>Plan</h2>
-    <p class="note">Read the rows and warnings before authorizing. Charge mutuelle and sociétaire are never shown or editable here.</p>
-    <div id="plan-preview" class="plan"></div>
-    <button id="authorize-execution-btn" type="button" class="primary" hidden>Authorize execution</button>
-    <p id="authorize-status" role="status" class="status"></p>
-  </section>
+                <button class="btn btn-primary" id="btnRefreshLive" title="Actualiser en direct depuis MCMA">
+                    <svg class="refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+                    </svg>
+                    <span>Actualiser MCMA</span>
+                </button>
+            </div>
+        </header>
 
-  <section id="human-handoff-section" class="panel handoff">
-    <h2>Your review</h2>
-    <p id="readiness-label" role="status" class="readiness"></p>
-    <p class="instructions">
-      When the browser opens, check the filled rows and fields. Click
-      <strong>Valider</strong> and <strong>Clôture</strong> yourself in the
-      portal, then close the browser window. This app never clicks them for
-      you.
-    </p>
-    <div class="actions">
-      <button id="review-completed-btn" type="button" class="primary" hidden>Review completed</button>
-      <button id="problem-btn" type="button" class="danger" hidden>Problem, not completed</button>
+
+        <!-- The four portal accounts. Selecting one scopes everything below
+             it; MAMDA is readable but never writable. -->
+        <div class="account-bar" id="account-bar" role="tablist" aria-label="Comptes"></div>
+
+        <!-- KPI Metric Cards -->
+        <section class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-icon icon-blue">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="8" x2="12" y2="12"></line>
+                        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                    </svg>
+                </div>
+                <div class="metric-info">
+                    <span class="metric-label">Total Alertes</span>
+                    <h3 class="metric-value" id="kpiTotal">0</h3>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-icon icon-emerald">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+                        <polyline points="22 4 12 14.01 9 11.01"></polyline>
+                    </svg>
+                </div>
+                <div class="metric-info">
+                    <span class="metric-label">Dossiers Traités</span>
+                    <h3 class="metric-value" id="kpiDone">0 <span class="metric-sub" id="kpiProgressPct">(0%)</span></h3>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-icon icon-amber">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <polyline points="12 6 12 12 16 14"></polyline>
+                    </svg>
+                </div>
+                <div class="metric-info">
+                    <span class="metric-label">Reste à Traiter</span>
+                    <h3 class="metric-value" id="kpiTodo">0</h3>
+                </div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-icon icon-purple">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+                    </svg>
+                </div>
+                <div class="metric-info">
+                    <span class="metric-label">Catégories Actives</span>
+                    <h3 class="metric-value" id="kpiCategories">0</h3>
+                </div>
+            </div>
+        </section>
+
+
+        <!-- Plan produced by the dry run, reviewed before authorising. -->
+        <section class="plan-card" id="plan-preview-section" hidden>
+          <h3>Plan du dossier</h3>
+          <p id="current-job-id" class="status-line"></p>
+          <div id="plan-preview"></div>
+          <button id="authorize-execution-btn" type="button" class="btn btn-primary" hidden>Autoriser le remplissage</button>
+          <p id="authorize-status" role="status" class="status-line"></p>
+          <p id="upload-status" role="status" class="status-line"></p>
+        </section>
+
+        <!-- The handoff: the agent has stopped and the dossier is yours. -->
+        <section class="handoff-card" id="human-handoff-section" hidden>
+          <h3 class="handoff-title">À vous de jouer</h3>
+          <p id="readiness-label" role="status" class="handoff-title"></p>
+          <p class="handoff-text">
+            Vérifiez les lignes et les champs remplis dans le navigateur, puis cliquez
+            vous-même sur <strong>Valider</strong> et <strong>Clôture</strong> dans le
+            portail, et fermez la fenêtre du navigateur (close the browser window).
+            Cette application ne les clique jamais à votre place.
+          </p>
+          <div class="handoff-actions">
+            <button id="review-completed-btn" type="button" class="btn btn-primary" hidden>Revue terminée</button>
+            <button id="problem-btn" type="button" class="btn btn-danger" hidden>Problème, non terminé</button>
+          </div>
+          <p id="handoff-status" role="status" class="status-line"></p>
+        </section>
+
+        <!-- Main Content Area -->
+        <div id="form-job-section" hidden><form id="dossier-upload-form"></form></div>
+        <main class="main-card" id="notifications-section">
+            <!-- Filter & Search Controls -->
+            <div class="controls-toolbar">
+                <div class="category-tabs" id="categoryTabs">
+                    <button class="tab-btn active" data-category="ALL">
+                        Toutes les alertes <span class="tab-badge" id="badgeAll">0</span>
+                    </button>
+                </div>
+
+                <div class="toolbar-right">
+                    <!-- Status Filter Tabs -->
+                    <div class="action-filter-group">
+                        <button class="filter-pill active" data-action-filter="ALL">Tous</button>
+                        <button class="filter-pill" data-action-filter="TODO">À Traiter</button>
+                        <button class="filter-pill" data-action-filter="IN_PROGRESS">En Cours</button>
+                        <button class="filter-pill" data-action-filter="DONE">Traités</button>
+                    </div>
+
+                    <div class="search-box">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"></circle>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                        </svg>
+                        <input type="text" id="searchInput" placeholder="Filtrer par référence, matricule, sociétaire, police...">
+                        <button class="btn-clear" id="btnClearSearch" title="Effacer la recherche">✕</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Table Container -->
+            <div class="table-responsive">
+                <table class="data-table" id="alertsTable">
+                    <thead>
+                        <tr>
+                            <th>Suivi Action Employé</th>
+                            <th>Référence Sinistre</th>
+                            <th>Date Survenance</th>
+                            <th>Nom du Sociétaire</th>
+                            <th>N° Police</th>
+                            <th>Immatriculation</th>
+                            <th>Nature</th>
+                            <th>Statut MCMA</th>
+                            <th class="text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tableBody"></tbody>
+                    <tbody id="notifications-list" hidden>
+                        <!-- Dynamic Rows Injected Here -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Empty State Display -->
+            <div class="empty-state" id="emptyState" hidden>
+                <div class="empty-icon">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="8" y1="12" x2="16" y2="12"></line>
+                    </svg>
+                </div>
+                <h4 id="emptyTitle">Aucune alerte trouvée</h4>
+                <p id="emptyDesc">Chargez un fichier JSON de notifications ou cliquez sur "Actualiser MCMA".</p>
+            </div>
+        </main>
     </div>
-    <p id="handoff-status" role="status" class="status"></p>
-  </section>
 
-  <section id="notifications-section" class="panel">
-    <h2>Claims</h2>
-    <p class="note">Pick an account, then work through its claims. Status and
-      notes are kept here, not in SinAuto.</p>
+    <!-- Quick Note Modal -->
+    <div class="modal-overlay" id="noteModal">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>Ajouter une Note / Action</h3>
+                <button class="modal-close" id="btnCloseModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-ref" id="modalClaimRef">Sinistre : --</p>
+                <div class="form-group">
+                    <label>Statut de traitement :</label>
+                    <select id="modalStatusSelect" class="form-select">
+                        <option value="TODO">⚪ À Traiter</option>
+                        <option value="IN_PROGRESS">🔵 En Cours</option>
+                        <option value="DONE">🟢 Traité / Terminé</option>
+                        <option value="WAITING">🟡 En Attente / Relancé</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Remarque / Action effectuée :</label>
+                    <textarea id="modalNoteText" rows="3" class="form-textarea" placeholder="Ex: Devis saisi, photos validées, relance effectuée..."></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="btnCancelNote">Annuler</button>
+                <button class="btn btn-primary" id="btnSaveNote">Enregistrer</button>
+            </div>
+        </div>
+    </div>
 
-    <div id="account-tabs" class="tabs" role="tablist" aria-label="Accounts"></div>
+    <!-- Toast Notifications Container -->
+    <div class="toast-container" id="toastContainer"></div>
 
-    <ul id="notifications-list" class="claims" aria-live="polite"></ul>
-  </section>
-
-</main>
-
-<footer class="colophon">
-  <p>This app never validates or closes a dossier on the portal. Final Valider and Clôture are always done by you, directly in SinAuto.</p>
-</footer>
-
-<script src="/static/app.js"></script>
+    <script src="/static/app.js"></script>
 </body>
 </html>
