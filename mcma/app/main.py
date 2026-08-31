@@ -235,7 +235,19 @@ async def run_job_poll_loop(
                 logger.exception("job poll pass failed")
             await asyncio.sleep(settings.poll_interval_seconds)
     finally:
-        await browser_context.__aexit__(None, None, None)
+        try:
+            await browser_context.__aexit__(None, None, None)
+        except Exception:
+            # Teardown only. An exception raised here would REPLACE the
+            # reason the loop actually ended -- a CancelledError on
+            # shutdown, or a genuine failure -- and the real reason is
+            # what matters. On Ctrl+C the driver connection is usually
+            # already gone, so closing an already-dead browser reports an
+            # error that is neither surprising nor actionable. It is
+            # logged, never hidden, and never allowed to become the exit
+            # reason. This is narrow to closing the browser; nothing
+            # during normal runtime is suppressed.
+            logger.info("shared browser was already gone at shutdown", exc_info=True)
 
 
 def build_runner_config(settings: Settings) -> RunnerConfig:
@@ -350,8 +362,11 @@ def main(settings: Optional[Settings] = None) -> None:  # pragma: no cover - rea
         try:
             yield
         finally:
+            # Declared BEFORE cancelling: from here on, a browser that
+            # fails to close is an expected part of stopping, not a fault.
+            supervisor.begin_shutdown()
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
 
     app = build_app(api_conn, settings, encryptor, lifespan=_lifespan, supervisor=supervisor)

@@ -251,3 +251,101 @@ def test_entity_routing_and_final_endpoint_blocks_are_unaffected():
     assert auth_contracts(entity="MAMDA")[0].route == "/SinAuto_MAMDA"
     for blocked in PERMANENTLY_BLOCKED_ENDPOINTS:
         assert is_permanently_blocked(f"/SinAuto_MCMA/expertise/{blocked}")
+
+
+# --------------------------------------------------------------------- #
+# Shutdown
+# --------------------------------------------------------------------- #
+
+
+def test_shutdown_is_not_a_failure_even_if_closing_the_browser_errors():
+    """The Ctrl+C case. Cancellation arrives, teardown cannot close an
+    already-disconnected Playwright driver, and the exception raised in
+    `finally` REPLACES the CancelledError -- so the task no longer looks
+    cancelled. Shutdown intent is declared explicitly so that is not read
+    as a browser failure."""
+    supervisor = BrowserSupervisor()
+    supervisor.mark_ready(object())
+
+    async def _scenario():
+        async def _loop():
+            try:
+                await asyncio.sleep(3600)
+            finally:
+                # Exactly what Playwright does on Ctrl+C.
+                raise RuntimeError("Browser.close: Connection closed while reading from the driver")
+
+        task = asyncio.create_task(_loop())
+        supervisor.watch(task)
+        await asyncio.sleep(0)
+
+        supervisor.begin_shutdown()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)
+
+    _run(_scenario())
+    # No transition to FAILED: get() still answers as it did before.
+    assert supervisor._failure is None
+
+
+def test_a_browser_dying_during_normal_runtime_is_still_a_failure():
+    """The distinction that matters: the same exception, without a
+    declared shutdown, must still produce BROWSER_UNAVAILABLE."""
+    supervisor = BrowserSupervisor()
+    supervisor.mark_ready(object())
+
+    async def _scenario():
+        async def _dies():
+            raise RuntimeError("Browser.close: Connection closed while reading from the driver")
+
+        task = asyncio.create_task(_dies())
+        supervisor.watch(task)
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)
+
+    _run(_scenario())
+    with pytest.raises(BrowserUnavailable):
+        supervisor.get()
+
+
+def test_shutdown_intent_does_not_hide_an_earlier_runtime_failure():
+    """A failure recorded while running must survive a later shutdown --
+    stopping the application does not retroactively make it healthy."""
+    supervisor = BrowserSupervisor()
+    supervisor.mark_ready(object())
+    supervisor.mark_failed(RuntimeError("driver exited mid-run"))
+    supervisor.begin_shutdown()
+    with pytest.raises(BrowserUnavailable):
+        supervisor.get()
+
+
+def test_startup_failure_still_fails_startup_after_the_shutdown_change():
+    """Regression guard on the previous commit: declaring shutdown intent
+    must not weaken the startup readiness contract."""
+    supervisor = BrowserSupervisor()
+    supervisor.mark_failed(RuntimeError("playwright driver missing"))
+    with pytest.raises(BrowserUnavailable):
+        _run(supervisor.wait_until_ready(timeout=1))
+
+
+@pytest.mark.skip(reason="REAL_LOGIN_OTP_PENDING_ONSITE: needs the company network and a real OTP")
+def test_REAL_LOGIN_OTP_PENDING_ONSITE():
+    """Deferred onsite verification, recorded here so it is visible in
+    every test run rather than living only in a chat message.
+
+    For EACH of the four accounts (MCMA Oujda, MCMA Nador, MAMDA Oujda,
+    MAMDA Nador), onsite, verify:
+
+      1. the login window opens on the account's OWN application --
+         MCMA -> /SinAuto_MCMA/, MAMDA -> /SinAuto_MAMDA/
+      2. a valid username and password are accepted
+      3. the SMS OTP completes the sign-in
+      4. the logged-in markers are positively detected -- if a correct
+         sign-in instead runs to LOGIN_TIMED_OUT, LOGGED_IN_MARKERS is
+         wrong for the live portal and needs the real post-login page
+      5. the session is stored under that EXACT account, and no other
+      6. the account card turns Connecté
+
+    Cannot be automated here: it needs the company network, real
+    credentials and a phone."""

@@ -54,6 +54,7 @@ class BrowserSupervisor:
         self._browser = None
         self._failure: BaseException | None = None
         self._ready = asyncio.Event()
+        self._shutting_down = False
 
     # -- owner side ------------------------------------------------------
 
@@ -73,6 +74,23 @@ class BrowserSupervisor:
         # Wake anything waiting; waiters re-check state rather than
         # assuming the event means success.
         self._ready.set()
+
+    def begin_shutdown(self) -> None:
+        """Declares that what follows is a deliberate stop.
+
+        Shutdown intent is recorded EXPLICITLY rather than inferred from
+        whatever exception the teardown happens to produce. On Ctrl+C the
+        Playwright driver connection is often already gone by the time
+        browser.close() runs, so closing raises -- and an exception raised
+        in a `finally` replaces the CancelledError that got us there. The
+        task then looks like it failed rather than like it was cancelled,
+        and a clean shutdown was being reported as a browser failure,
+        traceback and all.
+
+        Guessing from the exception would mean pattern-matching driver
+        messages to decide whether a failure was real. The caller knows;
+        it says so."""
+        self._shutting_down = True
 
     # -- consumer side ---------------------------------------------------
 
@@ -111,8 +129,13 @@ class BrowserSupervisor:
         all, only as a warning when the loop shuts down."""
 
         def _on_done(finished: "asyncio.Task") -> None:
-            if finished.cancelled():
-                return  # deliberate shutdown
+            if finished.cancelled() or self._shutting_down:
+                # Deliberate shutdown. Note this covers a task that ended
+                # with an ordinary exception DURING shutdown too, which is
+                # exactly the Ctrl+C case: cancellation arrives, teardown
+                # fails to close an already-disconnected browser, and the
+                # task's final exception is no longer CancelledError.
+                return
             exc = finished.exception()
             if exc is not None:
                 self.mark_failed(exc)
