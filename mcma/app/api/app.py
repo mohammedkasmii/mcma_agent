@@ -105,11 +105,27 @@ def create_api_app(
     encryptor: InputEncryptor,
     secure_cookies: bool = True,
     portal_login_opener=None,
+    local_user_id: str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="MCMA API")
     install_error_handlers(app)
     session_store = session_store or SessionStore()
-    get_principal = get_principal_dependency(conn, session_store)
+    get_principal = get_principal_dependency(conn, session_store, local_user_id)
+
+    if local_user_id is not None:
+        # State-changing requests still require the CSRF double-submit.
+        # With no login step there is nothing to issue that cookie, so it
+        # is issued here -- the check itself is unchanged, and a request
+        # without the matching header is still refused.
+        @app.middleware("http")
+        async def _issue_csrf_cookie(request: Request, call_next):
+            response = await call_next(request)
+            if not request.cookies.get(CSRF_COOKIE_NAME):
+                response.set_cookie(
+                    CSRF_COOKIE_NAME, generate_csrf_token(),
+                    httponly=False, samesite="strict", secure=secure_cookies,
+                )
+            return response
     authorizer: Authorizer = RealAuthorizer(conn)
 
     # -- auth -------------------------------------------------------------

@@ -56,7 +56,7 @@ from mcma.app.auth.bootstrap import create_bootstrap_app
 from mcma.app.auth.provider import LocalUserAuthProvider
 from mcma.app.dashboard import mount_dashboard
 from mcma.app.onboarding import create_onboarding_app
-from mcma.app.provisioning import ensure_canonical_accounts
+from mcma.app.provisioning import ensure_canonical_accounts, ensure_local_employee
 from mcma.app.serve import TlsConfig, serve
 from mcma.core.config import Settings, load_settings, require_dev_mode_is_safe
 from mcma.core.mutex import create_single_instance_mutex
@@ -74,6 +74,15 @@ from mcma.notifications.poller import poll_all_accounts
 from mcma.persistence.db import open_database
 from mcma.portal.browser import launch_browser
 from mcma.portal.vault import WindowsAclVerifier, get_crypto_backend
+
+
+def _is_loopback(host: str) -> bool:
+    from ipaddress import ip_address
+
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def build_encryptor(settings: Settings) -> InputEncryptor:
@@ -108,12 +117,25 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
             acl_verifier=WindowsAclVerifier(),
         )
 
+    local_user_id = None
+    if settings.local_single_user_mode:
+        if not _is_loopback(settings.api_host):
+            # Refused at startup rather than per request: a LAN-bound
+            # install with this enabled would serve an authenticated
+            # session to anyone who could reach the port.
+            raise ValueError(
+                "local_single_user_mode requires a loopback api_host; "
+                f"refusing to start bound to {settings.api_host!r}"
+            )
+        local_user_id = ensure_local_employee(conn)
+
     app = create_api_app(
         conn,
         auth_provider=LocalUserAuthProvider(conn),
         encryptor=encryptor,
         secure_cookies=True,
         portal_login_opener=_open_portal_login if browser_holder is not None else None,
+        local_user_id=local_user_id,
     )
     if lifespan is not None:
         app.router.lifespan_context = lifespan

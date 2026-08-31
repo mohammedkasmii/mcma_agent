@@ -79,6 +79,15 @@ class Settings:
     # as such rather than trusted.
     dev_mode: bool = False
 
+    # Single-office local install: one machine, one team, bound to
+    # loopback. The employee already holds four portal passwords; a fifth
+    # one for this tool adds a login without adding a boundary. Enabling
+    # this skips the bootstrap-token and sign-in steps for LOOPBACK
+    # requests only -- every permission and account-access check still
+    # runs against a real user row. Off by default: a LAN deployment must
+    # opt in deliberately, and would not.
+    local_single_user_mode: bool = False
+
     # Alert categories polled for every account. Empty by default: a
     # category is only reachable if a reviewed contract was installed for
     # that exact code (mcma.portal.sinauto_contracts), so this list is

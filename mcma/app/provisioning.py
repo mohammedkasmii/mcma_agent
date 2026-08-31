@@ -67,3 +67,32 @@ def grant_user_access(conn, user_id: str, profile: PortalAccountProfile) -> None
             f"(account_id={account_id!r}) -- call ensure_canonical_accounts() first"
         )
     UserAccountAccessRepository(conn).grant(user_id, account_id, _utcnow_iso())
+
+
+LOCAL_USER_ID = "local-employee"
+LOCAL_USERNAME = "employe"
+
+
+def ensure_local_employee(conn) -> str:
+    """The single-office local install's one user, granted access to every
+    provisioned account.
+
+    Adding a person NEVER creates a portal account (section C): this only
+    inserts a users row and user_account_access rows against accounts
+    ensure_canonical_accounts() has already created. The role is
+    'operator', not 'admin' -- this user never needs to administer
+    anything, and giving it the smaller role keeps every permission check
+    meaningful rather than trivially satisfied."""
+    existing = conn.execute("SELECT user_id FROM users WHERE user_id = ?", (LOCAL_USER_ID,)).fetchone()
+    if existing is None:
+        conn.execute(
+            "INSERT INTO users (user_id, username, password_hash, role, active) "
+            "VALUES (?, ?, '!local-no-password', 'operator', 1)",
+            (LOCAL_USER_ID, LOCAL_USERNAME),
+        )
+    for row in conn.execute("SELECT account_id FROM accounts").fetchall():
+        conn.execute(
+            "INSERT OR IGNORE INTO user_account_access (user_id, account_id, granted_at) VALUES (?, ?, ?)",
+            (LOCAL_USER_ID, row["account_id"], _utcnow_iso()),
+        )
+    return LOCAL_USER_ID
