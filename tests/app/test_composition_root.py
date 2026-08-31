@@ -216,3 +216,53 @@ def test_tls_is_required_with_no_plaintext_fallback(tmp_path):
     tls = build_tls_config(configured)
     assert tls.cert_path == tmp_path / "c.crt"
     assert tls.port == configured.api_port
+
+
+# --------------------------------------------------------------------- #
+# Zero-argument local startup
+# --------------------------------------------------------------------- #
+
+
+def test_local_settings_are_safe_and_need_no_arguments():
+    """`python -m mcma.app.main` must start a single-office install with
+    no bootstrap token, no launcher and no arguments -- while keeping the
+    two properties that make dev_mode acceptable: form filling stays on
+    loopback, and the write target is never the real portal."""
+    from mcma.app.main import local_settings
+    from mcma.core.config import require_dev_mode_is_safe
+
+    settings = local_settings()
+    assert settings.local_single_user_mode is True
+    assert settings.dev_mode is True
+    assert settings.api_host == "127.0.0.1"
+    assert settings.headless_browser is False       # the human must see the handoff
+    assert settings.tls_cert_path is not None       # HTTPS only, no plaintext path
+    # Writing stays on the mock; logging in and reading go to the portal.
+    require_dev_mode_is_safe(settings)
+    assert settings.allowed_host.startswith("127.0.0.1")
+    assert settings.portal_host == "sinauto.mamda-mcma.ma"
+
+
+def test_notification_ingestion_is_off_until_it_is_configured():
+    """INC-14: production notification ingestion "defaults unavailable"
+    until G-PDR (INC-20 + INC-21). An empty category list means no poll
+    ever runs, so real claimant data cannot be persisted by accident."""
+    from mcma.app.main import local_settings
+
+    assert local_settings().notification_category_codes == ()
+
+
+def test_the_local_certificate_is_generated_and_actually_usable(tmp_path):
+    from mcma.app.local_tls import ensure_local_certificate
+    from mcma.app.serve import TlsConfig, build_ssl_context
+
+    cert, key = tmp_path / "local.crt", tmp_path / "local.key"
+    ensure_local_certificate(cert, key)
+    assert cert.is_file() and key.is_file()
+    # Proven usable by the real server loader, not merely present on disk.
+    build_ssl_context(TlsConfig(cert_path=cert, key_path=key))
+
+    # An existing pair is never overwritten.
+    before = cert.read_bytes()
+    ensure_local_certificate(cert, key)
+    assert cert.read_bytes() == before

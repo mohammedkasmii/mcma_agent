@@ -57,6 +57,7 @@ from mcma.app.auth.provider import LocalUserAuthProvider
 from mcma.app.dashboard import mount_dashboard
 from mcma.app.onboarding import create_onboarding_app
 from mcma.app.provisioning import ensure_canonical_accounts, ensure_local_employee
+from mcma.app.local_tls import ensure_local_certificate
 from mcma.app.serve import TlsConfig, serve
 from mcma.core.config import Settings, load_settings, require_dev_mode_is_safe
 from mcma.core.mutex import create_single_instance_mutex
@@ -83,6 +84,9 @@ def _is_loopback(host: str) -> bool:
         return ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+_DEV_TLS_DIR = Path("var") / "tls"
 
 
 def build_encryptor(settings: Settings) -> InputEncryptor:
@@ -263,8 +267,40 @@ def startup(settings: Optional[Settings] = None, *, _test_only_portable_mutex: b
     return mutex, api_conn, runner_conn, encryptor
 
 
+def local_settings() -> Settings:
+    """The settings a single-office install runs with. This is what
+    `python -m mcma.app.main` uses, so normal use needs no arguments, no
+    bootstrap token and no separate launcher.
+
+    dev_mode stays TRUE and allowed_host stays loopback: job inputs are
+    still stored through the test-only plaintext encryptor because the
+    DPAPI one does not exist yet (INC-21), and require_dev_mode_is_safe()
+    refuses to start if that is ever combined with a non-loopback write
+    target. Logging in and reading notifications go to the real portal
+    (portal_host) -- neither can alter a claim."""
+    base = Settings()
+    return Settings(
+        db_path=base.db_path,
+        vault_dir=base.vault_dir,
+        api_host="127.0.0.1",
+        api_port=8443,
+        tls_cert_path=_DEV_TLS_DIR / "local.crt",
+        tls_key_path=_DEV_TLS_DIR / "local.key",
+        dev_mode=True,
+        local_single_user_mode=True,
+        headless_browser=False,
+        notification_category_codes=base.notification_category_codes,
+    )
+
+
 def main(settings: Optional[Settings] = None) -> None:  # pragma: no cover - real server loop
-    settings = settings or load_settings()
+    settings = settings or local_settings()
+    if settings.tls_cert_path is not None and not Path(settings.tls_cert_path).is_file():
+        # HTTPS is the only listener there is (ADR-0008), so a missing
+        # certificate would simply stop the application. Generating one
+        # for loopback is not a security decision the employee should
+        # have to make.
+        ensure_local_certificate(Path(settings.tls_cert_path), Path(settings.tls_key_path))
     mutex, api_conn, runner_conn, encryptor = startup(settings)
     cfg = build_runner_config(settings)
     tls_config = build_tls_config(settings)
@@ -291,4 +327,14 @@ def main(settings: Optional[Settings] = None) -> None:  # pragma: no cover - rea
 
 
 if __name__ == "__main__":  # pragma: no cover
+    print()
+    print("=" * 68)
+    print("  MCMA - Plateforme Sinistres")
+    print("=" * 68)
+    print("  Tableau de bord : https://127.0.0.1:8443/")
+    print("  Portail         : https://sinauto.mamda-mcma.ma")
+    print()
+    print("  Votre navigateur signalera le certificat local : acceptez-le.")
+    print("=" * 68)
+    print()
     main()
