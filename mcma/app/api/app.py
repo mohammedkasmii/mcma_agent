@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import uuid
+
+from pydantic import ValidationError
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Request
@@ -44,21 +46,24 @@ from mcma.execution.jobs import (
     run_execute_planning,
 )
 from mcma.mapping.wexia import parse_wexia
-from mcma.planning.plan import PlanBuildError, build_garage_conventionne_plan, build_mission_normal_plan
+from mcma.planning.plan import PlanBuildError, detect_workflow
+from mcma.planning.registry import default_registry, workflow_name_for
+from mcma.persistence.repositories.accounts import AccountsRepository
+from mcma.persistence.repositories.jobs import AutomationJobsRepository
 
-# Fable-review-2 correction (HIGH finding): the EXECUTE endpoint's
+# Fable-review-2 correction (HIGH finding), extended by the pilot-
+# integration correction (section 3): the EXECUTE endpoint's
 # rebuild_plan_from_retained_input callable used to be an always-matching
 # stub, making run_execute_planning's hash re-check vacuous. It now
 # re-derives the plan from the SAME typed input bytes retained at
 # DRY_RUN time, through the SAME pure builder function the workflow_name
-# names -- a genuine re-verification, never a caller-trusted shortcut.
-# An unrecognized workflow_name fails closed (never guesses a builder).
-_WORKFLOW_PLAN_BUILDERS = {
-    "mission_normal": build_mission_normal_plan,
-    "garage_conventionne": build_garage_conventionne_plan,
-}
-from mcma.persistence.repositories.accounts import AccountsRepository
-from mcma.persistence.repositories.jobs import AutomationJobsRepository
+# names (mcma.planning.registry.default_registry(), the one canonical
+# name<->builder mapping) -- a genuine re-verification. An unrecognized
+# workflow_name fails closed (never guesses a builder). workflow_name
+# itself is NEVER a client-supplied field (section 3): POST /jobs/
+# dry-runs determines it server-side via detect_workflow() from the
+# parsed typed_input, never from the browser.
+_WORKFLOW_REGISTRY = default_registry()
 
 
 def _require_mcma_account(conn, account_id: str) -> None:
@@ -171,6 +176,22 @@ def create_api_app(
         filtered = filter_rows_by_account_access(conn, principal, rows)
         return {"notifications": [dict(r) for r in filtered]}
 
+    @app.get("/accounts")
+    def list_accounts(principal: Principal = Depends(get_principal)):
+        """Pilot-integration correction (section 2/6): the dashboard must
+        never hardcode a production account_id in its HTML -- it loads
+        the authenticated user's own accessible profiles from here."""
+        visible = visible_account_ids(conn, principal)
+        if not visible:
+            rows = []
+        else:
+            placeholders = ",".join("?" for _ in visible)
+            rows = conn.execute(
+                f"SELECT account_id, label, entity, scope FROM accounts WHERE account_id IN ({placeholders})",
+                tuple(visible),
+            ).fetchall()
+        return {"accounts": [dict(r) for r in rows]}
+
     @app.get("/notifications")
     def list_notifications(account_id: Optional[str] = None, principal: Principal = Depends(get_principal)):
         return _list_notifications(principal, account_id)
@@ -182,9 +203,18 @@ def create_api_app(
     # -- jobs --------------------------------------------------------------
 
     @app.get("/jobs")
-    def list_jobs(account_id: Optional[str] = None, principal: Principal = Depends(get_principal)):
+    def list_jobs(
+        account_id: Optional[str] = None, job_id: Optional[str] = None, principal: Principal = Depends(get_principal)
+    ):
         require_permission(principal, Permission.JOBS_VIEW)
-        if account_id is not None:
+        if job_id is not None:
+            # A single-job status poll (the dashboard's readiness
+            # display) -- still fully authz-checked below via
+            # filter_rows_by_account_access, never a bypass of the
+            # per-account rules just because one row was named directly.
+            row = AutomationJobsRepository(conn).get(job_id)
+            rows = [row] if row is not None else []
+        elif account_id is not None:
             require_account_access(conn, principal, account_id)
             rows = conn.execute("SELECT * FROM automation_jobs WHERE account_id = ?", (account_id,)).fetchall()
         else:
@@ -205,16 +235,31 @@ def create_api_app(
     ):
         require_permission(principal, Permission.JOBS_PLAN)
         body = await request.json()
+        if "workflow_name" in body:
+            # Pilot-integration correction (section 3): the workflow is
+            # ALWAYS determined server-side from the parsed typed_input,
+            # never accepted (let alone hardcoded) from the browser --
+            # this mirrors the existing `mode` field rejection exactly.
+            raise ApiError(400, "BAD_REQUEST", "workflow_name is not a client-settable field")
         account_id = body.get("account_id")
-        workflow_name = body.get("workflow_name")
         typed_input = body.get("typed_input")
         idempotency_key = body.get("idempotency_key")
-        if not account_id or not workflow_name or typed_input is None or not idempotency_key:
-            raise ApiError(400, "BAD_REQUEST", "account_id, workflow_name, typed_input, and idempotency_key are required")
+        if not account_id or typed_input is None or not idempotency_key:
+            raise ApiError(400, "BAD_REQUEST", "account_id, typed_input, and idempotency_key are required")
         # account_id is NEVER trusted bare from the body -- it is checked
         # against this principal's own access before anything is created.
         require_account_access(conn, principal, account_id)
         _require_mcma_account(conn, account_id)
+
+        try:
+            parsed_typed_input = parse_wexia(typed_input)
+        except ValidationError as exc:
+            raise ApiError(400, "INVALID_TYPED_INPUT", "typed_input does not match the expected dossier shape") from exc
+        try:
+            repair_workflow = detect_workflow(parsed_typed_input)
+            workflow_name = workflow_name_for(repair_workflow)
+        except PlanBuildError as exc:
+            raise ApiError(409, "WORKFLOW_NOT_DETERMINABLE", "could not determine exactly one workflow from typed evidence") from exc
 
         typed_input_bytes = json.dumps(typed_input, sort_keys=True).encode("utf-8")
         input_hash = compute_content_hash(typed_input_bytes)
@@ -228,7 +273,7 @@ def create_api_app(
             idempotency_key=idempotency_key,
             encryptor=encryptor,
         )
-        return {"job_id": job_id, "status": AutomationJobsRepository(conn).get(job_id)["status"]}
+        return {"job_id": job_id, "status": AutomationJobsRepository(conn).get(job_id)["status"], "workflow_name": workflow_name}
 
     @app.post("/jobs/{dry_run_job_id}/executions")
     async def create_execution(
@@ -257,9 +302,10 @@ def create_api_app(
         except JobInputUnavailable as exc:
             raise ApiError(409, exc.reason_code, "the dry-run's retained input is no longer usable") from exc
 
-        plan_builder = _WORKFLOW_PLAN_BUILDERS.get(parent["workflow_name"])
-        if plan_builder is None:
-            raise ApiError(409, "UNSUPPORTED_WORKFLOW_NAME", "no known plan builder for this workflow")
+        try:
+            plan_builder = _WORKFLOW_REGISTRY.get(parent["workflow_name"])
+        except KeyError as exc:
+            raise ApiError(409, "UNSUPPORTED_WORKFLOW_NAME", "no known plan builder for this workflow") from exc
 
         parent_input_row = conn.execute("SELECT ciphertext, pii_class FROM job_inputs WHERE job_id = ?", (dry_run_job_id,)).fetchone()
         parent_typed_input_bytes = encryptor.decrypt(bytes(parent_input_row["ciphertext"]))

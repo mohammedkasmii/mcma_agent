@@ -4,7 +4,13 @@ unrecognized entity/scope."""
 
 import pytest
 
-from mcma.domain.portal_accounts import PortalAccountProfile, PortalEntity, PortalScope, THE_FOUR_PROFILES
+from mcma.domain.portal_accounts import (
+    THE_FOUR_PROFILES,
+    PortalAccountProfile,
+    PortalEntity,
+    PortalScope,
+    canonical_account_id,
+)
 
 
 def test_there_are_exactly_four_canonical_profiles():
@@ -49,3 +55,10 @@ def test_profile_is_frozen_and_hashable():
     with pytest.raises(AttributeError):
         profile.entity = PortalEntity.MAMDA  # type: ignore[misc]
     assert hash(profile) == hash(PortalAccountProfile.from_row("MCMA", "OUJDA"))
+
+
+def test_canonical_account_id_is_deterministic_and_distinct_for_all_four():
+    ids = {canonical_account_id(p) for p in THE_FOUR_PROFILES}
+    assert len(ids) == 4
+    assert canonical_account_id(PortalAccountProfile.from_row("MCMA", "OUJDA")) == "acct-mcma-oujda"
+    assert canonical_account_id(PortalAccountProfile.from_row("MAMDA", "NADOR")) == "acct-mamda-nador"

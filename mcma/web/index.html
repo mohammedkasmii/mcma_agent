@@ -40,8 +40,6 @@
     <label>MCMA account
       <select id="account-select" required>
         <option value="">Select an account</option>
-        <option value="acct-mcma-oujda">MCMA / Oujda</option>
-        <option value="acct-mcma-nador">MCMA / Nador</option>
       </select>
     </label>
     <label>Wexia dossier JSON file
@@ -50,12 +48,15 @@
     <button type="submit">Upload and create dry-run</button>
   </form>
   <p id="upload-status" role="status"></p>
+  <p id="current-job-id" role="status"></p>
 </section>
 
 <section id="plan-preview-section">
   <h2>Plan preview</h2>
   <p>Review the deterministic plan and any warnings before authorizing execution. No charge-mutuelle/sociétaire field is ever shown or editable here.</p>
   <div id="plan-preview"></div>
+  <button id="authorize-execution-btn" type="button" hidden>Authorize execution</button>
+  <p id="authorize-status" role="status"></p>
 </section>
 
 <section id="human-handoff-section">
@@ -67,8 +68,8 @@
     the portal yourself, then close the browser window yourself. This
     dashboard never clicks those controls for you.
   </p>
-  <button id="review-completed-btn" type="button">Review completed</button>
-  <button id="problem-btn" type="button">Problem / not completed</button>
+  <button id="review-completed-btn" type="button" hidden>Review completed</button>
+  <button id="problem-btn" type="button" hidden>Problem / not completed</button>
   <p id="handoff-status" role="status"></p>
 </section>
 

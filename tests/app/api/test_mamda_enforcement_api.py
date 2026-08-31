@@ -6,6 +6,23 @@ MAMDA account BEFORE enqueueing anything. MCMA is the positive control.
 
 from api_test_support import MAMDA_OUJDA, OUJDA, create_user, grant_access, login_client
 
+# A minimally valid, buildable Wexia payload -- section 3's server-side
+# detect_workflow() must succeed for the MCMA positive control to reach
+# QUEUED; the MAMDA-rejection tests never reach that step at all (the
+# account-type check runs first), so an invalid payload would work there
+# too, but using the same valid shape everywhere keeps this file uniform.
+VALID_TYPED_INPUT = {
+    "dossier": {"reference_number": "REF-1", "mission_type": "normal", "is_reform": False},
+    "vehicule": {"license_plate": "11111-A-11"},
+    "chiffrages": [
+        {
+            "status": "approved", "is_final": True, "scenario_type": "repair",
+            "total_cost": 10, "tax_amount": 2,
+            "lignes_pieces": [{"item_type": "part", "item_name": "x", "part_type": "original", "subtotal": 10}],
+        }
+    ],
+}
+
 
 def test_dry_run_creation_rejected_for_mamda_account(conn, app_and_client):
     app, client, _ = app_and_client
@@ -17,8 +34,7 @@ def test_dry_run_creation_rejected_for_mamda_account(conn, app_and_client):
         "/jobs/dry-runs",
         json={
             "account_id": MAMDA_OUJDA,
-            "workflow_name": "mission_normal",
-            "typed_input": {"dossier": "x"},
+            "typed_input": VALID_TYPED_INPUT,
             "idempotency_key": "mamda-1",
         },
         headers={"X-CSRF-Token": csrf},
@@ -37,8 +53,7 @@ def test_no_job_visible_after_mamda_dry_run_rejection(conn, app_and_client):
         "/jobs/dry-runs",
         json={
             "account_id": MAMDA_OUJDA,
-            "workflow_name": "mission_normal",
-            "typed_input": {"dossier": "x"},
+            "typed_input": VALID_TYPED_INPUT,
             "idempotency_key": "mamda-2",
         },
         headers={"X-CSRF-Token": csrf},
@@ -58,14 +73,14 @@ def test_mcma_dry_run_creation_succeeds_as_positive_control(conn, app_and_client
         "/jobs/dry-runs",
         json={
             "account_id": OUJDA,
-            "workflow_name": "mission_normal",
-            "typed_input": {"dossier": "x"},
+            "typed_input": VALID_TYPED_INPUT,
             "idempotency_key": "mcma-1",
         },
         headers={"X-CSRF-Token": csrf},
     )
     assert response.status_code == 200
     assert response.json()["status"] == "QUEUED"
+    assert response.json()["workflow_name"] == "mission_normal"
 
 
 def test_execution_creation_rejected_for_mamda_account(conn, app_and_client):

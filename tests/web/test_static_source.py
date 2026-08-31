@@ -113,15 +113,28 @@ def test_review_completed_and_problem_buttons_exist():
     assert 'id="problem-btn"' in INDEX_HTML
 
 
-def test_account_selection_offers_only_mcma_accounts():
-    """MAMDA never appears as a selectable option for form-job creation
-    (K's requirement: explicit MCMA Oujda/Nador selection only)."""
+def test_account_select_has_no_hardcoded_production_account_id():
+    """Pilot-integration correction (section 2/6): no production
+    account_id is ever hardcoded in the HTML -- the <select> starts with
+    only a placeholder; real options come from populateMcmaAccountSelect()
+    (see tests/app/api and the real-Chromium behavior test for its
+    MCMA-only filtering)."""
     start = INDEX_HTML.index('id="account-select"')
     end = INDEX_HTML.index("</select>", start)
     select_block = INDEX_HTML[start:end]
-    assert "MAMDA" not in select_block
-    assert "MCMA / Oujda" in select_block
-    assert "MCMA / Nador" in select_block
+    assert "acct-" not in select_block
+    assert select_block.count("<option") == 1  # only the placeholder
+
+
+def test_populate_mcma_account_select_filters_out_mamda_in_source():
+    """The MCMA-only filter itself lives in populateMcmaAccountSelect --
+    checked here at the source level (a real-DOM proof is a natural
+    fit for tests/web/test_escaping.py-style Chromium tests, but the
+    filter predicate itself is a plain, directly-inspectable string)."""
+    start = APP_JS.index("function populateMcmaAccountSelect")
+    end = APP_JS.index("\n  }\n", start)
+    body = APP_JS[start:end]
+    assert 'a.entity === "MCMA"' in body
 
 
 def test_manual_review_instructions_are_present():

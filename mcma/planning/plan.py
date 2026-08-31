@@ -540,3 +540,17 @@ def build_mission_normal_plan(typed_input) -> ProposedPlan:
 
 def build_garage_conventionne_plan(typed_input) -> ProposedPlan:
     return _build_plan_core(typed_input, RepairWorkflow.GARAGE_CONVENTIONNE)
+
+
+def detect_workflow(typed_input) -> RepairWorkflow:
+    """Pilot-integration correction (section 3): the ONE public function
+    that determines the target workflow from typed evidence alone,
+    before any plan is built -- the real job runner uses this so it
+    never has to accept (let alone hardcode) a workflow name from the
+    browser/client. A thin public wrapper around the exact same
+    fail-closed detection _build_plan_core itself calls internally (so
+    build_mission_normal_plan/build_garage_conventionne_plan's own
+    redundant check can never disagree with this) -- raises
+    PlanBuildError on conflicting or absent signals, never guesses."""
+    mode = _detect_mode_fail_closed(typed_input.dossier)
+    return RepairWorkflow.MODE_NORMAL if mode == "normal" else RepairWorkflow.GARAGE_CONVENTIONNE

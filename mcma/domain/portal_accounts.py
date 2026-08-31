@@ -77,3 +77,13 @@ class PortalAccountProfile:
 THE_FOUR_PROFILES: tuple[PortalAccountProfile, ...] = tuple(
     PortalAccountProfile(entity, scope) for entity in PortalEntity for scope in PortalScope
 )
+
+
+def canonical_account_id(profile: PortalAccountProfile) -> str:
+    """The ONE deterministic account_id naming convention for the four
+    canonical profiles -- pilot-integration correction: used by
+    provisioning (mcma.app.provisioning), onboarding
+    (tools/onboarding_tool.py), and every test that seeds these accounts,
+    so all three always agree on the same four ids without any of them
+    hardcoding a duplicate literal."""
+    return f"acct-{profile.entity.value.lower()}-{profile.scope.value.lower()}"

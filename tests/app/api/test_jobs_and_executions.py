@@ -36,7 +36,6 @@ VALID_TYPED_INPUT = {
 def _dry_run_body(account_id=OUJDA, key="k1", typed_input=None):
     return {
         "account_id": account_id,
-        "workflow_name": "mission_normal",
         "typed_input": typed_input if typed_input is not None else VALID_TYPED_INPUT,
         "idempotency_key": key,
     }
@@ -56,11 +55,69 @@ def test_no_mode_field_exists(conn, app_and_client):
     assert response.status_code == 200
     job_id = response.json()["job_id"]
     assert response.json()["status"] == "QUEUED"
+    assert response.json()["workflow_name"] == "mission_normal"  # server-detected, never client-supplied
 
     rejected = client.post(
         f"/jobs/{job_id}/executions", json={"mode": "EXECUTE"}, headers={"X-CSRF-Token": csrf}
     )
     assert rejected.status_code == 400
+
+
+def test_workflow_name_is_not_a_client_settable_field(conn, app_and_client):
+    """Pilot-integration correction (section 3): the workflow is ALWAYS
+    determined server-side from the parsed typed_input -- supplying it
+    explicitly is rejected exactly like `mode`."""
+    app, client, _ = app_and_client
+    user_id = create_user(conn, "kate", "pw12345", "operator")
+    grant_access(conn, user_id, OUJDA)
+    csrf = login_client(client, "kate", "pw12345")
+
+    body = _dry_run_body(key="workflow-name-rejected")
+    body["workflow_name"] = "mission_normal"
+    response = client.post("/jobs/dry-runs", json=body, headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 400
+
+
+def test_workflow_is_detected_server_side_for_garage_conventionne_too(conn, app_and_client):
+    app, client, _ = app_and_client
+    user_id = create_user(conn, "liam", "pw12345", "operator")
+    grant_access(conn, user_id, OUJDA)
+    csrf = login_client(client, "liam", "pw12345")
+
+    pec_typed_input = {
+        "dossier": {"reference_number": "REF-PEC", "mission_type": "garage conventionne", "is_reform": False},
+        "vehicule": {"license_plate": "22222-B-22"},
+        "chiffrages": [
+            {
+                "status": "approved", "is_final": True, "scenario_type": "repair",
+                "total_cost": 10, "tax_amount": 2,
+                "lignes_pieces": [{"item_type": "part", "item_name": "x", "part_type": "original", "subtotal": 10}],
+            }
+        ],
+    }
+    response = client.post(
+        "/jobs/dry-runs",
+        json=_dry_run_body(key="pec-1", typed_input=pec_typed_input),
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 200
+    assert response.json()["workflow_name"] == "garage_conventionne"
+
+
+def test_dry_run_with_no_determinable_workflow_fails_closed(conn, app_and_client):
+    app, client, _ = app_and_client
+    user_id = create_user(conn, "mona", "pw12345", "operator")
+    grant_access(conn, user_id, OUJDA)
+    csrf = login_client(client, "mona", "pw12345")
+
+    ambiguous_typed_input = {"dossier": {"reference_number": "REF-AMBIG", "is_reform": False}}
+    response = client.post(
+        "/jobs/dry-runs",
+        json=_dry_run_body(key="ambiguous-1", typed_input=ambiguous_typed_input),
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert response.status_code == 409
+    assert response.json()["error"] == "WORKFLOW_NOT_DETERMINABLE"
 
 
 def test_dry_runs_idempotency_key_dedupes_resubmit(conn, app_and_client):

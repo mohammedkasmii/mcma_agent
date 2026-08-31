@@ -111,26 +111,81 @@
     return SUCCESS_STATUSES.indexOf(status) !== -1;
   }
 
+  async function fetchJobById(fetchImpl, jobId) {
+    var response = await fetchImpl("/jobs?job_id=" + encodeURIComponent(jobId), { credentials: "include" });
+    if (!response.ok) {
+      return { ok: false, status: response.status, job: null };
+    }
+    var data = await response.json();
+    var job = (data.jobs || []).find(function (j) {
+      return j.job_id === jobId;
+    });
+    return { ok: true, status: response.status, job: job || null };
+  }
+
   async function updateReadinessDisplay(fetchImpl, labelEl, jobId) {
     try {
-      var response = await fetchImpl("/jobs?job_id=" + encodeURIComponent(jobId), { credentials: "include" });
-      if (!response.ok) {
-        setText(labelEl, "Status unavailable (HTTP " + response.status + ")");
-        return;
+      var result = await fetchJobById(fetchImpl, jobId);
+      if (!result.ok) {
+        setText(labelEl, "Status unavailable (HTTP " + result.status + ")");
+        return null;
       }
-      var data = await response.json();
-      var job = (data.jobs || []).find(function (j) {
-        return j.job_id === jobId;
-      });
-      if (!job) {
+      if (!result.job) {
         setText(labelEl, "Job not found");
-        return;
+        return null;
       }
-      setText(labelEl, readinessLabel(job.status));
+      setText(labelEl, readinessLabel(result.job.status));
+      return result.job;
     } catch (err) {
       // NO finally block sets a ready label here -- a fetch failure is
       // reported as an explicit error state, never "ready".
       setText(labelEl, "Status unavailable -- check connection");
+      return null;
+    }
+  }
+
+  // ----------------------------------------------------------------- //
+  // Plan preview -- built via createElement/textContent only, exactly
+  // like renderNotificationRow. No charge-mutuelle/sociétaire field ever
+  // appears here (ProposedPlan/plan_snapshot structurally cannot carry
+  // one -- see mcma.planning.plan.RowOp's own docstring).
+  // ----------------------------------------------------------------- //
+
+  function renderPlanPreview(container, job) {
+    container.textContent = "";
+    if (!job || !job.plan_snapshot) {
+      container.appendChild(el("p", "empty-state", "No plan yet."));
+      return;
+    }
+    var plan;
+    try {
+      plan = JSON.parse(job.plan_snapshot);
+    } catch (err) {
+      container.appendChild(el("p", "error-state", "Plan preview unavailable."));
+      return;
+    }
+    var steps = plan.steps || [];
+    var needsReview = plan.needs_review || [];
+    container.appendChild(el("p", "plan-workflow", "Workflow: " + (plan.repair_workflow || "?")));
+    var stepsList = el("ul", "plan-steps");
+    steps.forEach(function (step) {
+      stepsList.appendChild(el("li", "plan-step", "Rubrique " + step.rubrique_id + " -- HT " + step.ht));
+    });
+    container.appendChild(stepsList);
+    var formFieldIntents = plan.form_field_intents || [];
+    if (formFieldIntents.length > 0) {
+      var fieldsList = el("ul", "plan-form-fields");
+      formFieldIntents.forEach(function (intent) {
+        fieldsList.appendChild(el("li", "plan-form-field", intent.selector + " = " + intent.value));
+      });
+      container.appendChild(fieldsList);
+    }
+    if (needsReview.length > 0) {
+      var warnings = el("ul", "plan-warnings");
+      needsReview.forEach(function (review) {
+        warnings.appendChild(el("li", "plan-warning", review.reason + (review.detail ? ": " + review.detail : "")));
+      });
+      container.appendChild(warnings);
     }
   }
 
@@ -172,13 +227,44 @@
     });
   }
 
-  async function submitJsonDossier(fetchImpl, accountId, workflowName, parsedJson) {
+  async function submitJsonDossier(fetchImpl, accountId, parsedJson) {
+    // Pilot-integration correction (section 3/6): workflow_name is NEVER
+    // sent from here -- the server determines it from the uploaded
+    // dossier's own typed evidence (mcma.planning.plan.detect_workflow).
     return postAction(fetchImpl, "/jobs/dry-runs", {
       account_id: accountId,
-      workflow_name: workflowName,
       typed_input: parsedJson,
       idempotency_key: (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : String(Date.now()),
     });
+  }
+
+  async function fetchAccessibleAccounts(fetchImpl) {
+    var response = await fetchImpl("/accounts", { credentials: "include" });
+    if (!response.ok) {
+      throw new Error("could not load accessible accounts");
+    }
+    var data = await response.json();
+    return data.accounts || [];
+  }
+
+  function populateMcmaAccountSelect(selectEl, accounts) {
+    // Pilot-integration correction (section 2/6): no production
+    // account_id is ever hardcoded in the HTML -- this is the ONLY
+    // place options are added, and only MCMA accounts are offered (a
+    // MAMDA account can never be selected for a form job).
+    selectEl.textContent = "";
+    var placeholder = el("option", null, "Select an account");
+    placeholder.setAttribute("value", "");
+    selectEl.appendChild(placeholder);
+    accounts
+      .filter(function (a) {
+        return a.entity === "MCMA";
+      })
+      .forEach(function (a) {
+        var option = el("option", null, a.entity + " / " + a.scope);
+        option.setAttribute("value", a.account_id);
+        selectEl.appendChild(option);
+      });
   }
 
   async function confirmReviewCompleted(fetchImpl, jobId) {
@@ -246,12 +332,29 @@
   // loading this file standalone (as the tests do) never throws.
   // ----------------------------------------------------------------- //
 
+  var HANDOFF_VISIBLE_STATUSES = ["READY_FOR_HUMAN_REVIEW", "AWAITING_HUMAN_CONFIRMATION"];
+  var AUTHORIZE_VISIBLE_STATUSES = ["DRY_RUN_VERIFIED"];
+  var POLL_INTERVAL_MS = 4000;
+
   function init() {
     var notificationsEl = document.getElementById("notifications-list");
     var loginForm = document.getElementById("login-form");
     var uploadForm = document.getElementById("dossier-upload-form");
+    var accountSelect = document.getElementById("account-select");
+    var currentJobIdEl = document.getElementById("current-job-id");
+    var planPreviewEl = document.getElementById("plan-preview");
+    var readinessLabelEl = document.getElementById("readiness-label");
+    var authorizeBtn = document.getElementById("authorize-execution-btn");
+    var authorizeStatusEl = document.getElementById("authorize-status");
     var reviewCompletedBtn = document.getElementById("review-completed-btn");
     var problemBtn = document.getElementById("problem-btn");
+    var handoffStatusEl = document.getElementById("handoff-status");
+
+    // The ONE piece of job-identity state this page tracks -- every
+    // button below acts on THIS real job id, never a static/stale one
+    // (section 6: "propagate the real job ID").
+    var currentJobId = null;
+    var pollTimer = null;
 
     async function refreshNotifications() {
       if (!notificationsEl) return;
@@ -269,6 +372,42 @@
       }
     }
 
+    async function refreshAccounts() {
+      if (!accountSelect) return;
+      try {
+        var accounts = await fetchAccessibleAccounts(fetch);
+        populateMcmaAccountSelect(accountSelect, accounts);
+      } catch (err) {
+        // The select simply stays at its placeholder-only state -- an
+        // explicit empty state, never a guessed/hardcoded account list.
+      }
+    }
+
+    function setHandoffButtonsVisible(job) {
+      var visible = job && HANDOFF_VISIBLE_STATUSES.indexOf(job.status) !== -1;
+      if (reviewCompletedBtn) reviewCompletedBtn.hidden = !visible;
+      if (problemBtn) problemBtn.hidden = !visible;
+    }
+
+    function setAuthorizeButtonVisible(job) {
+      var visible = job && AUTHORIZE_VISIBLE_STATUSES.indexOf(job.status) !== -1;
+      if (authorizeBtn) authorizeBtn.hidden = !visible;
+    }
+
+    async function pollCurrentJob() {
+      if (!currentJobId || !readinessLabelEl) return;
+      var job = await updateReadinessDisplay(fetch, readinessLabelEl, currentJobId);
+      if (planPreviewEl) renderPlanPreview(planPreviewEl, job);
+      setAuthorizeButtonVisible(job);
+      setHandoffButtonsVisible(job);
+    }
+
+    function startPolling() {
+      if (pollTimer) clearInterval(pollTimer);
+      pollCurrentJob();
+      pollTimer = setInterval(pollCurrentJob, POLL_INTERVAL_MS);
+    }
+
     if (loginForm) {
       loginForm.addEventListener("submit", async function (event) {
         event.preventDefault();
@@ -284,6 +423,7 @@
         if (response.ok) {
           setText(statusEl, "Logged in.");
           refreshNotifications();
+          refreshAccounts();
         } else {
           setText(statusEl, "Login failed.");
         }
@@ -295,14 +435,22 @@
         event.preventDefault();
         var statusEl = document.getElementById("upload-status");
         var fileInput = document.getElementById("dossier-file-input");
-        var accountSelect = document.getElementById("account-select");
         try {
+          if (!accountSelect.value) {
+            setText(statusEl, "Select an MCMA account first.");
+            return;
+          }
           var parsed = await readDossierFile(fileInput.files[0]);
-          var response = await submitJsonDossier(fetch, accountSelect.value, "mission_normal", parsed);
+          // workflow_name is never sent -- the server determines it from
+          // the uploaded dossier's own typed evidence.
+          var response = await submitJsonDossier(fetch, accountSelect.value, parsed);
+          var body = await response.json();
           if (response.ok) {
-            setText(statusEl, "Dry-run created. Review the plan before authorizing execution.");
+            currentJobId = body.job_id;
+            setText(statusEl, "Dry-run created (workflow: " + body.workflow_name + "). Review the plan below.");
+            setText(currentJobIdEl, "Current job: " + currentJobId);
+            startPolling();
           } else {
-            var body = await response.json();
             setText(statusEl, "Rejected: " + (body.error || "unknown error"));
           }
         } catch (err) {
@@ -311,25 +459,42 @@
       });
     }
 
+    if (authorizeBtn) {
+      authorizeBtn.addEventListener("click", async function () {
+        if (!currentJobId) return;
+        var response = await postAction(fetch, "/jobs/" + encodeURIComponent(currentJobId) + "/executions", {});
+        var body = await response.json();
+        if (response.ok) {
+          currentJobId = body.job_id; // the NEW execute job id -- distinct from the dry-run id
+          setText(authorizeStatusEl, "Execution authorized (job " + currentJobId + ").");
+          setText(currentJobIdEl, "Current job: " + currentJobId);
+          startPolling();
+        } else {
+          setText(authorizeStatusEl, "Could not authorize execution: " + (body.error || "unknown error"));
+        }
+      });
+    }
+
     if (reviewCompletedBtn) {
       reviewCompletedBtn.addEventListener("click", async function () {
-        var jobId = reviewCompletedBtn.getAttribute("data-job-id");
-        var response = await confirmReviewCompleted(fetch, jobId);
-        var statusEl = document.getElementById("handoff-status");
-        setText(statusEl, response.ok ? "Marked completed (your confirmation)." : "Could not confirm completion.");
+        if (!currentJobId) return;
+        var response = await confirmReviewCompleted(fetch, currentJobId);
+        setText(handoffStatusEl, response.ok ? "Marked completed (your confirmation)." : "Could not confirm completion.");
+        pollCurrentJob();
       });
     }
 
     if (problemBtn) {
       problemBtn.addEventListener("click", async function () {
-        var jobId = problemBtn.getAttribute("data-job-id");
-        var response = await reportProblem(fetch, jobId, "EMPLOYEE_REPORTED_PROBLEM");
-        var statusEl = document.getElementById("handoff-status");
-        setText(statusEl, response.ok ? "Problem reported -- needs human review." : "Could not report the problem.");
+        if (!currentJobId) return;
+        var response = await reportProblem(fetch, currentJobId, "EMPLOYEE_REPORTED_PROBLEM");
+        setText(handoffStatusEl, response.ok ? "Problem reported -- needs human review." : "Could not report the problem.");
+        pollCurrentJob();
       });
     }
 
     refreshNotifications();
+    refreshAccounts();
   }
 
   if (document.readyState === "loading") {
@@ -347,13 +512,17 @@
     renderNotificationList: renderNotificationList,
     readinessLabel: readinessLabel,
     isReadyLooking: isReadyLooking,
+    fetchJobById: fetchJobById,
     updateReadinessDisplay: updateReadinessDisplay,
+    renderPlanPreview: renderPlanPreview,
     renderLoadingState: renderLoadingState,
     renderErrorState: renderErrorState,
     SAMPLE_DATA: SAMPLE_DATA,
     readCsrfCookie: readCsrfCookie,
     postAction: postAction,
     submitJsonDossier: submitJsonDossier,
+    fetchAccessibleAccounts: fetchAccessibleAccounts,
+    populateMcmaAccountSelect: populateMcmaAccountSelect,
     confirmReviewCompleted: confirmReviewCompleted,
     reportProblem: reportProblem,
     parseDossierFileText: parseDossierFileText,

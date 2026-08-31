@@ -23,6 +23,7 @@ path or the token itself.
 from __future__ import annotations
 
 import os
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -96,12 +97,21 @@ class TestOnlyInMemoryCryptoBackend:
 
 
 def get_crypto_backend(*, _test_only_in_memory_backend: bool = False) -> CryptoBackend:
+    """Pilot-integration correction (section 2/4): DpapiLocalMachineBackend
+    has existed since INC-13, but this factory never actually returned it
+    -- it unconditionally raised, meaning production session storage was
+    structurally unusable end-to-end. It now returns a real
+    DpapiLocalMachineBackend on Windows (the only platform DPAPI exists
+    on) and still fails closed everywhere else -- never a plaintext or
+    weaker fallback, on any platform."""
     if _test_only_in_memory_backend:
         return TestOnlyInMemoryCryptoBackend()
-    raise ProductionCryptoBackendUnavailable(
-        "no production DPAPI LocalMachine backend is available on this platform/context; "
-        "the vault refuses rather than falling back to a weaker backend"
-    )
+    if sys.platform != "win32":
+        raise ProductionCryptoBackendUnavailable(
+            "no production DPAPI LocalMachine backend is available on this platform; "
+            "the vault refuses rather than falling back to a weaker backend"
+        )
+    return DpapiLocalMachineBackend()
 
 
 # --------------------------------------------------------------------- #

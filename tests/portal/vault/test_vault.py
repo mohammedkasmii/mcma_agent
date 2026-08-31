@@ -99,9 +99,36 @@ def test_service_acquires_lease_before_session_replace(conn, vault_dir, backend,
     assert invalid_lease.account_id == ACCOUNT_ID
 
 
-def test_production_config_rejects_non_dpapi_backend():
+def test_production_config_rejects_a_platform_without_dpapi(monkeypatch):
+    """Pilot-integration correction: get_crypto_backend() now actually
+    returns a working DpapiLocalMachineBackend on win32 (see the positive
+    control below) -- the fail-closed case is specifically "no DPAPI on
+    this platform", proven here by simulating a non-Windows platform
+    rather than by the factory always refusing regardless of platform."""
+    import mcma.portal.vault as vault_module
+
+    monkeypatch.setattr(vault_module.sys, "platform", "linux")
     with pytest.raises(ProductionCryptoBackendUnavailable):
         get_crypto_backend()
+
+
+def test_production_backend_on_windows_is_a_real_working_dpapi_backend():
+    """Positive control: on the actual platform this suite runs on
+    (win32), get_crypto_backend() returns a genuine DpapiLocalMachineBackend
+    -- proven with a real encrypt/decrypt round-trip against the real
+    Windows DPAPI API (a pure local OS call, no network, no portal
+    contact) rather than merely asserting it doesn't raise."""
+    import sys
+
+    from mcma.portal.vault import DpapiLocalMachineBackend
+
+    if sys.platform != "win32":
+        pytest.skip("DPAPI is only available on win32")
+    backend = get_crypto_backend()
+    assert isinstance(backend, DpapiLocalMachineBackend)
+    ciphertext = backend.encrypt(b"round-trip-test-value")
+    assert ciphertext != b"round-trip-test-value"
+    assert backend.decrypt(ciphertext) == b"round-trip-test-value"
 
 
 def test_test_only_flag_opts_into_the_in_memory_backend():
