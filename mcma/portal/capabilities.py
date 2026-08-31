@@ -42,6 +42,7 @@ import math
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, Sequence, runtime_checkable
+import re
 from urllib.parse import quote, urlsplit
 
 from mcma.domain.enums import RepairWorkflow
@@ -161,6 +162,34 @@ class SessionMaterial:
 # --------------------------------------------------------------------- #
 
 _LOGIN_PAGE_OPERATION_TYPE = "login_page"
+# Category discovery (PORTAL_CONTRACT.md §7, recovered from
+# browser/notifications.py:203,208 at baseline 0290fe9). The portal does
+# not publish a stable list of alert categories anywhere, and this
+# repository contains no reviewed fixed list -- the `categories` table
+# ships empty -- so the active codes are read from the portal's own
+# notification surface.
+#
+# What comes back is a CODE and nothing else. The href is deliberately
+# never returned: portal-supplied data must not be able to become a route
+# this agent will navigate to. A code is validated against the recovered
+# pattern here AND again by the caller, and can only ever be substituted
+# into the one fixed getAlerte route.
+_CATEGORY_LINKS_JS = """() => {
+    const links = document.querySelectorAll(
+        '#listeAlertes a[href*="notification/alerte/"], '
+        + '#listeAlertes a[href*="notification/notification/alerte/"]'
+    );
+    const codes = [];
+    links.forEach(a => {
+        const match = (a.getAttribute('href') || '').match(/alerte\\/([A-Za-z0-9\\-]+)/i);
+        if (match) codes.push(match[1]);
+    });
+    return codes;
+}"""
+
+_CATEGORY_CODE_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
+_MAX_DISCOVERED_CATEGORIES = 50
+
 _LOGGED_IN_MARKER_JS = """(selectors) => selectors.some(sel => document.querySelector(sel) !== null)"""
 LOGGED_IN_MARKERS = ("#formRecherche", "#ReferenceCie", "a[href*='logout']")
 
@@ -599,6 +628,37 @@ class ReadCapability:
         comes back, nothing else."""
         self._ensure_open()
         return await _observe_identity(self._page)
+
+    async def discover_notification_categories(self) -> tuple[str, ...]:
+        """The alert category codes this account's portal currently
+        offers, read from its own notification surface.
+
+        Returns CODES ONLY. The DOM's hrefs never leave the page: nothing
+        portal-supplied becomes a URL this capability will fetch. Each
+        code must match the recovered [A-Za-z0-9-]+ pattern exactly --
+        anything else is dropped rather than sanitized, since a code that
+        does not look like a code is not something to guess at. The
+        result is capped, so a compromised or malformed page cannot turn
+        one poll into thousands of requests.
+
+        Discovering a code does not authorize fetching it. The caller must
+        still install a reviewed RouteContract for that exact category
+        before any read can happen, which is why discovery and fetching
+        use two separate contexts."""
+        self._ensure_open()
+        raw = await self._page.evaluate(_CATEGORY_LINKS_JS)
+        if not isinstance(raw, list):
+            return ()
+        codes = []
+        for value in raw:
+            if not isinstance(value, str):
+                continue
+            candidate = value.strip()
+            if _CATEGORY_CODE_PATTERN.match(candidate) and candidate not in codes:
+                codes.append(candidate)
+            if len(codes) >= _MAX_DISCOVERED_CATEGORIES:
+                break
+        return tuple(codes)
 
     async def read_notifications(self, code_alerte: str) -> tuple[dict, ...]:
         """INC-14: the recovered getAlerte/DataTable contract

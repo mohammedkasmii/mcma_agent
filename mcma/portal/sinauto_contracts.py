@@ -108,6 +108,18 @@ def auth_contracts(host: str = DEFAULT_SINAUTO_HOST, entity: str = "MCMA") -> tu
     )
 
 
+def category_discovery_contracts(host: str, entity: str = "MCMA") -> tuple[RouteContract, ...]:
+    """The landing page alone. Category discovery reads the DOM of a page
+    already loaded, so it needs no route of its own -- and being given no
+    getAlerte contract is what makes discovery structurally unable to
+    fetch anything it discovers."""
+    host = sinauto_allowed_host(host)
+    return (
+        _c(host, f"{portal_base_for(entity)}/expertise/frontexpert", "GET",
+           capability="read", operation_type="search_page"),
+    )
+
+
 def notification_contracts(host: str, category_codes, entity: str = "MCMA") -> tuple[RouteContract, ...]:
     """One contract per alert category, plus the same-origin landing page
     a reader must navigate to before any fetch-based read runs.

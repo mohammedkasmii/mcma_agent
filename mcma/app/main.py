@@ -75,8 +75,9 @@ from mcma.execution.runner import (
     process_queued_planned_execute_jobs,
 )
 from mcma.app.portal_login import capture_session_for_account
-from mcma.notifications.poller import poll_all_accounts
+from mcma.notifications.poller import poll_all_accounts, poll_one_account
 from mcma.persistence.db import open_database
+from mcma.persistence.repositories.accounts import AccountsRepository
 from mcma.portal.browser import launch_browser
 from mcma.portal.vault import WindowsAclVerifier, get_crypto_backend
 
@@ -137,6 +138,23 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
             )
         local_user_id = ensure_local_employee(conn)
 
+    async def _refresh_notifications(account_id: str) -> str:
+        """The manual "Actualiser" path. Deliberately the SAME service the
+        background loop uses -- a second scraper would be a second set of
+        contracts, a second set of session-expiry rules, and two answers
+        to the same question."""
+        account = AccountsRepository(conn).get(account_id)
+        if account is None:
+            return "NO_SESSION"
+        return await poll_one_account(
+            conn, supervisor.get(), account_id, settings.notification_category_codes,
+            instance_id=settings.instance_id,
+            allowed_host=settings.portal_host,
+            vault_dir=settings.vault_dir,
+            crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.dev_mode),
+            entity=account.entity,
+        )
+
     app = create_api_app(
         conn,
         auth_provider=LocalUserAuthProvider(conn),
@@ -144,6 +162,7 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
         secure_cookies=True,
         portal_login_opener=_open_portal_login if supervisor is not None else None,
         local_user_id=local_user_id,
+        notification_refresher=_refresh_notifications if supervisor is not None else None,
     )
     if lifespan is not None:
         app.router.lifespan_context = lifespan
@@ -213,7 +232,7 @@ async def run_job_poll_loop(
                 # an account's lease briefly, and a dossier someone is
                 # waiting on must never queue behind one.
                 since_notification_poll += settings.poll_interval_seconds
-                if (settings.notification_category_codes
+                if (settings.notifications_enabled
                         and since_notification_poll >= settings.notification_poll_interval_seconds):
                     since_notification_poll = 0
                     await poll_all_accounts(
@@ -323,6 +342,7 @@ def local_settings() -> Settings:
         dev_mode=True,
         local_single_user_mode=True,
         headless_browser=False,
+        notifications_enabled=base.notifications_enabled,
         notification_category_codes=base.notification_category_codes,
     )
 

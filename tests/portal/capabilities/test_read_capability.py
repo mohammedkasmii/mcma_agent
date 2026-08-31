@@ -318,14 +318,30 @@ def test_close_is_idempotent():
 # --------------------------------------------------------------------- #
 
 
-def test_public_surface_is_exactly_the_six_operations_plus_close():
+def test_public_surface_is_exactly_the_seven_operations_plus_close():
     """INC-14 disclosed extension: read_notifications() was added (the
     recovered getAlerte/DataTable contract, read-only, category-scoped).
     Pilot-integration correction (section 3): observe_identity() was added
     -- the same fixed-script scraping mcma.portal.identity already
     provides for EXECUTE's write-side identity gate, now also reachable
-    read-only for the real DRY_RUN job runner. Every other operation and
-    close() are unchanged."""
+    read-only for the real DRY_RUN job runner.
+
+    Phase B disclosed extension: discover_notification_categories() was
+    added. This widens a deliberately closed surface, so the reasoning is
+    recorded rather than the list quietly edited.
+
+    No reviewed fixed list of alert category codes exists anywhere in this
+    repository -- the categories table ships empty -- and the baseline
+    read the active codes from the portal's own notification surface
+    (PORTAL_CONTRACT.md §7). Polling therefore cannot happen without
+    discovery. The operation stays inside the same constraints as every
+    other one here: it is read-only, runs one FIXED internal script,
+    accepts no caller input, and returns validated CODES ONLY. The DOM's
+    hrefs never leave the page, so nothing portal-supplied can become a
+    route this capability will fetch, and a discovered code still cannot
+    be read without a reviewed RouteContract installed for that exact
+    category on a different context. Every other operation and close() are
+    unchanged."""
     public = {
         name for name in dir(ReadCapability) if not name.startswith("_") and callable(getattr(ReadCapability, name))
     }
@@ -335,6 +351,7 @@ def test_public_surface_is_exactly_the_six_operations_plus_close():
         "scrape",
         "read_rows",
         "read_notifications",
+        "discover_notification_categories",
         "observe_identity",
         "close",
     }

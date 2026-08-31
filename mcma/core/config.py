@@ -93,10 +93,17 @@ class Settings:
     # employee never sees a dashboard whose login buttons cannot work.
     browser_startup_timeout_seconds: float = 60.0
 
-    # Alert categories polled for every account. Empty by default: a
-    # category is only reachable if a reviewed contract was installed for
-    # that exact code (mcma.portal.sinauto_contracts), so this list is
-    # what decides which notifications the office actually sees.
+    # Notification polling. Previously this was gated on a non-empty
+    # category list that nothing ever set, so a perfectly healthy
+    # application never made a single notification request -- running and
+    # polling were not the same thing.
+    #
+    # No reviewed fixed list of alert codes exists anywhere in this
+    # repository (the categories table ships empty) and the baseline read
+    # them from the portal's own notification surface, so an empty list
+    # now means DISCOVER, and a configured list is an override for an
+    # office that wants to restrict what is polled.
+    notifications_enabled: bool = True
     notification_category_codes: Tuple[str, ...] = ()
 
     # How often notifications are refreshed. Far longer than the job poll

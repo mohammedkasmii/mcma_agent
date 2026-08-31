@@ -27,14 +27,21 @@ execution layer in through the type alone.
 from __future__ import annotations
 
 import json
+import logging
 
 from mcma.notifications.extract import run_poll
+
+logger = logging.getLogger(__name__)
 from mcma.persistence.leases import LeaseNotHeld, acquire_lease
 from mcma.persistence.repositories.accounts import AccountsRepository
 from mcma.persistence.repositories.outbox import AccountStateVersionRepository
 from mcma.portal.capabilities import open_reader
-from mcma.portal.sinauto_contracts import notification_contracts, portal_base_for
-from mcma.portal.vault import load_and_verify_session
+from mcma.portal.sinauto_contracts import (
+    category_discovery_contracts,
+    notification_contracts,
+    portal_base_for,
+)
+from mcma.portal.vault import load_and_verify_session, revoke_session
 
 
 async def poll_one_account(
@@ -43,15 +50,21 @@ async def poll_one_account(
     entity: str = "MCMA",
 ) -> str:
     """Polls every category for ONE account. Returns a short outcome
-    string for the caller to log; never raises for an expected failure
-    (no session yet, lease held elsewhere, portal unreachable), because
-    those are ordinary states in an office where four accounts share one
-    portal and sessions expire on their own schedule."""
+    string; never raises for an expected state, because in an office where
+    four accounts share one portal and sessions expire on their own
+    schedule, "not logged in" and "someone is filling a dossier" are
+    ordinary, not errors.
+
+    `category_codes` may be empty, which means discover them from the
+    portal. There is no reviewed fixed list of alert codes anywhere in
+    this repository -- the categories table ships empty -- and the
+    baseline read them from the portal's own notification surface, so a
+    configured list is an override rather than the normal path."""
     try:
-        lease = acquire_lease(conn, account_id, instance_id, ttl_seconds=120)
+        lease = acquire_lease(conn, account_id, instance_id, ttl_seconds=180)
     except LeaseNotHeld:
-        # Another job holds the account -- a form job in progress, most
-        # likely. Its work matters more than a notification refresh.
+        # A dossier fill holds the account. Its work matters more than a
+        # notification refresh, and a refresh must never make it wait.
         return "LEASE_BUSY"
 
     try:
@@ -60,29 +73,75 @@ async def poll_one_account(
                 conn, account_id, vault_dir=vault_dir, backend=crypto_backend
             )
         except Exception:
-            # No usable session: this account has not been logged in yet,
-            # or its session expired. The dashboard shows that state per
-            # account; it is not an error to report here.
+            # Never logged in, or the stored session is gone. Reported,
+            # not raised: the other three accounts still poll.
             return "NO_SESSION"
 
-        contracts = notification_contracts(allowed_host, category_codes, entity)
+        storage_state = json.loads(raw_session)
+        base = portal_base_for(entity)
+
+        # Two contexts, deliberately. Discovery runs with NO getAlerte
+        # contract installed, so it is structurally incapable of fetching
+        # what it discovers; the fetch context is then built from the
+        # validated codes. Contracts stay fixed at context creation, and a
+        # code that arrived from the portal cannot widen the policy of the
+        # context that found it.
+        codes = tuple(category_codes)
+        if not codes:
+            try:
+                discovery = await open_reader(
+                    browser, lease, category_discovery_contracts(allowed_host, entity),
+                    allowed_host, context_options={"storage_state": storage_state},
+                    portal_base=base,
+                )
+            except Exception:
+                return "PORTAL_UNAVAILABLE"
+            try:
+                codes = await discovery.discover_notification_categories()
+            except Exception:
+                # A portal that will not show its alert list to this
+                # session is the signature of an expired one.
+                return _mark_reconnect_required(conn, account_id, vault_dir)
+            finally:
+                await discovery.close()
+
+        if not codes:
+            # No categories offered. NOT the same as "every alert is
+            # gone": nothing is read, so run_poll is never called and no
+            # presence lifecycle advances on this evidence.
+            return "NO_CATEGORIES"
+
         try:
             reader = await open_reader(
-                browser, lease, contracts, allowed_host,
-                context_options={"storage_state": json.loads(raw_session)},
-                portal_base=portal_base_for(entity),
+                browser, lease, notification_contracts(allowed_host, codes, entity),
+                allowed_host, context_options={"storage_state": storage_state},
+                portal_base=base,
             )
         except Exception:
-            return "READER_UNAVAILABLE"
+            return "PORTAL_UNAVAILABLE"
 
         try:
             version = AccountStateVersionRepository(conn).bump(account_id)
-            await run_poll(conn, account_id, reader, tuple(category_codes), version)
+            await run_poll(conn, account_id, reader, codes, version)
             return "POLLED"
         finally:
             await reader.close()
     finally:
         lease.release()
+
+
+def _mark_reconnect_required(conn, account_id: str, vault_dir) -> str:
+    """Reuses the existing session model rather than inventing a second
+    definition of "connected": the ACTIVE row is revoked, so
+    load_and_verify_session finds nothing and /accounts stops reporting
+    the account as connected. Because a revoked row still EXISTS, the
+    dashboard can tell "was connected, needs reconnecting" from "never
+    connected" without any new state."""
+    try:
+        revoke_session(conn, account_id, vault_dir=vault_dir)
+    except Exception:
+        logger.warning("could not revoke the expired session for one account", exc_info=True)
+    return "RECONNECT_REQUIRED"
 
 
 async def poll_all_accounts(
