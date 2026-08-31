@@ -17,6 +17,7 @@ dependencies = [
     "requests==2.34.2",
     "httpx==0.28.1",
     "sse-starlette==3.4.8",
+    "argon2-cffi==25.1.0",
 ]
 
 [dependency-groups]
