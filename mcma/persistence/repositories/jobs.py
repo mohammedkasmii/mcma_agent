@@ -109,6 +109,18 @@ class AutomationJobsRepository:
             ),
         )
 
+    def list_by_mode_and_status(self, mode: str, status: str) -> tuple[sqlite3.Row, ...]:
+        """Pilot-integration correction (section 3): the real job runner's
+        one job-discovery query -- "consume QUEUED DRY_RUN jobs" (and,
+        symmetrically, any other exact mode/status pair a caller needs).
+        Ordered by created_at so a runner processes jobs in submission
+        order, never an unspecified/arbitrary order."""
+        rows = self._conn.execute(
+            "SELECT * FROM automation_jobs WHERE mode = ? AND status = ? ORDER BY created_at ASC",
+            (mode, status),
+        ).fetchall()
+        return tuple(rows)
+
     def list_non_terminal(self) -> tuple[sqlite3.Row, ...]:
         """Used by restart reconciliation (INC-12) -- every status not in
         the terminal set. Correction batch (human browser handoff):
