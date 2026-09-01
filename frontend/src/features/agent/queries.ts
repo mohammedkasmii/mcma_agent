@@ -1,21 +1,25 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { Job, JobPlan } from "@shared/types";
-import { createDryRun, createExecution, fetchJob, fetchJobPlan } from "@shared/api/jobs";
-import { isJobInFlight } from "@shared/utils/jobStatus";
+import {
+  confirmReviewCompleted,
+  createDryRun,
+  createExecution,
+  fetchJob,
+  fetchJobPlan,
+  reportReviewProblem,
+} from "@shared/api/jobs";
 
 /**
  * Automation jobs are server state and TanStack Query owns them. There is no
  * job store beside this cache, and no client-held "current job id" that the
  * URL does not already carry.
  *
- * While a job is genuinely moving, the job query refetches on an interval.
- * That is a stand-in for the backend's /events stream, not a parallel
- * mechanism: the query key is what SSE will invalidate, so switching to it
- * later removes the interval and changes nothing else.
+ * Freshness comes from the backend's /events stream, which invalidates these
+ * keys; there is no polling interval. The initial GET still runs on every
+ * mount, so a deep link or a reload shows the current state without waiting
+ * for an event to arrive.
  */
-
-const POLL_INTERVAL_MS = 2000;
 
 /**
  * Cache identity for a job is the account AND the job.
@@ -41,13 +45,6 @@ export function useJobQuery(
   return useQuery({
     queryKey: jobQueryKey(expectedAccountId, jobId),
     queryFn: ({ signal }) => fetchJob(jobId, expectedAccountId, signal),
-    // Polling stops the moment the job reaches a state nothing advances on
-    // its own — a decision or a failure waits for a person, not for time.
-    refetchInterval: (query) => {
-      const job = query.state.data;
-      if (job === undefined || job === null) return false;
-      return isJobInFlight(job.status) ? POLL_INTERVAL_MS : false;
-    },
   });
 }
 
@@ -107,6 +104,36 @@ export function useAuthorizeExecution(accountId: string, dryRunJobId: string) {
     mutationFn: async (idempotencyKey: string) => createExecution(dryRunJobId, idempotencyKey),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: jobQueryKey(accountId, dryRunJobId) });
+    },
+  });
+}
+
+/**
+ * Records the employee's completion attestation.
+ *
+ * Nothing is written optimistically. The confirmed state is whatever the
+ * refetched job says it is — an attestation the backend refused must not look
+ * like one it accepted.
+ */
+export function useConfirmReview(accountId: string, jobId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => confirmReviewCompleted(jobId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: jobQueryKey(accountId, jobId) });
+      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+  });
+}
+
+/** Reports that the review did not complete cleanly. Same refetch discipline. */
+export function useReportProblem(accountId: string, jobId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => reportReviewProblem(jobId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: jobQueryKey(accountId, jobId) });
+      await queryClient.invalidateQueries({ queryKey: ["jobs"] });
     },
   });
 }

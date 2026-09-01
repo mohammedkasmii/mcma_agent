@@ -242,10 +242,10 @@ describe("execution planning that stops before writing", () => {
 
   it("does not promise further filling for any stopped execution", async () => {
     const stopped = [
-      ["WRITE_ABORTED", /Le remplissage a été interrompu/],
-      ["ERROR", /Le run s'est terminé en échec/],
-      ["ABORTED_ON_RESTART", /abandonné au redémarrage/],
-      ["INTERRUPTED_NEEDS_HUMAN_REVIEW", /interrompu et demande une vérification humaine/],
+      ["WRITE_ABORTED", /Remplissage interrompu — vérification requise/],
+      ["ERROR", /Run en échec — vérification requise/],
+      ["ABORTED_ON_RESTART", /Run abandonné au redémarrage — vérification requise/],
+      ["INTERRUPTED_NEEDS_HUMAN_REVIEW", /Run interrompu — vérification humaine requise/],
     ] as const;
 
     for (const [status, expected] of stopped) {
@@ -253,6 +253,8 @@ describe("execution planning that stops before writing", () => {
       const view = renderAppAt(runPath(A, EXECUTION_JOB_WIRE.job_id));
       expect(await screen.findByText(expected)).toBeInTheDocument();
       expect(screen.queryByText(/L'agent remplira la mission ouverte/)).toBeNull();
+      // No retry or resume anywhere in this phase.
+      expect(screen.queryByRole("button", { name: /Relancer|Reprendre|Réessayer/ })).toBeNull();
       view.unmount();
     }
   });
@@ -263,7 +265,7 @@ describe("execution planning that stops before writing", () => {
 
     expect(
       await screen.findByText(
-        "L'agent remplira la mission ouverte, puis s'arrêtera pour vérification humaine.",
+        /L'agent remplira la mission ouverte, puis s'arrêtera pour vérification humaine\./,
       ),
     ).toBeInTheDocument();
   });
@@ -272,7 +274,9 @@ describe("execution planning that stops before writing", () => {
     backend({ job: { ...EXECUTION_JOB_WIRE, status: "READY_FOR_HUMAN_REVIEW" } });
     renderAppAt(runPath(A, EXECUTION_JOB_WIRE.job_id));
 
-    expect(await screen.findByText(/L'agent s'est arrêté/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("L'agent s'est arrêté. Vérifiez le dossier dans SinAuto."),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/L'agent remplira la mission ouverte/)).toBeNull();
   });
 });

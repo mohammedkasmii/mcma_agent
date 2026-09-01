@@ -106,7 +106,9 @@ describe("new run", () => {
 
     expect(await screen.findByText("Ce fichier n'est pas un JSON valide.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Préparer le plan" })).toBeDisabled();
-    expect(stub.mock.calls.some(([url]) => (url as string).startsWith("/jobs"))).toBe(false);
+    // The shell reads GET /jobs for the active-run banner, so the assertion
+    // is about the dry-run endpoint specifically.
+    expect(stub.mock.calls.some(([url]) => (url as string) === "/jobs/dry-runs")).toBe(false);
   });
 
   it("sends the parsed dossier as a dry run and routes to the run", async () => {
@@ -176,7 +178,7 @@ describe("new run", () => {
 });
 
 describe("dry-run lifecycle", () => {
-  it("polls while the job is still moving", async () => {
+  it("does not poll a moving job — freshness comes from the event stream", async () => {
     vi.useFakeTimers();
     try {
       const stub = backend({ job: { ...DRY_RUN_JOB_WIRE, status: "PLANNING" } });
@@ -186,17 +188,18 @@ describe("dry-run lifecycle", () => {
       const first = stub.mock.calls.filter(([url]) =>
         (url as string).startsWith("/jobs?"),
       ).length;
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(30000);
       const later = stub.mock.calls.filter(([url]) =>
         (url as string).startsWith("/jobs?"),
       ).length;
-      expect(later).toBeGreaterThan(first);
+      // No timer-driven refetch: SSE invalidation is the only refresh.
+      expect(later).toBe(first);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("stops polling once the job has settled", async () => {
+  it("still loads the job from GET without waiting for any event", async () => {
     vi.useFakeTimers();
     try {
       const stub = backend({ job: DRY_RUN_JOB_WIRE });
@@ -380,9 +383,8 @@ describe("execution created", () => {
     backend({ job: EXECUTION_JOB_WIRE });
     renderAppAt(runPath(WRITABLE_ID, EXECUTION_JOB_WIRE.job_id));
 
-    expect(await screen.findByText("Plan autorisé")).toBeInTheDocument();
     expect(
-      screen.getByText(/Ce run d'exécution est distinct du dry run qui l'a préparé\./),
+      await screen.findByText(/Accès au compte portail en cours d'acquisition/),
     ).toBeInTheDocument();
     // No progress invented for a run whose backend state is all we know.
     expect(document.body.textContent).not.toMatch(/%/);

@@ -8,6 +8,8 @@ import { formatAccountIdentity } from "@shared/utils/accountIdentity";
 import { formatTimestamp } from "@shared/utils/datetime";
 import {
   canAuthorizeExecution,
+  canConfirmReview,
+  canReportProblem,
   isDryRunBlocked,
   isJobInFlight,
   jobStatusLabel,
@@ -17,8 +19,55 @@ import { accountAgentJobPath, accountAgentPath } from "@shared/utils/routes";
 import { newIdempotencyKey } from "@shared/utils/idempotency";
 import { PlanReview } from "./PlanReview";
 import { RunStepper } from "./RunStepper";
-import { useAuthorizeExecution, useJobPlanQuery, useJobQuery } from "./queries";
+import type { RunStage } from "./RunStepper";
+import {
+  useAuthorizeExecution,
+  useConfirmReview,
+  useJobPlanQuery,
+  useJobQuery,
+  useReportProblem,
+} from "./queries";
 import styles from "./AgentRunScreen.module.css";
+
+/** Repeated verbatim wherever the limit of the automation must be stated. */
+const SAFETY_SENTENCE =
+  "Aucune validation finale ni clôture n'est effectuée automatiquement.";
+
+/** What the backend is doing at each in-flight execution stage. */
+const EXECUTION_STAGE_COPY: Partial<Record<JobStatus, string>> = {
+  QUEUED: "Le run attend son tour.",
+  PLANNING: "Le plan est reconstruit à partir du dossier retenu.",
+  PLANNED: "Le plan est prêt ; l'exécution va démarrer.",
+  ACQUIRING_ACCOUNT_LOCK: "Accès au compte portail en cours d'acquisition.",
+  IDENTITY_VERIFYING: "Vérification de l'identité de la mission dans SinAuto.",
+  IDENTITY_VERIFIED: "Identité confirmée. Le remplissage va commencer.",
+  WRITING: "Remplissage des rubriques et des champs dans la mission ouverte.",
+  VERIFYING: "Relecture des saisies effectuées.",
+};
+
+/** Outcomes that stopped the run. None of them offers a retry in this phase. */
+const EXECUTION_FAILURES: Partial<Record<JobStatus, { title: string; body: string }>> = {
+  IDENTITY_FAILED: {
+    title: "Identité non confirmée — exécution arrêtée",
+    body: "L'identité de la mission n'a pas pu être confirmée. Le remplissage n'a pas eu lieu. Reprenez le dossier manuellement dans SinAuto.",
+  },
+  WRITE_ABORTED: {
+    title: "Remplissage interrompu — vérification requise",
+    body: "Le remplissage s'est arrêté avant la fin. Vérifiez vous-même l'état du dossier dans SinAuto : l'application ne peut pas affirmer quelles saisies ont abouti.",
+  },
+  INTERRUPTED_NEEDS_HUMAN_REVIEW: {
+    title: "Run interrompu — vérification humaine requise",
+    body: "Le run s'est interrompu et n'a pas été mené à son terme. Vérifiez vous-même l'état du dossier dans SinAuto : l'application ne peut pas affirmer quelles saisies ont abouti.",
+  },
+  ABORTED_ON_RESTART: {
+    title: "Run abandonné au redémarrage — vérification requise",
+    body: "L'application a redémarré pendant ce run, qui a été abandonné. Vérifiez vous-même l'état du dossier dans SinAuto avant de poursuivre manuellement.",
+  },
+  ERROR: {
+    title: "Run en échec — vérification requise",
+    body: "Le run s'est terminé en échec. Vérifiez vous-même l'état du dossier dans SinAuto avant de poursuivre manuellement.",
+  },
+};
 
 interface AgentRunScreenProps {
   readonly account: PortalAccount;
@@ -91,7 +140,7 @@ function RunFrame({
   children,
 }: {
   readonly account: PortalAccount;
-  readonly stage: "new-run" | "plan-review" | "execution";
+  readonly stage: RunStage;
   readonly children: React.ReactNode;
 }) {
   return (
@@ -338,20 +387,16 @@ function ExecutionAuthorization({
 }
 
 /**
- * An execution job.
+ * An execution job, from queued to outcome.
  *
- * Its status is the only thing known about it, and the copy says only what
- * that status supports. An execution can be stopped before any write — the
- * backend re-plans from the retained input and moves EXECUTE jobs to
- * NEEDS_REVIEW when that re-plan raises review items — so the forward-looking
- * "the agent will fill and stop for review" sentence is shown for exactly the
- * statuses where it is still true, and never as a default.
- *
- * The full execution and handoff screens belong to the next step. What this
- * must not do in the meantime is describe a stopped run as a running one.
+ * Every stage name is a backend status. Nothing here estimates progress: the
+ * backend reports which stage a run is in, not how far through it is, and a
+ * bar or a remaining-time figure would be invented. Timestamps are only ever
+ * the backend's own createdAt/startedAt/finishedAt, and finishedAt is
+ * legitimately null at READY_FOR_HUMAN_REVIEW.
  */
 function ExecutionView({ account, job }: { readonly account: PortalAccount; readonly job: Job }) {
-  // Blocked before any portal write. The re-plan raised review items, so the
+  // Blocked before any portal write: the re-plan raised review items, so the
   // fill never began.
   if (job.status === "NEEDS_REVIEW") {
     return (
@@ -372,49 +417,239 @@ function ExecutionView({ account, job }: { readonly account: PortalAccount; read
     );
   }
 
-  // Stopped, failed or waiting on a person. None of these are "filling will
-  // continue", and the next step builds their real screens.
-  const STOPPED: Partial<Record<JobStatus, string>> = {
-    IDENTITY_FAILED:
-      "L'identité de la mission n'a pas pu être confirmée. Le remplissage n'a pas eu lieu.",
-    WRITE_ABORTED:
-      "Le remplissage a été interrompu. Vérifiez le dossier dans SinAuto avant de poursuivre manuellement.",
-    INTERRUPTED_NEEDS_HUMAN_REVIEW:
-      "Le run a été interrompu et demande une vérification humaine. Vérifiez le dossier dans SinAuto.",
-    ABORTED_ON_RESTART:
-      "Le run a été abandonné au redémarrage de l'application. Vérifiez le dossier dans SinAuto.",
-    ERROR: "Le run s'est terminé en échec. Vérifiez le dossier dans SinAuto.",
-    READY_FOR_HUMAN_REVIEW:
-      "L'agent s'est arrêté. Vérifiez le dossier dans SinAuto avant de poursuivre manuellement.",
-    AWAITING_HUMAN_CONFIRMATION:
-      "L'agent s'est arrêté et attend votre confirmation. Vérifiez le dossier dans SinAuto.",
-    HUMAN_CONFIRMED_COMPLETE: "Ce run a été confirmé comme vérifié.",
-  };
-  const stopped = STOPPED[job.status];
+  if (job.status === "READY_FOR_HUMAN_REVIEW") {
+    return <ReadyForReviewView account={account} job={job} />;
+  }
+
+  if (job.status === "AWAITING_HUMAN_CONFIRMATION") {
+    return <AwaitingConfirmationView account={account} job={job} />;
+  }
+
+  if (job.status === "HUMAN_CONFIRMED_COMPLETE") {
+    return <ConfirmedView account={account} job={job} />;
+  }
+
+  const failure = EXECUTION_FAILURES[job.status];
+  if (failure !== undefined) {
+    return (
+      <RunFrame account={account} stage="execution">
+        <Panel title="Exécution" aside={<JobHeadline job={job} />}>
+          <div className={styles.blocked} role="alert">
+            <p className={styles.blockedTitle}>{failure.title}</p>
+            <p className={styles.blockedBody}>{failure.body}</p>
+            <p className={styles.blockedBody}>{SAFETY_SENTENCE}</p>
+          </div>
+        </Panel>
+      </RunFrame>
+    );
+  }
 
   return (
     <RunFrame account={account} stage="execution">
       <Panel title="Exécution" aside={<JobHeadline job={job} />}>
-        <Section label="Plan autorisé">
+        <Section label="Compte" aside={formatAccountIdentity(account)}>
           <p className="t-body">
-            Le remplissage a été autorisé sur {formatAccountIdentity(account)}.
+            Le remplissage a été autorisé sur {formatAccountIdentity(account)}. L'agent remplira la
+            mission ouverte, puis s'arrêtera pour vérification humaine.
           </p>
-          <p className={styles.help}>
-            Aucune validation finale ni clôture n'est effectuée automatiquement.
-          </p>
+          <p className={styles.help}>{SAFETY_SENTENCE}</p>
         </Section>
 
-        <Section label="État du run" aside={jobStatusLabel(job.status)}>
-          <p className="t-body" aria-live="polite">
-            {stopped ?? "L'agent remplira la mission ouverte, puis s'arrêtera pour vérification humaine."}
+        <Section label="Étape en cours" aside={jobStatusLabel(job.status)}>
+          <p className="t-body" role="status">
+            {EXECUTION_STAGE_COPY[job.status] ?? jobStatusLabel(job.status)}
           </p>
-          {job.parentJobId === null ? null : (
-            <p className={styles.help}>
-              Ce run d'exécution est distinct du dry run qui l'a préparé.
-            </p>
-          )}
+          <RunTimes job={job} />
         </Section>
       </Panel>
     </RunFrame>
+  );
+}
+
+/**
+ * READY_FOR_HUMAN_REVIEW — the agent has stopped and the SinAuto window is
+ * still open in front of the employee.
+ *
+ * The instructions here are about the portal, because that is where the work
+ * now is. No completion action is offered: the backend refuses one until the
+ * browser has been closed and the job has moved to
+ * AWAITING_HUMAN_CONFIRMATION, so a button here would be a button that cannot
+ * work. Reporting a problem is accepted from this status and is offered.
+ *
+ * Nothing is named after a portal action. Validating, closing and filing
+ * remain things the employee does in SinAuto with their own hands.
+ */
+function ReadyForReviewView({
+  account,
+  job,
+}: {
+  readonly account: PortalAccount;
+  readonly job: Job;
+}) {
+  const problem = useReportProblem(account.accountId, job.jobId);
+  const startedAt = formatTimestamp(job.startedAt);
+
+  return (
+    <RunFrame account={account} stage="human-review">
+      <Panel title="Vérification à faire" aside={<JobHeadline job={job} />}>
+        <div className={styles.handoff}>
+          <p className={styles.handoffTag}>Action requise · Vérification à faire</p>
+          <p className={styles.handoffLead}>
+            L'agent s'est arrêté. Vérifiez le dossier dans SinAuto.
+          </p>
+          <p className={styles.handoffBody}>
+            Aucune validation finale ni clôture n'a été effectuée automatiquement. Vérifiez les
+            saisies dans SinAuto avant de poursuivre manuellement.
+          </p>
+          {startedAt === null ? null : <p className="t-meta">Démarré à {startedAt}</p>}
+        </div>
+
+        <Section label="Ce qu'il vous reste à faire">
+          <ol className={styles.steps}>
+            <li className={styles.step}>Relisez les saisies de l'agent dans la fenêtre SinAuto.</li>
+            <li className={styles.step}>
+              Effectuez vous-même les actions finales dans SinAuto si elles sont justifiées.
+            </li>
+            <li className={styles.step}>
+              Fermez la fenêtre SinAuto lorsque vous avez terminé.
+            </li>
+          </ol>
+          <p className={styles.help}>
+            La confirmation vous sera demandée une fois la fenêtre SinAuto fermée.
+          </p>
+        </Section>
+
+        <Section label="Suivi dans l'application">
+          <p className="t-secondary">
+            Si la vérification ne peut pas aboutir, signalez-le dès maintenant.
+          </p>
+          <div className={styles.actions}>
+            {/* The backend accepts a problem report from this status. */}
+            {canReportProblem(job.status) ? (
+              <Button disabled={problem.isPending} onClick={() => problem.mutate()}>
+                {problem.isPending ? "Envoi…" : "Signaler un problème"}
+              </Button>
+            ) : null}
+          </div>
+          {problem.isError ? (
+            <p className={styles.error} role="alert">
+              {toApiError(problem.error).message}
+            </p>
+          ) : null}
+          <p className={styles.help}>
+            Cette action concerne le suivi dans cette application. Elle ne déclenche aucune action
+            dans SinAuto.
+          </p>
+        </Section>
+      </Panel>
+    </RunFrame>
+  );
+}
+
+/**
+ * AWAITING_HUMAN_CONFIRMATION — the browser has been closed and the
+ * application is waiting only for the employee's attestation.
+ *
+ * The portal instructions are deliberately absent: telling someone to open,
+ * inspect and close a window they have already closed is how a screen stops
+ * being believed. What is left is the attestation itself, and it is stated as
+ * exactly that — the application did not observe any portal validation.
+ */
+function AwaitingConfirmationView({
+  account,
+  job,
+}: {
+  readonly account: PortalAccount;
+  readonly job: Job;
+}) {
+  const confirm = useConfirmReview(account.accountId, job.jobId);
+  const problem = useReportProblem(account.accountId, job.jobId);
+  const startedAt = formatTimestamp(job.startedAt);
+  const busy = confirm.isPending || problem.isPending;
+
+  return (
+    <RunFrame account={account} stage="human-review">
+      <Panel title="Confirmation requise" aside={<JobHeadline job={job} />}>
+        <div className={styles.handoff}>
+          <p className={styles.handoffTag}>Action requise · Confirmation requise</p>
+          <p className={styles.handoffLead}>
+            La fenêtre SinAuto est fermée. Confirmez maintenant que votre vérification humaine est
+            terminée, ou signalez un problème.
+          </p>
+          {startedAt === null ? null : <p className="t-meta">Démarré à {startedAt}</p>}
+        </div>
+
+        <Section label="Suivi dans l'application">
+          <div className={styles.actions}>
+            {/* Only this status may attest completion; both may report. */}
+            {canConfirmReview(job.status) ? (
+              <Button variant="primary" disabled={busy} onClick={() => confirm.mutate()}>
+                {confirm.isPending ? "Enregistrement…" : "Confirmer la vérification"}
+              </Button>
+            ) : null}
+            {canReportProblem(job.status) ? (
+              <Button disabled={busy} onClick={() => problem.mutate()}>
+                {problem.isPending ? "Envoi…" : "Signaler un problème"}
+              </Button>
+            ) : null}
+          </div>
+
+          {confirm.isError || problem.isError ? (
+            <p className={styles.error} role="alert">
+              {toApiError(confirm.error ?? problem.error).message}
+            </p>
+          ) : null}
+
+          <p className={styles.help}>
+            Ces deux actions concernent le suivi dans cette application. Elles ne déclenchent
+            aucune action dans SinAuto et n'attestent que de votre propre vérification.
+          </p>
+        </Section>
+      </Panel>
+    </RunFrame>
+  );
+}
+
+/**
+ * A confirmed review.
+ *
+ * The claim is precise: an employee attested that they carried out their
+ * review. The application did not observe a portal validation and does not
+ * say that it did.
+ */
+function ConfirmedView({ account, job }: { readonly account: PortalAccount; readonly job: Job }) {
+  return (
+    <RunFrame account={account} stage="human-review">
+      <Panel title="Vérification confirmée" aside={<JobHeadline job={job} />}>
+        <div className={styles.verified}>
+          <span className={styles.verifiedTag}>Vérification confirmée</span>
+          <span className={styles.verifiedText}>
+            Votre vérification humaine a été enregistrée.
+          </span>
+        </div>
+        <Section label="Ce que cela signifie">
+          <p className="t-body">
+            Vous avez confirmé avoir vérifié le dossier dans SinAuto. Cette application n'a pas
+            constaté elle-même de validation ou de clôture dans le portail : seule votre
+            vérification est enregistrée.
+          </p>
+          <RunTimes job={job} />
+        </Section>
+      </Panel>
+    </RunFrame>
+  );
+}
+
+/** Only timestamps the backend actually sent. Absent stays absent. */
+function RunTimes({ job }: { readonly job: Job }) {
+  const started = formatTimestamp(job.startedAt);
+  const finished = formatTimestamp(job.finishedAt);
+  if (started === null && finished === null) return null;
+  return (
+    <p className={styles.help}>
+      {started === null ? null : `Démarré à ${started}`}
+      {started !== null && finished !== null ? " · " : null}
+      {finished === null ? null : `Terminé à ${finished}`}
+    </p>
   );
 }

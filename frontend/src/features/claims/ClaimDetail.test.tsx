@@ -221,8 +221,15 @@ describe("tracking editor", () => {
         stub.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === "POST"),
       ).toBe(true),
     );
-    // Nothing job-shaped is created by tracking a claim.
-    expect(stub.mock.calls.some(([url]) => (url as string).startsWith("/jobs"))).toBe(false);
+    // Tracking a claim creates no automation job. The shell's own GET /jobs
+    // read for the active-run banner is not a job creation.
+    expect(
+      stub.mock.calls.some(
+        ([url, init]) =>
+          (url as string).startsWith("/jobs") &&
+          (init as RequestInit | undefined)?.method === "POST",
+      ),
+    ).toBe(false);
     for (const forbidden of ["Valider", "Clôturer", "Enregistrer SinAuto", "Finaliser"]) {
       expect(screen.queryByRole("button", { name: new RegExp(forbidden) })).toBeNull();
     }

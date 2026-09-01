@@ -106,6 +106,18 @@ export function toJobById(body: unknown, jobId: string, expectedAccountId: strin
   return job;
 }
 
+/**
+ * Maps the whole GET /jobs collection.
+ *
+ * No account is expected here: this is the cross-account list the backend
+ * already filtered to what the employee may see. Per-job screens keep their
+ * own account cross-check; this does not weaken it.
+ */
+export function toJobs(body: unknown): Job[] {
+  const envelope = requireRecord(body);
+  return requireArray(envelope["jobs"]).map(toJob);
+}
+
 /** Maps the reduced body of the two job-creating endpoints. */
 export function toCreatedJobId(body: unknown): { jobId: string; status: JobStatus } {
   const wire = requireRecord(body);

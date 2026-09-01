@@ -1,0 +1,79 @@
+.banner {
+  border: var(--border-width) solid var(--line-strong);
+  background: var(--surface-raised);
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+/* A run waiting on a person is marked by the amber edge AND by the "Action
+   requise" tag on the row — never by colour alone. */
+.attention {
+  border-left: var(--marker-width) solid var(--line-blocked);
+  background: var(--surface-blocked);
+}
+
+.heading {
+  font-family: var(--font-data);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin-bottom: var(--space-2);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.identity {
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  color: var(--ink-strong);
+}
+
+.attentionTag {
+  font-family: var(--font-data);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--ink-blocked);
+  border: var(--border-width) solid var(--line-blocked);
+  background: var(--surface-raised);
+  padding: 0 var(--space-2);
+}
+
+.link {
+  color: var(--focus-ring);
+  font-weight: var(--weight-medium);
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+.degraded {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  max-width: var(--measure);
+}
+
+.anomalyTag {
+  font-family: var(--font-data);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-eyebrow);
+  text-transform: uppercase;
+  color: var(--status-failed);
+  border: var(--border-width) solid var(--status-failed);
+  background: var(--surface-raised);
+  padding: 0 var(--space-2);
+}

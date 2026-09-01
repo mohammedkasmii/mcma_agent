@@ -101,3 +101,52 @@ export function canAuthorizeExecution(status: JobStatus): boolean {
 export function isDryRunBlocked(status: JobStatus): boolean {
   return status === "NEEDS_REVIEW" || status === "IDENTITY_FAILED";
 }
+
+/**
+ * Statuses where an execution still needs an operator's attention.
+ *
+ * Not the same question as "is the backend still moving it". The backend
+ * treats AWAITING_HUMAN_CONFIRMATION as settled — nothing advances it on its
+ * own — but the account lease is still held and the run is not finished until
+ * a person confirms or reports a problem. Dropping it from this set would
+ * make an occupied account look free.
+ *
+ * Genuine outcomes are excluded: HUMAN_CONFIRMED_COMPLETE, and every failure
+ * or interruption, are things to read about on the run, not things awaiting
+ * an operator on the shell.
+ */
+const OPERATOR_ACTIVE: readonly JobStatus[] = [
+  "QUEUED",
+  "PLANNING",
+  "PLANNED",
+  "ACQUIRING_ACCOUNT_LOCK",
+  "IDENTITY_VERIFYING",
+  "IDENTITY_VERIFIED",
+  "WRITING",
+  "VERIFYING",
+  "READY_FOR_HUMAN_REVIEW",
+  "AWAITING_HUMAN_CONFIRMATION",
+];
+
+export function isOperatorActive(status: JobStatus): boolean {
+  return OPERATOR_ACTIVE.includes(status);
+}
+
+/** The two states where the employee, not the agent, is holding the dossier. */
+export function isHumanHandoff(status: JobStatus): boolean {
+  return status === "READY_FOR_HUMAN_REVIEW" || status === "AWAITING_HUMAN_CONFIRMATION";
+}
+
+/**
+ * Whether the backend will accept a completion attestation for this status.
+ * Only AWAITING_HUMAN_CONFIRMATION does: at READY_FOR_HUMAN_REVIEW the
+ * browser has not been closed yet and the backend refuses.
+ */
+export function canConfirmReview(status: JobStatus): boolean {
+  return status === "AWAITING_HUMAN_CONFIRMATION";
+}
+
+/** A problem may be reported from either handoff status. */
+export function canReportProblem(status: JobStatus): boolean {
+  return isHumanHandoff(status);
+}

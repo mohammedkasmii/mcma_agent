@@ -1,6 +1,6 @@
 import type { Job, JobPlan, JobStatus } from "@shared/types";
 import { apiGet, apiSend } from "./client";
-import { toCreatedJobId, toJobById, toJobPlan } from "./adapters/jobs";
+import { toCreatedJobId, toJobById, toJobPlan, toJobs } from "./adapters/jobs";
 
 /**
  * The automation-job endpoints.
@@ -34,6 +34,11 @@ export async function fetchJob(
   return toJobById(await apiGet(jobPath(jobId), signal), jobId, expectedAccountId);
 }
 
+/** Every job the employee may see. The backend filters the rows. */
+export async function fetchJobs(signal?: AbortSignal): Promise<Job[]> {
+  return toJobs(await apiGet(JOBS_PATH, signal));
+}
+
 export async function fetchJobPlan(jobId: string, signal?: AbortSignal): Promise<JobPlan> {
   return toJobPlan(await apiGet(jobPlanPath(jobId), signal), jobId);
 }
@@ -57,6 +62,33 @@ export async function createDryRun(
       idempotency_key: input.idempotencyKey,
     }),
   );
+}
+
+/**
+ * Records the employee's attestation that they completed their human review.
+ *
+ * The body is empty by design. The backend rejects account_id, user_id,
+ * confirmed_by_user_id and status outright, and derives the actor from the
+ * session — sending any of them would be claiming authority this frontend
+ * does not have.
+ *
+ * The backend accepts this only from AWAITING_HUMAN_CONFIRMATION (it is
+ * idempotent once already complete). This never asserts that a portal
+ * validation happened; only that a person said they reviewed it.
+ */
+export async function confirmReviewCompleted(jobId: string): Promise<void> {
+  await apiSend(`${JOBS_PATH}/${encodeURIComponent(jobId)}/review-completed`, "POST", {});
+}
+
+/**
+ * Reports that the human review did not complete cleanly.
+ *
+ * The body is empty: the backend applies its own EMPLOYEE_REPORTED_PROBLEM
+ * reason. Valid from either handoff status. The outcome is an unresolved,
+ * human-review-required job — never a completion.
+ */
+export async function reportReviewProblem(jobId: string): Promise<void> {
+  await apiSend(`${JOBS_PATH}/${encodeURIComponent(jobId)}/problem`, "POST", {});
 }
 
 /**
