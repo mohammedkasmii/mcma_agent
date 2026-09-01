@@ -385,3 +385,65 @@ async def _mismatch_scenario():
                 await writer.verify_financial_summary()
         finally:
             await browser.close()
+
+
+# --------------------------------------------------------------------- #
+# Determinism: the summary must settle BEFORE the trigger returns
+# --------------------------------------------------------------------- #
+
+
+def test_the_summary_is_settled_the_instant_the_trigger_returns(live_mock_server):
+    """The flake this replaces was a real race, not noise.
+
+    The mock's DevisCalculerMontantCharge applied its result in a .then()
+    callback, so the function returned before the DOM changed. Production
+    reads the summary immediately afterwards -- which is what the golden
+    code does, because the real portal's function computes in the page --
+    so the read raced the callback. Usually the callback won; occasionally
+    it did not, and the SAME commit passed or failed on the same code.
+
+    A forced HTTP delay makes the race deterministic instead of hoping the
+    scheduler reproduces it: if any part of the summary were still applied
+    asynchronously, the read below would see pre-trigger values."""
+    run_async(_synchronous_settlement_scenario())
+
+
+async def _synchronous_settlement_scenario():
+    import mock_server
+    from playwright.async_api import async_playwright
+
+    from mcma.portal.pec_live import READ_FINANCIAL_SUMMARY_JS
+
+    previous_delay = mock_server.MOCK_STATE.get("native_calc_delay_ms", 0)
+    mock_server.MOCK_STATE["native_calc_delay_ms"] = 1500
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            try:
+                writer = await _open_writer(browser)
+                await writer.edit_conventionne_row(RubriqueId("3"))
+
+                before = await writer._page.evaluate(READ_FINANCIAL_SUMMARY_JS)
+                await writer.trigger_native_recalc()
+                # No wait: the very next read must already be final.
+                immediately_after = await writer._page.evaluate(READ_FINANCIAL_SUMMARY_JS)
+
+                assert immediately_after["charge_mutuelle"] != before["charge_mutuelle"], (
+                    "the trigger returned without having applied the charge split"
+                )
+
+                # And nothing lands later: a late write between production's
+                # trigger-time capture and its verification re-read is exactly
+                # what produced NativeCalculationMismatch.
+                await writer._page.wait_for_timeout(2000)
+                settled = await writer._page.evaluate(READ_FINANCIAL_SUMMARY_JS)
+                assert settled == immediately_after, (
+                    "the summary changed after the trigger returned"
+                )
+
+                # End to end through the real writer under the same delay.
+                await writer.verify_financial_summary()
+            finally:
+                await browser.close()
+    finally:
+        mock_server.MOCK_STATE["native_calc_delay_ms"] = previous_delay

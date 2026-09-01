@@ -143,6 +143,9 @@ def _initial_state() -> dict:
         "submitted_normal_temp_ids": [],
         "submitted_pec_nonces": [],
         "next_normal_row_id": 1,
+        # Test-only latency knob. Forces the async-callback race
+        # deterministically instead of hoping the scheduler reproduces it.
+        "native_calc_delay_ms": 0,
         "financial_summary": {"MODE_NORMAL": None, "GARAGE_CONVENTIONNE": None},
         "mismatch_injected": {"MODE_NORMAL": False, "GARAGE_CONVENTIONNE": False},
         "observability": {
@@ -896,22 +899,59 @@ __PEC_ORIGINAL_ROWS__
             part_resp: "100",
             simulate: document.getElementById("mockSimulatePec").value
         };
+        // SYNCHRONOUS, like the real portal's own client-side function.
+        //
+        // This previously applied its result inside a .then() callback, so
+        // the function RETURNED before the DOM changed. Production reads
+        // the summary immediately after invoking it -- which is what the
+        // golden code does, because the real DevisCalculerMontantCharge
+        // computes in the page -- so the read raced the callback and saw
+        // pre-trigger values. It was timing-dependent: usually the
+        // callback won, occasionally it did not, and the same commit
+        // passed or failed on the same code. A mock that settles
+        // asynchronously where the portal settles synchronously is
+        // emulating a portal that does not exist.
+        //
+        // Arithmetic mirrors _simulate_native_calc's success branch
+        // exactly, in BigInt cents via the page's own money helpers:
+        //   charge_societaire = franchise * part_resp / 100 + vetuste
+        //   charge_mutuelle   = max(0, total_ttc - charge_societaire - remise)
+        try {
+            var ttcCents = parseMoneyToCents(payload.total_ttc);
+            var franchiseCents = parseMoneyToCents(payload.franchise);
+            var vetusteCents = parseMoneyToCents(payload.vetuste);
+            var remiseCents = parseMoneyToCents(payload.remise);
+            var partResp = BigInt(payload.part_resp);
+
+            var chargeSocCents = (franchiseCents * partResp) / 100n + vetusteCents;
+            var chargeMutCents = ttcCents - chargeSocCents - remiseCents;
+            if (chargeMutCents < 0n) { chargeMutCents = 0n; }
+
+            document.getElementById("DevisMontantChargeMutuelle").value = centsToMoneyString(chargeMutCents);
+            document.getElementById("DevisMontantChargeSocietaire").value = centsToMoneyString(chargeSocCents);
+
+            //   base_indemnite = total_ttc - vetuste
+            //   montant_arrete = max(0, base_indemnite - franchise - remise)
+            var baseCents = ttcCents - vetusteCents;
+            var arreteCents = baseCents - franchiseCents - remiseCents;
+            if (arreteCents < 0n) { arreteCents = 0n; }
+            document.getElementById("BaseIndemnite").value = centsToMoneyString(baseCents);
+            document.getElementById("MontantArrete").value = centsToMoneyString(arreteCents);
+            logHUD("DevisCalculerMontantCharge() settled synchronously in-page.");
+        } catch (e) {
+            logHUD("DevisCalculerMontantCharge() in-page arithmetic failed: " + e.message);
+        }
+
+        // The HTTP mirror still runs so the mock's own observability
+        // counters and simulate modes keep working for the adapter tests
+        // that assert on them. Production consumes NOTHING from this
+        // response: the synchronous DOM update above is the whole result.
         postJson("/_mock/pec/native_calculation", payload).then(function(res) {
-            if (res.state === "success" && res.apply_to_dom) {
-                var applied = res.apply_to_dom;
-                document.getElementById("DevisMontantChargeMutuelle").value = applied.montant_charge_mutuelle;
-                document.getElementById("DevisMontantChargeSocietaire").value = applied.montant_charge_societaire;
-                document.getElementById("DevisMontantTVA").value = applied.total_tva;
-                document.getElementById("DevisMontantTTC").value = applied.total_ttc;
-                document.getElementById("DevisMontantVetusteTotal").value = applied.vetuste;
-                document.getElementById("DevisMontantFranchise").value = applied.franchise;
-                document.getElementById("DevisMontantRemise").value = applied.remise;
-                if (applied.montant_arrete !== undefined) { document.getElementById("MontantArrete").value = applied.montant_arrete; }
-                if (applied.base_indemnite !== undefined) { document.getElementById("BaseIndemnite").value = applied.base_indemnite; }
-                logHUD("DevisCalculerMontantCharge() (" + payload.simulate + ") executed.");
-            } else {
-                logHUD("DevisCalculerMontantCharge() " + (res.state === "success" ? "SUCCEEDED WITHOUT apply_to_dom" : "FAILED: " + res.reason));
-            }
+            // Observability only. Deliberately NO DOM writes: a late write
+            // landing between production's trigger-time capture and its
+            // verification re-read is exactly the mismatch being fixed, and
+            // production consumes nothing from this response.
+            logHUD("DevisCalculerMontantCharge() mirror -> " + res.state);
         });
     }
 
@@ -1353,6 +1393,11 @@ def mock_normal_financial_summary():
 @app.post("/_mock/pec/native_calculation")
 async def mock_pec_native_calculation(request: Request):
     payload = await request.json()
+    delay_ms = MOCK_STATE.get("native_calc_delay_ms", 0)
+    if delay_ms:
+        import asyncio as _asyncio
+
+        await _asyncio.sleep(delay_ms / 1000.0)
     return JSONResponse(_simulate_native_calc("GARAGE_CONVENTIONNE", payload))
 
 
