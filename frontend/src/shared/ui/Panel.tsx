@@ -5,7 +5,7 @@ import styles from "./Panel.module.css";
 interface PanelProps {
   readonly title: string;
   /** Short sentence under the title. Optional. */
-  readonly description?: string;
+  readonly description?: string | undefined;
   /** Status chip or action rendered on the title row. */
   readonly aside?: ReactNode;
   readonly children?: ReactNode;

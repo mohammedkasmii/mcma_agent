@@ -91,6 +91,16 @@ a {
   color: var(--ink-faint);
 }
 
+/* Eyebrow: the monospaced, letter-spaced section label the approved design
+   uses to head every panel section. */
+.t-eyebrow {
+  font-family: var(--font-data);
+  font-size: var(--text-xs);
+  letter-spacing: var(--tracking-eyebrow);
+  color: var(--ink-faint);
+  text-transform: uppercase;
+}
+
 /* Reference numbers, registrations and identifiers align column-wise. */
 .t-data {
   font-family: var(--font-data);

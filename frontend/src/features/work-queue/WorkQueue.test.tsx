@@ -12,6 +12,8 @@ import {
   WRITABLE_ACCOUNT_WIRE,
 } from "../../test/fixtures";
 import { claimStatusLabel } from "@shared/utils/claimStatus";
+import userEvent from "@testing-library/user-event";
+import { accountClaimPath } from "@shared/utils/routes";
 
 const WORK = (id: string) => `/accounts/${id}/work`;
 
@@ -214,5 +216,49 @@ describe("what the queue shows", () => {
     await screen.findByText("REF-0002");
     // police and categories are absent on this fixture.
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+  });
+});
+
+describe("work queue cleanup", () => {
+  it("shows a readable timestamp rather than the stored ISO value", async () => {
+    mockBackend({ [WRITABLE_ID]: WRITABLE_ACCOUNT_CLAIMS_WIRE });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    await screen.findByText("Note de suivi test");
+    expect(screen.queryByText("2026-01-15T09:30:00Z")).toBeNull();
+    expect(screen.getByText(/^\d{2}\/\d{2}\/\d{4}/)).toBeInTheDocument();
+  });
+
+  it("opens the claim from its reference without exposing the internal id", async () => {
+    mockBackend({ [WRITABLE_ID]: WRITABLE_ACCOUNT_CLAIMS_WIRE });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    const link = await screen.findByRole("link", { name: "REF-0001" });
+    expect(link).toHaveAttribute(
+      "href",
+      accountClaimPath(WRITABLE_ID, CLAIM_NEW_WIRE.claim_pk),
+    );
+    // The id is in the address only, never drawn as identity.
+    expect(screen.queryByText(CLAIM_NEW_WIRE.claim_pk)).toBeNull();
+  });
+
+  it("clears local filters when the resolved account changes", async () => {
+    const user = userEvent.setup();
+    mockBackend({
+      [WRITABLE_ID]: WRITABLE_ACCOUNT_CLAIMS_WIRE,
+      [READ_ONLY_ID]: [READ_ONLY_CLAIM_WIRE],
+    });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    await screen.findByText("REF-0001");
+    await user.type(screen.getByLabelText("Rechercher"), "REF-0001");
+    await waitFor(() => expect(screen.queryByText("REF-0002")).toBeNull());
+
+    // Switching account through the rail must not carry that search over.
+    await user.click(screen.getByRole("link", { name: /MAMDA • ZONE-B/ }));
+
+    expect(await screen.findByText("REF-0003")).toBeInTheDocument();
+    expect(screen.getByLabelText("Rechercher")).toHaveValue("");
+    expect(screen.getByLabelText("Suivi")).toHaveValue("ALL");
   });
 });

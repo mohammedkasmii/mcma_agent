@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Claim, ClaimStatus, PortalAccount } from "@shared/types";
 import { CLAIM_STATUSES } from "@shared/types";
 import { AccountWorkspaceHeader } from "@features/accounts/AccountWorkspaceHeader";
@@ -41,6 +41,14 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
   const query = useClaimsQuery(account.accountId);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<StatusFilter>("ALL");
+
+  // Filters belong to the account being looked at. Carrying a search from one
+  // account into another would silently hide rows in the new queue and read
+  // as "this account has almost nothing to do".
+  useEffect(() => {
+    setSearch("");
+    setStatus("ALL");
+  }, [account.accountId]);
 
   const claims = query.data;
   const visible = useMemo(() => {
@@ -109,7 +117,7 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
                 Élargissez la recherche ou revenez à tous les suivis.
               </EmptyState>
             ) : (
-              <ClaimList claims={visible} />
+              <ClaimList accountId={account.accountId} claims={visible} />
             )}
 
             {isFiltered ? (

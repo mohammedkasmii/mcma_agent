@@ -1,0 +1,63 @@
+.fileLabel {
+  display: block;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  margin-bottom: var(--space-1);
+}
+
+.file {
+  font-size: var(--text-sm);
+}
+
+.fileReady {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--status-completed);
+}
+
+.fileError {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--status-failed);
+  font-weight: var(--weight-medium);
+}
+
+.help {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+  max-width: var(--measure);
+}
+
+.never {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.neverItem {
+  font-size: var(--text-sm);
+  padding-left: var(--space-4);
+  position: relative;
+}
+
+.neverItem::before {
+  content: "×";
+  position: absolute;
+  left: 0;
+  color: var(--status-failed);
+  font-weight: var(--weight-semibold);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: var(--border-width) solid var(--line-hairline);
+}
+
+.error {
+  margin-top: var(--space-4);
+}

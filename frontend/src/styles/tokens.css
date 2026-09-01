@@ -23,39 +23,39 @@
   --surface-rail-item: #26313f;
   /* The account currently open in the rail. */
   --surface-rail-item-active: #2f3d4e;
-  --surface-sunken: #f5f6f8;
+  --surface-sunken: #f6f7f9;
   --surface-overlay: rgba(15, 21, 28, 0.45);
 
   /* --- ink ------------------------------------------------------------- */
-  --ink-strong: #12171e;
-  --ink: #2b333d;
-  --ink-muted: #5d6875;
-  --ink-faint: #8a94a1;
+  --ink-strong: #1b1f26;
+  --ink: #1b1f26;
+  --ink-muted: #5c6470;
+  --ink-faint: #7a828d;
   --ink-on-rail: #eef2f7;
   --ink-on-rail-muted: #9aa7b8;
   --ink-inverted: #ffffff;
 
   /* --- lines ----------------------------------------------------------- */
-  --line-hairline: #dfe3e8;
-  --line-strong: #c4cbd4;
+  --line-hairline: #e6e9ee;
+  --line-strong: #cfd4dc;
   --line-rail: #313d4d;
 
   /* --- accent ---------------------------------------------------------- */
   /* Deep verdigris. Used for the active account and primary actions only —
      it is the single loud colour in the interface. */
-  --accent: #10504c;
-  --accent-hover: #0b3d3a;
-  --accent-soft: #dcebe8;
+  --accent: #1b1f26;
+  --accent-hover: #2b313a;
+  --accent-soft: #dfe7f4;
   --accent-on: #ffffff;
 
   /* --- status ---------------------------------------------------------- */
   --status-connected: #1c6b45;
   --status-connected-soft: #dff0e6;
-  --status-reconnect: #8a5a06;
+  --status-reconnect: #8a5a00;
   --status-reconnect-soft: #fbeed6;
   --status-readonly: #4c5666;
   --status-readonly-soft: #e6e9ee;
-  --status-running: #1d4f8f;
+  --status-running: #1f4b8f;
   --status-running-soft: #dee8f6;
   --status-review: #8c3a12;
   --status-review-soft: #fae2d6;
@@ -73,10 +73,10 @@
     "Roboto Mono", Menlo, Consolas, monospace;
 
   --text-xs: 0.6875rem; /* 11px — rail meta, badges */
-  --text-sm: 0.8125rem; /* 13px — table body, secondary */
-  --text-base: 0.9375rem; /* 15px — body */
-  --text-md: 1.0625rem; /* 17px — section titles */
-  --text-lg: 1.375rem; /* 22px — screen titles */
+  --text-sm: 0.78125rem; /* 12.5px — table body, secondary */
+  --text-base: 0.8125rem; /* 13px — body */
+  --text-md: 0.9375rem; /* 15px — section titles */
+  --text-lg: 1.25rem; /* 20px — screen titles */
   --text-xl: 1.75rem; /* 28px — figures */
 
   --weight-regular: 400;
@@ -98,14 +98,14 @@
   --space-7: 3rem;
 
   /* --- shape ----------------------------------------------------------- */
-  --radius-sm: 3px;
-  --radius-md: 5px;
+  --radius-sm: 0;
+  --radius-md: 0;
   --radius-pill: 999px;
   --border-width: 1px;
   --marker-width: 3px;
 
   /* --- layout ---------------------------------------------------------- */
-  --rail-width: 15.5rem;
+  --rail-width: 16.75rem;
   --topbar-height: 3.25rem;
   --content-max: 78rem;
   --measure: 68ch;
@@ -116,9 +116,24 @@
   --shadow-overlay: 0 8px 24px rgba(18, 23, 30, 0.18);
 
   /* --- focus ----------------------------------------------------------- */
-  --focus-ring: #1d4f8f;
+  --focus-ring: #1f4b8f;
   --focus-ring-width: 2px;
   --focus-ring-offset: 2px;
+
+  /* --- design-reference additions ---------------------------------------- */
+  /* From the approved visual reference: square corners, a near-black primary
+     action, a tinted blocking surface and a tinted success surface. */
+  --surface-header-row: #f6f7f9;
+  --surface-blocked: #fbf3e2;
+  --line-blocked: #d8bd84;
+  --ink-blocked: #6b4600;
+  --ink-blocked-body: #5f4a24;
+  --surface-verified: #eef4ea;
+  --line-verified: #b9cbb0;
+  --ink-verified: #23431f;
+  --ink-verified-badge: #2f5c2c;
+  --line-verified-badge: #4e7a48;
+  --tracking-eyebrow: 0.13em;
 
   /* --- motion ---------------------------------------------------------- */
   --duration-fast: 90ms;

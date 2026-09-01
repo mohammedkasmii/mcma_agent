@@ -55,3 +55,12 @@
   font-size: var(--text-xs);
   color: var(--ink-faint);
 }
+
+.reference {
+  color: var(--focus-ring);
+  font-weight: var(--weight-medium);
+}
+
+.reference:hover {
+  text-decoration: underline;
+}

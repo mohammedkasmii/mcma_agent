@@ -61,3 +61,41 @@ export function mockNonJsonResponse(text: string): Mock {
     } as unknown as Response),
   );
 }
+
+/**
+ * A routing stub answering several endpoints from one fetch double, so a
+ * screen test exercises the real client and real adapters end to end.
+ *
+ * Handlers are matched in order against the request path; the first match
+ * wins. An unmatched path answers 404 in the backend's own error shape rather
+ * than throwing, so a missing handler surfaces as a visible failure state.
+ */
+export interface RouteHandler {
+  readonly match: (url: string, init: RequestInit) => boolean;
+  readonly status?: number;
+  readonly body: unknown | ((url: string, init: RequestInit) => unknown);
+}
+
+export function mockRoutes(handlers: readonly RouteHandler[]): Mock {
+  const stub = vi.fn((url: string, init: RequestInit = {}) => {
+    const handler = handlers.find((candidate) => candidate.match(url, init));
+    if (handler === undefined) {
+      return Promise.resolve(
+        jsonResponse(404, { error: "NOT_FOUND", message: "no handler", correlation_id: "0" }),
+      );
+    }
+    const body = typeof handler.body === "function" ? handler.body(url, init) : handler.body;
+    return Promise.resolve(jsonResponse(handler.status ?? 200, body));
+  });
+  vi.stubGlobal("fetch", stub as unknown as typeof fetch);
+  return stub;
+}
+
+/** Makes the CSRF cookie readable, as the backend issues it. */
+export function setCsrfCookie(value = "test-csrf-token"): void {
+  Object.defineProperty(document, "cookie", { configurable: true, get: () => `mcma_csrf=${value}` });
+}
+
+export function clearCookies(): void {
+  Object.defineProperty(document, "cookie", { configurable: true, get: () => "" });
+}

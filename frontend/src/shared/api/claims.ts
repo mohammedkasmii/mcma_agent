@@ -1,5 +1,5 @@
-import type { Claim } from "@shared/types";
-import { apiGet } from "./client";
+import type { Claim, ClaimStatus } from "@shared/types";
+import { apiGet, apiSend } from "./client";
 import { toClaims } from "./adapters/claims";
 
 /** GET /claims — the claims of one portal account. */
@@ -20,4 +20,38 @@ export function claimsPath(accountId: string): string {
 
 export async function fetchClaims(accountId: string, signal?: AbortSignal): Promise<Claim[]> {
   return toClaims(await apiGet(claimsPath(accountId), signal), accountId);
+}
+
+/** The backend's own limit on a tracking note (mcma/app/api/app.py). */
+export const NOTE_MAX_LENGTH = 2000;
+
+export interface ClaimActionInput {
+  readonly claimPk: string;
+  readonly status: ClaimStatus;
+  /** Optional. Null clears the note rather than sending an empty string. */
+  readonly note: string | null;
+}
+
+export function claimActionPath(claimPk: string): string {
+  return `${CLAIMS_PATH}/${encodeURIComponent(claimPk)}/action`;
+}
+
+/**
+ * Records an employee tracking action.
+ *
+ * The body carries only `status` and `note`. No account id is sent: the
+ * backend resolves access from the claim's own account, and supplying one
+ * here would be inventing an authorization input it does not accept.
+ *
+ * CSRF and credentials come from the central client; nothing is added here.
+ *
+ * The response is not adapted into a claim. The authoritative claim list is
+ * refetched instead, so the interface never shows a locally assembled record
+ * as if the server had confirmed it.
+ */
+export async function saveClaimAction(input: ClaimActionInput): Promise<void> {
+  await apiSend(claimActionPath(input.claimPk), "POST", {
+    status: input.status,
+    note: input.note,
+  });
 }

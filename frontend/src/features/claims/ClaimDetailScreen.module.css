@@ -1,0 +1,51 @@
+.back {
+  font-size: var(--text-sm);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space-4);
+}
+
+.term {
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+  margin-bottom: var(--space-1);
+}
+
+.value {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-strong);
+}
+
+.missing {
+  color: var(--ink-faint);
+}
+
+.help {
+  margin-top: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.chip {
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+  background: var(--surface-sunken);
+  border: var(--border-width) solid var(--line-hairline);
+  padding: 0.125rem var(--space-2);
+}
+
+.note {
+  font-size: var(--text-sm);
+  max-width: var(--measure);
+  white-space: pre-wrap;
+}

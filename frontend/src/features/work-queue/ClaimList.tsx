@@ -1,9 +1,13 @@
+import { Link } from "react-router-dom";
 import type { Claim } from "@shared/types";
 import { StatusBadge } from "@shared/ui";
 import { claimStatusLabel, claimStatusTone } from "@shared/utils/claimStatus";
+import { formatTimestamp } from "@shared/utils/datetime";
+import { accountClaimPath } from "@shared/utils/routes";
 import styles from "./ClaimList.module.css";
 
 interface ClaimListProps {
+  readonly accountId: string;
   readonly claims: readonly Claim[];
 }
 
@@ -20,13 +24,14 @@ function Field({ value }: { readonly value: string | null }) {
  * The claims of one account, one row each.
  *
  * Rows lead with the portal reference and the insured, because those are what
- * an employee matches against a dossier in front of them. The internal
+ * an employee matches against a dossier in front of them. The reference opens
+ * the claim; the opaque claimPk travels in the address only. The internal
  * claim_pk and the portal's own claim id are never drawn — they are keys and
  * future action targets, not identity an employee reads.
  *
  * All values render as text. Portal-supplied strings are data, never markup.
  */
-export function ClaimList({ claims }: ClaimListProps) {
+export function ClaimList({ accountId, claims }: ClaimListProps) {
   return (
     <table className={styles.table}>
       <caption className="u-visually-hidden">
@@ -47,7 +52,13 @@ export function ClaimList({ claims }: ClaimListProps) {
         {claims.map((claim) => (
           <tr key={claim.claimPk}>
             <td className="t-data">
-              <Field value={claim.reference} />
+              <Link className={styles.reference} to={accountClaimPath(accountId, claim.claimPk)}>
+                {claim.reference === null || claim.reference.length === 0 ? (
+                  <span className={styles.missing}>Référence absente</span>
+                ) : (
+                  claim.reference
+                )}
+              </Link>
             </td>
             <td>
               <Field value={claim.insured} />
@@ -82,8 +93,8 @@ export function ClaimList({ claims }: ClaimListProps) {
               ) : (
                 <>
                   <span className={styles.note}>{claim.note}</span>
-                  {claim.updatedAt === null ? null : (
-                    <span className={styles.noteMeta}>{claim.updatedAt}</span>
+                  {formatTimestamp(claim.updatedAt) === null ? null : (
+                    <span className={styles.noteMeta}>{formatTimestamp(claim.updatedAt)}</span>
                   )}
                 </>
               )}

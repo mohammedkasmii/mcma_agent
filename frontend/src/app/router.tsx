@@ -6,6 +6,8 @@ import { WorkQueueScreen } from "@features/work-queue/WorkQueueScreen";
 import { AgentScreen } from "@features/agent/AgentScreen";
 import { NotFoundScreen } from "./NotFoundScreen";
 import { AccountRoute } from "@features/accounts/AccountRoute";
+import { ClaimDetailScreen } from "@features/claims/ClaimDetailScreen";
+import { AgentRunScreen } from "@features/agent/AgentRunScreen";
 import { ROUTES } from "@shared/utils/routes";
 
 /**
@@ -31,12 +33,33 @@ export const appRoutes: RouteObject[] = [
         ),
       },
       {
+        path: ROUTES.accountClaim,
+        element: (
+          <AccountRoute title="Dossier">
+            {(account) => <ClaimDetailScreen account={account} />}
+          </AccountRoute>
+        ),
+      },
+      {
         // requireWritable is the enforcement: a directly typed agent URL for
         // a read-only account never mounts AgentScreen.
         path: ROUTES.accountAgent,
         element: (
           <AccountRoute title="Agent dossier" requireWritable>
-            {(account) => <AgentScreen account={account} />}
+            {/* Keyed by the account: a dossier is chosen for one explicit
+                account, so switching account requires choosing again rather
+                than leaving the previous file armed for submission. */}
+            {(account) => <AgentScreen key={account.accountId} account={account} />}
+          </AccountRoute>
+        ),
+      },
+      {
+        // The run screen sits behind the same writable gate: a read-only
+        // account has no runs, and a typed URL must not suggest otherwise.
+        path: ROUTES.accountAgentJob,
+        element: (
+          <AccountRoute title="Agent dossier" requireWritable>
+            {(account) => <AgentRunScreen account={account} />}
           </AccountRoute>
         ),
       },

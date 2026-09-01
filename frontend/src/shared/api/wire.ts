@@ -68,3 +68,81 @@ export interface ClaimWire {
 export interface ClaimsResponseWire {
   readonly claims: readonly ClaimWire[];
 }
+
+/**
+ * The job projection returned by GET /jobs (`_JOB_FIELDS` in
+ * mcma/app/api/app.py) and, in reduced form, by the two job-creating
+ * endpoints.
+ *
+ * The projection is a deliberate allowlist on the backend: it carries no
+ * plan snapshot, no retained input and no dossier identity. Nothing here is
+ * personal data, and no field is added to this interface that the backend
+ * does not actually send.
+ */
+export interface JobWire {
+  readonly job_id: string;
+  readonly account_id: string;
+  readonly parent_job_id: string | null;
+  readonly workflow_name: string;
+  readonly mode: string;
+  readonly status: string;
+  readonly reason_code: string | null;
+  readonly plan_hash: string | null;
+  readonly created_at: string;
+  readonly started_at: string | null;
+  readonly finished_at: string | null;
+}
+
+export interface JobsResponseWire {
+  readonly jobs: readonly JobWire[];
+}
+
+/** POST /jobs/dry-runs and POST /jobs/{id}/executions both answer with this. */
+export interface JobCreatedWire {
+  readonly job_id: string;
+  readonly status: string;
+}
+
+/**
+ * GET /jobs/{job_id}/plan.
+ *
+ * Money arrives as decimal strings and stays that way: parsing "1234.50"
+ * into a float and reserializing it is how a plan review stops matching the
+ * amounts the agent will actually type.
+ *
+ * There is deliberately no expected_identity field — the backend excludes the
+ * registration and claim id from this projection on purpose.
+ */
+export interface PlanStepWire {
+  readonly rubrique_id: string;
+  readonly ht: string;
+  readonly tva: string;
+  readonly vetuste: string;
+}
+
+export interface PlanFieldIntentWire {
+  readonly selector: string;
+  readonly value: string;
+}
+
+export interface PlanNeedsReviewWire {
+  readonly reason: string;
+  readonly detail: string | null;
+}
+
+export interface PlanWire {
+  readonly job_id: string;
+  readonly plan_hash: string;
+  readonly repair_workflow: string;
+  readonly steps: readonly PlanStepWire[];
+  readonly form_field_intents: readonly PlanFieldIntentWire[];
+  readonly needs_review: readonly PlanNeedsReviewWire[];
+}
+
+/** POST /claims/{claim_pk}/action. */
+export interface ClaimActionResponseWire {
+  readonly claim_pk: string;
+  readonly status: string;
+  readonly note: string | null;
+  readonly version: number;
+}

@@ -1,0 +1,73 @@
+.field + .field {
+  margin-top: var(--space-4);
+}
+
+.label {
+  display: block;
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+  margin-bottom: var(--space-1);
+}
+
+.control {
+  width: 100%;
+  max-width: 34rem;
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--ink-strong);
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  resize: vertical;
+}
+
+.control:focus-visible {
+  border-color: var(--focus-ring);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.counter,
+.counterOver {
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+}
+
+.counter {
+  color: var(--ink-faint);
+}
+
+.counterOver {
+  color: var(--status-failed);
+  font-weight: var(--weight-medium);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.confirmed {
+  font-size: var(--text-sm);
+  color: var(--status-completed);
+}
+
+.error {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--status-failed);
+  background: var(--status-failed-soft);
+  color: var(--status-failed);
+  font-size: var(--text-sm);
+  max-width: 34rem;
+}
+
+.help {
+  margin-top: var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--ink-faint);
+  max-width: var(--measure);
+}

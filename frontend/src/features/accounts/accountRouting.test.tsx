@@ -26,7 +26,8 @@ describe("account rail against the real query", () => {
     expect(await screen.findByText("MCMA • ZONE-A")).toBeInTheDocument();
     expect(screen.getByText("MAMDA • ZONE-B")).toBeInTheDocument();
     expect(screen.getByText("Compte de test A")).toBeInTheDocument();
-    expect(screen.getByText("Connecté")).toBeInTheDocument();
+    // Two accounts are connected in the fixture set.
+    expect(screen.getAllByText("Connecté").length).toBeGreaterThan(0);
     expect(screen.getByText("Reconnexion requise")).toBeInTheDocument();
     expect(screen.getByText("Lecture seule")).toBeInTheDocument();
   });
@@ -103,9 +104,10 @@ describe("agent route capability", () => {
     mockAccounts(TEST_ACCOUNTS_WIRE);
     renderAppAt(AGENT(WRITABLE_ACCOUNT_WIRE.account_id));
 
-    // The screen title also renders while the account is still resolving,
-    // so the panel heading is what proves AgentScreen actually mounted.
-    expect(await screen.findByRole("heading", { name: "Automatisation" })).toBeInTheDocument();
+    // The screen title also renders while the account is still resolving, so
+    // the panel heading is what proves AgentScreen actually mounted. It is
+    // the New Run panel since MACRO STEP 4.
+    expect(await screen.findByRole("heading", { name: "Nouveau run" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Agent dossier" })).toBeInTheDocument();
   });
 
@@ -115,8 +117,8 @@ describe("agent route capability", () => {
 
     expect(await screen.findByText("Ce compte est en lecture seule")).toBeInTheDocument();
     // The automation surface itself never mounts.
-    expect(screen.queryByRole("heading", { name: "Automatisation" })).toBeNull();
-    expect(screen.queryByText(/Aucune automatisation disponible/)).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Nouveau run" })).toBeNull();
+    expect(screen.queryByText(/Ce que l'agent ne fera pas/)).toBeNull();
   });
 
   it("refuses an agent URL for an unknown account", async () => {
@@ -124,7 +126,7 @@ describe("agent route capability", () => {
     renderAppAt(AGENT(UNKNOWN_ACCOUNT_ID));
 
     expect(await screen.findByText("Ce compte n'est pas disponible")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Automatisation" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Nouveau run" })).toBeNull();
   });
 
   it("refuses an agent URL while the account list is failing", async () => {
@@ -132,7 +134,7 @@ describe("agent route capability", () => {
     renderAppAt(AGENT(WRITABLE_ACCOUNT_WIRE.account_id));
 
     expect(await screen.findByText("Impossible de charger vos comptes")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Automatisation" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Nouveau run" })).toBeNull();
   });
 
   it("keeps the work queue reachable for a read-only account", async () => {

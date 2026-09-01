@@ -25,10 +25,10 @@ export function createTestQueryClient(): QueryClient {
  * Tests navigate by URL rather than by clicking through the shell, so a
  * routing or guard regression fails here rather than in a screen test.
  */
-export function renderAppAt(initialEntry: string) {
+export function renderAppAt(initialEntry: string, queryClient?: QueryClient) {
   const router = createMemoryRouter(appRoutes, { initialEntries: [initialEntry] });
   return render(
-    <AppProviders queryClient={createTestQueryClient()}>
+    <AppProviders queryClient={queryClient ?? createTestQueryClient()}>
       <RouterProvider router={router} />
     </AppProviders>,
   );
