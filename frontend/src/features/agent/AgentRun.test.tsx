@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderAppAt } from "../../test/renderApp";
 import { mockRoutes, setCsrfCookie } from "../../test/apiMock";
@@ -184,11 +184,11 @@ describe("dry-run lifecycle", () => {
       const stub = backend({ job: { ...DRY_RUN_JOB_WIRE, status: "PLANNING" } });
       renderAppAt(runPath(WRITABLE_ID, DRY_RUN_JOB_WIRE.job_id));
 
-      await vi.advanceTimersByTimeAsync(50);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(50)));
       const first = stub.mock.calls.filter(([url]) =>
         (url as string).startsWith("/jobs?"),
       ).length;
-      await vi.advanceTimersByTimeAsync(30000);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(30000)));
       const later = stub.mock.calls.filter(([url]) =>
         (url as string).startsWith("/jobs?"),
       ).length;
@@ -205,11 +205,11 @@ describe("dry-run lifecycle", () => {
       const stub = backend({ job: DRY_RUN_JOB_WIRE });
       renderAppAt(runPath(WRITABLE_ID, DRY_RUN_JOB_WIRE.job_id));
 
-      await vi.advanceTimersByTimeAsync(100);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(100)));
       const settled = stub.mock.calls.filter(([url]) =>
         (url as string).startsWith("/jobs?"),
       ).length;
-      await vi.advanceTimersByTimeAsync(10000);
+      await act(async () => void (await vi.advanceTimersByTimeAsync(10000)));
       const after = stub.mock.calls.filter(([url]) =>
         (url as string).startsWith("/jobs?"),
       ).length;

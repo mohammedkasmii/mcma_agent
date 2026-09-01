@@ -1,6 +1,14 @@
 """
-mcma.app.dashboard -- mounts the hardened vanilla-JS dashboard (INC-19)
-onto an existing authenticated API app. Kept separate from
+mcma.app.dashboard -- the retired vanilla-JS dashboard (INC-19).
+
+NO LONGER MOUNTED IN PRODUCTION. mcma.app.main serves Frontend V2 through
+mcma.app.frontend instead; this module is kept because its INC-19 tests
+document real security corrections (the /static/index.html clickjacking
+hole in particular) that are worth keeping executable. Nothing in the
+running application calls mount_dashboard(), so there is no second human
+review interface reachable from the served origin.
+
+It mounts the dashboard Kept separate from
 mcma.app.api.app.create_api_app() so the API remains testable/deployable
 on its own -- a caller that wants the dashboard calls mount_dashboard()
 explicitly (the real mcma.app.serve startup sequence does).
@@ -19,17 +27,18 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from mcma.app.security_headers import CONTENT_SECURITY_POLICY as _CONTENT_SECURITY_POLICY
+
 _WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 # CSP set as a real response HEADER (not only the <meta> tag baked into
 # index.html) -- frame-ancestors in particular is HTTP-header-only per
 # spec. No inline script/style is ever allowed (script-src/style-src
 # 'self' only) -- every script in mcma/web/*.js is an external file.
-CONTENT_SECURITY_POLICY = (
-    "default-src 'self'; script-src 'self'; style-src 'self'; "
-    "connect-src 'self'; img-src 'self'; frame-ancestors 'none'; "
-    "base-uri 'none'; form-action 'self'"
-)
+#
+# Re-exported from mcma.app.security_headers, which is now the single
+# definition shared with the employee UI in mcma.app.frontend.
+CONTENT_SECURITY_POLICY = _CONTENT_SECURITY_POLICY
 
 
 def mount_dashboard(app: FastAPI, *, web_dir: Path = _WEB_DIR) -> None:

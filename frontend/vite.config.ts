@@ -46,5 +46,7 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
     css: false,
     include: ["src/**/*.test.{ts,tsx}"],
+    // e2e/ is Playwright's; Vitest must not try to run those specs.
+    exclude: ["e2e/**", "node_modules/**", "dist/**"],
   },
 });
