@@ -21,8 +21,9 @@ Startup sequence (deploy/serve.md), in this exact order:
   3. reconcile_on_restart() -- BEFORE serving any request, so a job left
      mid-write by a crash is landed truthfully rather than being served
      (or resumed) as though it were still in flight.
-  4. Build the authenticated API app, mount the dashboard and the two
-     loopback-only sub-apps (first-admin bootstrap, session onboarding).
+  4. Build the authenticated API app, mount the built employee UI
+     (frontend/dist) and the two loopback-only sub-apps (first-admin
+     bootstrap, session onboarding).
   5. serve() -- validates the TLS cert/key (fail closed) and starts the
      single Uvicorn worker over HTTPS only.
 
@@ -58,7 +59,7 @@ from mcma.app.api.app import create_api_app
 from mcma.app.browser_supervisor import BrowserSupervisor, BrowserUnavailable
 from mcma.app.auth.bootstrap import create_bootstrap_app
 from mcma.app.auth.provider import LocalUserAuthProvider
-from mcma.app.dashboard import mount_dashboard
+from mcma.app.frontend import mount_frontend
 from mcma.app.onboarding import create_onboarding_app
 from mcma.app.provisioning import ensure_canonical_accounts, ensure_local_employee
 from mcma.app.local_tls import ensure_local_certificate
@@ -108,8 +109,8 @@ def build_encryptor(settings: Settings) -> InputEncryptor:
 
 
 def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=None, supervisor=None):
-    """Assembles the one ASGI app: authenticated API + dashboard + the two
-    loopback-only sub-apps. The sub-apps enforce their own loopback checks
+    """Assembles the one ASGI app: authenticated API + the built employee
+    UI + the two loopback-only sub-apps. The sub-apps enforce their own loopback checks
     internally (mcma.app.auth.bootstrap._require_loopback,
     mcma.app.onboarding._require_loopback), so mounting them on the same
     LAN-served app does not expose them to the LAN."""
@@ -169,7 +170,11 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
     )
     if lifespan is not None:
         app.router.lifespan_context = lifespan
-    mount_dashboard(app)
+    # Frontend V2, served from the same authenticated origin as the API.
+    # Mounted AFTER create_api_app so every backend route is already
+    # registered and keeps winning; the SPA routes are explicit, so a
+    # mistyped API path stays a backend 404 rather than becoming HTML.
+    mount_frontend(app)
 
     app.mount("/bootstrap-app", create_bootstrap_app(conn))
 

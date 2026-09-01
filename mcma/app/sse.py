@@ -17,6 +17,7 @@ import json
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional, Protocol
 
+from fastapi import Request
 from sse_starlette.sse import EventSourceResponse
 
 from mcma.persistence.outbox import cursor_is_stale, events_after, latest_event_id
@@ -118,7 +119,7 @@ def create_sse_endpoint(conn, authorizer: Authorizer, get_principal):
     resolves the authenticated principal -- injected so this module never
     imports the real auth system (INC-16/17 wires the real one)."""
 
-    async def endpoint(request):
+    async def endpoint(request: Request):
         principal = get_principal(request)
         last_event_id_header = request.headers.get("last-event-id")
         last_event_id = int(last_event_id_header) if last_event_id_header else None

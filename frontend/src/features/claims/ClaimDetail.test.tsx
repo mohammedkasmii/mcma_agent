@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderAppAt } from "../../test/renderApp";
 import { mockRoutes, setCsrfCookie } from "../../test/apiMock";
@@ -159,8 +159,10 @@ describe("tracking editor", () => {
       HTMLTextAreaElement.prototype,
       "value",
     )?.set;
-    setter?.call(note, tooLong);
-    note.dispatchEvent(new Event("input", { bubbles: true }));
+    act(() => {
+      setter?.call(note, tooLong);
+      note.dispatchEvent(new Event("input", { bubbles: true }));
+    });
 
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Enregistrer le suivi" })).toBeDisabled(),

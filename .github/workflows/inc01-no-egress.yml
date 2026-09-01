@@ -3,6 +3,63 @@ name: inc01-no-egress
 on: [push, pull_request, workflow_dispatch]
 
 jobs:
+  # The frontend gate is its own job on purpose: it must not be able to
+  # skip the Python safety suite, and the Python suite must not be able to
+  # skip it. Both run on every push; neither depends on the other.
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Matches the engines field in frontend/package.json.
+          node-version: "22.12"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # npm ci, not npm install: the lockfile is the tested dependency tree.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests
+        run: npm test -- --run
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # `build` runs scripts/audit-build.mjs, which fails on inline
+      # script/style, data: URIs, sourcemaps or external origins -- anything
+      # the served CSP would reject at runtime.
+      - name: Production build and output audit
+        run: npm run build
+
+      # Browser E2E runs the REAL FastAPI app against the REAL build, so the
+      # server side needs the application's Python dependencies. The browser
+      # itself comes from @playwright/test (Node); the Python playwright
+      # package drives no browser in this job, so it installs none.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install application dependencies (with network)
+        working-directory: .
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Install the E2E browser (with network)
+        run: npx playwright install --with-deps chromium
+
+      - name: Allow Chromium's own sandbox on the ephemeral runner
+        working-directory: .
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Browser E2E
+        run: npm run e2e
+
   no-egress-suite:
     runs-on: ubuntu-latest
     timeout-minutes: 25

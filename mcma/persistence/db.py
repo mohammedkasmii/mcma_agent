@@ -19,6 +19,7 @@ already-applied versions are skipped, never re-executed.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,7 +30,131 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def connect(db_path: Path) -> sqlite3.Connection:
+class _Result:
+    """The rows of one statement, already fetched.
+
+    A live sqlite3.Cursor must not escape the lock: the C layer resets a
+    connection's statements when the next one runs, so a cursor fetched
+    later -- after another thread has executed something -- is reading from
+    a statement that may already have been reset. Materializing inside the
+    lock is what makes `conn.execute(...).fetchone()` safe to write at every
+    call site without each one having to know about threading.
+    """
+
+    __slots__ = ("_rows", "lastrowid", "rowcount")
+
+    def __init__(self, rows, lastrowid, rowcount) -> None:
+        self._rows = rows
+        self.lastrowid = lastrowid
+        self.rowcount = rowcount
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def fetchmany(self, size=None):
+        return list(self._rows if size is None else self._rows[:size])
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+
+class SerializedConnection:
+    """One sqlite3 connection, safe to use from several threads at once.
+
+    WHY THIS EXISTS. connect()'s `check_same_thread=False` let sync FastAPI
+    handlers run on Starlette's worker threads, and the note below said that
+    was safe "as long as callers never share ONE connection across genuinely
+    concurrent writers without serializing access". Nothing serialized it.
+    With the V1 dashboard that held: it issued one request at a time. The V2
+    employee UI does not -- the shell fetches accounts, claims and jobs
+    concurrently on first paint and holds an SSE stream whose generator also
+    reads this connection from the event loop. Several threads then drove one
+    connection simultaneously and CPython's sqlite3 raised
+    `InterfaceError: bad parameter or other API misuse`, surfacing wherever
+    it happened to land -- in practice inside _get_principal's user lookup,
+    which made an authentication failure out of a concurrency bug.
+
+    The fix is to serialize at the connection boundary, which is the only
+    place that can see every caller. An explicit transaction holds the lock
+    from BEGIN through COMMIT/ROLLBACK, so a multi-statement transaction --
+    transition(), acquire_lease(), a migration -- can no longer be
+    interleaved with another thread's statements on the same connection.
+    That is strictly stronger than what existed before, and it is what makes
+    "one process, one API connection" a correct model rather than one that
+    happened to work while only one request was ever in flight.
+
+    Deliberately NOT changed: still one process, still one API connection and
+    a separate runner connection, still WAL, still busy_timeout. No pool, no
+    per-request connection, no thread-local connection -- each of those would
+    change the single-writer and account-lease model this system's safety
+    arguments rest on.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        # Re-entrant: a thread inside a transaction still runs its own
+        # statements through execute() and must not block on itself.
+        self._lock = threading.RLock()
+        self._in_transaction = False
+
+    @property
+    def row_factory(self):
+        return self._conn.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value) -> None:
+        with self._lock:
+            self._conn.row_factory = value
+
+    def execute(self, sql: str, parameters=()) -> _Result:
+        verb = sql.lstrip().split(None, 1)[0].upper() if sql.strip() else ""
+
+        if verb == "BEGIN":
+            # Held until COMMIT/ROLLBACK releases it.
+            self._lock.acquire()
+            try:
+                result = self._run(sql, parameters)
+            except BaseException:
+                self._lock.release()
+                raise
+            self._in_transaction = True
+            return result
+
+        if verb in ("COMMIT", "END", "ROLLBACK"):
+            try:
+                return self._run(sql, parameters)
+            finally:
+                if self._in_transaction:
+                    self._in_transaction = False
+                    # Released even if the COMMIT itself failed: the
+                    # transaction is over either way, and a leaked lock
+                    # would deadlock every later request.
+                    self._lock.release()
+
+        with self._lock:
+            return self._run(sql, parameters)
+
+    def executemany(self, sql: str, seq_of_parameters) -> _Result:
+        with self._lock:
+            cursor = self._conn.executemany(sql, seq_of_parameters)
+            return _Result(cursor.fetchall(), cursor.lastrowid, cursor.rowcount)
+
+    def _run(self, sql: str, parameters) -> _Result:
+        cursor = self._conn.execute(sql, parameters)
+        return _Result(cursor.fetchall(), cursor.lastrowid, cursor.rowcount)
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+
+def connect(db_path: Path) -> SerializedConnection:
     """Opens one connection with the mandatory PRAGMAs applied. The parent
     directory is created if missing (the DB path itself is never created
     inside a served directory -- that is a caller/config responsibility,
@@ -39,15 +164,15 @@ def connect(db_path: Path) -> sqlite3.Connection:
     onboarding endpoint onward) dispatches sync request handlers onto a
     worker thread distinct from the one that opened this connection --
     sqlite3's default same-thread restriction would otherwise raise on
-    every such request. This is safe under this project's single-writer
-    model (one Uvicorn worker, INC-11's OS mutex, WAL mode) as long as
-    callers never share ONE connection across genuinely concurrent
-    writers without serializing access -- there is no connection pool or
-    additional locking here; each caller opens what it needs."""
+    every such request. Safe under this project's single-writer model (one
+    Uvicorn worker, INC-11's OS mutex, WAL mode) BECAUSE the returned
+    SerializedConnection serializes access; the raw connection is never
+    handed out. There is still no pool -- each caller opens what it needs."""
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), isolation_level=None, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    raw = sqlite3.connect(str(db_path), isolation_level=None, check_same_thread=False)
+    raw.row_factory = sqlite3.Row
+    conn = SerializedConnection(raw)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
@@ -138,7 +263,7 @@ def run_migrations(conn: sqlite3.Connection) -> list[str]:
     return newly_applied
 
 
-def open_database(db_path: Path) -> sqlite3.Connection:
+def open_database(db_path: Path) -> SerializedConnection:
     """The one entry point application code uses: connect + migrate."""
     conn = connect(db_path)
     run_migrations(conn)
