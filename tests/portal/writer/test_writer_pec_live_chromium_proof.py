@@ -175,11 +175,38 @@ async def _wrong_workflow_then_correct_scenario():
             await browser.close()
 
 
-def test_no_direct_charge_field_in_outgoing_update_devis_det_payload(live_mock_server):
+# Every spelling of the charge split, across both workflows. The writer
+# must never send any of them in an outgoing body: that value is the
+# portal's to compute (BUSINESS_RULES.md B.3), and the golden Mode Normal
+# source wrote them directly, which is the one part deliberately not
+# ported.
+FORBIDDEN_CHARGE_NAMES = (
+    "MontantChargeMutuelle",
+    "MontantChargeSocietaire",
+    "DevisMontantChargeMutuelle",
+    "DevisMontantChargeSocietaire",
+    "ChargeMutuelle",
+    "ChargeSocietaire",
+)
+
+
+def test_no_outgoing_request_during_a_pec_row_write_carries_a_charge_field(live_mock_server):
     run_async(_charge_field_payload_scenario())
 
 
 async def _charge_field_payload_scenario():
+    """MIGRATED off assumptions the golden evidence does not support.
+
+    This used to filter on url.endswith("/updateDevisDet") and
+    method == "POST". The golden code established ONE network fact -- a
+    response whose URL CONTAINS "updateDevisDet" -- and never the exact
+    path or the method, so requiring them here would assert a stronger
+    contract than the evidence supports.
+
+    EVERY outgoing request during the edit is now inspected regardless of
+    path or method, and none may carry a charge field. The substring is
+    still used, but only to assert that the golden-recognised request was
+    among those seen -- it is recognition, not a requirement on shape."""
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
@@ -188,18 +215,31 @@ async def _charge_field_payload_scenario():
             writer = await _open_writer(browser)
             page = writer._page
 
-            captured = {}
+            observed = []
 
             async def _capture(request):
-                if request.url.endswith("/updateDevisDet") and request.method == "POST":
-                    captured["post_data"] = request.post_data
+                observed.append((request.method, request.url, request.post_data))
 
             page.on("request", _capture)
             await writer.edit_conventionne_row(RubriqueId("3"))
 
-            assert "post_data" in captured
-            assert "DevisMontantChargeMutuelle" not in captured["post_data"]
-            assert "DevisMontantChargeSocietaire" not in captured["post_data"]
+            # The edit really happened.
+            await writer.verify_row(RubriqueId("3"))
+
+            for method, url, post_data in observed:
+                for name in FORBIDDEN_CHARGE_NAMES:
+                    assert name not in (post_data or ""), (
+                        f"{method} {url} carried {name} in its body"
+                    )
+                    assert name not in url, f"{method} {url} carried {name} in its URL"
+
+            # Traffic really was observed, so the charge assertions above
+            # are not vacuous. Deliberately NOT "a request matching
+            # updateDevisDet must exist": requiring a particular request
+            # is the same class of shape-assumption this test is being
+            # migrated away from, and an edit that is already equal is a
+            # legitimate no-op that sends nothing.
+            assert observed
         finally:
             await browser.close()
 

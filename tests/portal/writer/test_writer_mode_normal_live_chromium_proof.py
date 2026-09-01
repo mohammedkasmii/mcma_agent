@@ -134,11 +134,45 @@ async def _unplanned_then_fresh_writer_scenario():
             await browser.close()
 
 
-def test_no_direct_charge_field_in_outgoing_create_rapport_def_det_payload(live_mock_server):
+# Every spelling of the charge split, across both workflows. The writer
+# must never send any of them in an outgoing body: that value is the
+# portal's to compute (BUSINESS_RULES.md B.3), and the golden Mode Normal
+# source wrote them directly, which is the one part deliberately not
+# ported.
+FORBIDDEN_CHARGE_NAMES = (
+    "MontantChargeMutuelle",
+    "MontantChargeSocietaire",
+    "DevisMontantChargeMutuelle",
+    "DevisMontantChargeSocietaire",
+    "ChargeMutuelle",
+    "ChargeSocietaire",
+)
+
+
+def test_no_outgoing_request_during_a_row_write_carries_a_charge_field(live_mock_server):
     run_async(_charge_field_payload_scenario())
 
 
 async def _charge_field_payload_scenario():
+    """MIGRATED off an invented endpoint contract.
+
+    This used to capture ONLY requests matching
+    url.endswith("/createRapportDefDet") and method == "POST", then assert
+    "post_data" in captured -- so it REQUIRED that endpoint, that method
+    and a body, none of which the golden Mode Normal code proves. It
+    appears in neither golden commit; production no longer depends on it;
+    and a proof about charge fields must not resurrect a contract the
+    integration deliberately removed.
+
+    The safety invariant is unchanged and now checked more broadly: EVERY
+    outgoing request during the row write is inspected, whatever its path
+    or method, and none may carry a charge field in its body or its URL.
+    A narrower filter could have missed a charge field sent somewhere
+    else entirely.
+
+    The positive evidence that the interaction really happened is the
+    read-back -- the row persisting -- not the presence of a particular
+    request."""
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
@@ -147,17 +181,23 @@ async def _charge_field_payload_scenario():
             writer = await _open_writer(browser)
             page = writer._page
 
-            captured = {}
+            observed = []
 
             async def _capture(request):
-                if request.url.endswith("/createRapportDefDet") and request.method == "POST":
-                    captured["post_data"] = request.post_data
+                observed.append((request.method, request.url, request.post_data))
 
             page.on("request", _capture)
             await writer.add_normal_row(RubriqueId("3"))
 
-            assert "post_data" in captured
-            assert "MontantChargeMutuelle" not in captured["post_data"]
-            assert "MontantChargeSocietaire" not in captured["post_data"]
+            # The row really was written -- otherwise "no charge field was
+            # sent" would be trivially true.
+            await writer.verify_row(RubriqueId("3"))
+
+            for method, url, post_data in observed:
+                for name in FORBIDDEN_CHARGE_NAMES:
+                    assert name not in (post_data or ""), (
+                        f"{method} {url} carried {name} in its body"
+                    )
+                    assert name not in url, f"{method} {url} carried {name} in its URL"
         finally:
             await browser.close()
