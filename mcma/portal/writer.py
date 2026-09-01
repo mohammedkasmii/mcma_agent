@@ -984,7 +984,16 @@ class VerifiedMissionWriter:
         if not pencil.get("ok"):
             await self._terminal_abort(RowWriteUncertain("could not open the row for editing"))
 
-        expected_rate = derive_vetuste_rate(intent.ht, intent.vetuste)
+        # derive_vetuste_rate(amount, ttc) -- vetuste FIRST, TTC second.
+        # This passed (ht, vetuste), which is both the wrong ratio and, for
+        # the common vetuste=0.00 case, a division by zero: TTC==0 raises
+        # VetusteRateDerivationUndefined, that subclasses WriteAborted, and
+        # _perform_writes turns it into WRITE_NOT_CONFIRMED -- so a
+        # perfectly ordinary PEC dossier with no depreciation aborted
+        # before human handoff. verify_row() already computed it the right
+        # way round, so mutation and verification disagreed.
+        ttc = intent.ht + intent.tva
+        expected_rate = derive_vetuste_rate(intent.vetuste, ttc)
         filled = await self._pec_driver.fill_editing_row(
             str(intent.ht.amount),
             str(intent.tva.amount),
