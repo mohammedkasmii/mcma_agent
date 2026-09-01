@@ -15,4 +15,8 @@ components never call `fetch` and never see a snake_case response object.
 - `wire.ts` — the backend's snake_case shapes, consumed only by adapters.
 - `adapters/` — the wire-to-frontend mapping. Validates rather than casts and
   fails closed on anything it does not understand.
-- `accounts.ts` — GET /accounts, the one endpoint called so far.
+- `accounts.ts` — GET /accounts.
+- `claims.ts` — GET /claims, always scoped to one account.
+
+Only read endpoints are called. No state-changing request is made anywhere in
+the application yet.

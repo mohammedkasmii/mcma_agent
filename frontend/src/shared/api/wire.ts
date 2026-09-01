@@ -31,3 +31,40 @@ export interface AccountWire {
 export interface AccountsResponseWire {
   readonly accounts: readonly AccountWire[];
 }
+
+/**
+ * One row of GET /claims.
+ *
+ * Source of truth: mcma/app/api/app.py, `_CLAIMS_SELECT` plus the three
+ * fields the endpoint attaches per row (`status`, `note`, `updated_at`) and
+ * `categories`.
+ *
+ * Nullability follows the schema in mcma/persistence/migrations/0001_init.sql:
+ * `reference`, `insured`, `police` and `matricule_norm` are nullable columns.
+ * `status` is never null — the endpoint substitutes "NEW" when a claim has no
+ * employee action yet — while `note` and `updated_at` are null in exactly
+ * that case. `categories` is always an array, empty when the claim is in no
+ * alert category.
+ */
+export interface ClaimWire {
+  readonly claim_pk: string;
+  readonly account_id: string;
+  readonly portal_claim_id: string;
+  readonly reference: string | null;
+  readonly insured: string | null;
+  readonly police: string | null;
+  readonly matricule_norm: string | null;
+  readonly last_seen_version: number;
+  readonly account_entity: string;
+  readonly account_scope: string;
+  readonly account_label: string;
+  readonly status: string;
+  readonly note: string | null;
+  readonly updated_at: string | null;
+  readonly categories: readonly string[];
+}
+
+/** The GET /claims envelope: the rows arrive under a `claims` key. */
+export interface ClaimsResponseWire {
+  readonly claims: readonly ClaimWire[];
+}
