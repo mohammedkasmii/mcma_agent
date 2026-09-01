@@ -477,25 +477,28 @@ __PEC_ORIGINAL_ROWS__
                 </table>
 
                 <div class="summary-box">
-                    <!-- INC-09B amendment #2: these five fields have NO confirmed live
-                         selector anywhere in recovered evidence (only #DevisTvaRecupI,
-                         #DevisMontantChargeMutuelle, #DevisMontantChargeSocietaire are
-                         confirmed). Exposed as unmistakably synthetic
-                         [data-mock-only-*] attributes -- never a plausible #Devis... id
-                         -- so they can never be mistaken for a recovered live selector. -->
-                    <label>Devis TTC (mock-only):</label> <input type="text" id="mockOnlyTotalTtc" data-mock-only-total-ttc="true" value="11200.00" readonly>
-                    <label>Devis TVA (mock-only):</label> <input type="text" id="mockOnlyTotalTva" data-mock-only-total-tva="true" value="1866.67" readonly>
-                    <label>Vetuste Total (mock-only):</label> <input type="text" id="mockOnlyVetusteTotal" data-mock-only-vetuste-total="true" value="0.00">
-                    <label>Franchise (mock-only):</label> <input type="text" id="mockOnlyFranchise" data-mock-only-franchise="true" value="0.00">
-                    <label>Remise (mock-only):</label> <input type="text" id="mockOnlyRemise" data-mock-only-remise="true" value="0.00">
-                    <label>Montant Arrete (mock-only):</label> <input type="text" id="mockOnlyMontantArrete" data-mock-only-montant-arrete="true" value="0.00" readonly>
-                    <label>Base Indemnite (mock-only):</label> <input type="text" id="mockOnlyBaseIndemnite" data-mock-only-base-indemnite="true" value="0.00" readonly>
+                    <!-- Golden PEC summary ids (8e5e4e6). These replace the
+                         [data-mock-only-*] attributes the previous mock used:
+                         the golden implementation read #DevisMontantTVA,
+                         #DevisMontantTTC, #DevisMontantVetusteTotal,
+                         #DevisMontantFranchise, #DevisMontantRemise and
+                         #DevisPartResponsabilite against the real portal, so
+                         they are recovered selectors rather than invented
+                         ones and production reads them directly. -->
+                    <label>Devis TTC:</label> <input type="text" id="DevisMontantTTC" value="11200.00" readonly>
+                    <label>Devis TVA:</label> <input type="text" id="DevisMontantTVA" value="1866.67" readonly>
+                    <label>Vetuste Total:</label> <input type="text" id="DevisMontantVetusteTotal" value="0.00">
+                    <label>Franchise:</label> <input type="text" id="DevisMontantFranchise" value="0.00">
+                    <label>Remise:</label> <input type="text" id="DevisMontantRemise" value="0.00">
+                    <label>Part Responsabilite:</label> <input type="text" id="DevisPartResponsabilite" value="0.00">
+                    <label>Montant Arrete:</label> <input type="text" id="MontantArrete" value="0.00" readonly>
+                    <label>Base Indemnite:</label> <input type="text" id="BaseIndemnite" value="0.00" readonly>
                     <br><br>
                     <label>Charge Societaire:</label>
                     <input type="text" id="DevisMontantChargeSocietaire" value="0.00" disabled>
                     <label>Charge Mutuelle:</label>
                     <input type="text" id="DevisMontantChargeMutuelle" value="0.00" disabled>
-                    <div class="mock-only-note">DevisCalculerMontantCharge() is the confirmed PEC client-side function; its HTTP mirror (/_mock/pec/native_calculation) is mock-only test infrastructure, not a confirmed live network endpoint. The response's `expected`/`apply_to_dom`/`calculation_version` fields are a strictly loopback-only, MOCK_ONLY verification adapter (INC-09B amendment #2) -- there is no live equivalent.</div>
+                    <div class="mock-only-note">DevisCalculerMontantCharge() is the confirmed PEC client-side function, recovered from 8e5e4e6 and exercised against real dossiers. Production now invokes it in the page and reads the ids above; the old HTTP mirror (/_mock/pec/native_calculation) and its calculation_version envelope were mock-only and are no longer part of the production path.</div>
                     <select id="mockSimulatePec"><option value="success">success</option><option value="stale">stale</option><option value="missing">missing</option><option value="failed">failed</option><option value="malformed">malformed</option><option value="incomplete">incomplete</option><option value="mismatch">mismatch</option></select>
                 </div>
 
@@ -600,10 +603,12 @@ __PEC_ORIGINAL_ROWS__
     }
 
     function recomputeNormalTtc(tempId) {
-        var ttcInput = document.getElementById("MontantTTC_" + tempId);
+        // Unsuffixed, like the editing row itself.
+        var ttcInput = document.getElementById("MontantTTCLigne");
+        if (!ttcInput) { return; }
         try {
-            var ht = parseMoneyToCents(document.getElementById("MontantHT_" + tempId).value || "0");
-            var taxe = parseMoneyToCents(document.getElementById("Taxe_" + tempId).value || "0");
+            var ht = parseMoneyToCents(document.getElementById("MontantHT").value || "0");
+            var taxe = parseMoneyToCents(document.getElementById("Taxe").value || "0");
             ttcInput.value = centsToMoneyString(ht + taxe);
         } catch (e) {
             ttcInput.value = "";
@@ -611,14 +616,14 @@ __PEC_ORIGINAL_ROWS__
     }
 
     function recomputePecDerived(id) {
-        var ttcInput = document.getElementById("MontantTTCValide_" + id);
-        var rateInput = document.getElementById("TauxVetusteValide_" + id);
+        var ttcInput = document.getElementById("MontantTTCValide");
+        var rateInput = document.getElementById("TauxVetusteValide");
         try {
-            var ht = parseMoneyToCents(document.getElementById("MontantHTValide_" + id).value || "0");
-            var taxe = parseMoneyToCents(document.getElementById("TaxeValide_" + id).value || "0");
+            var ht = parseMoneyToCents(document.getElementById("MontantHTValide").value || "0");
+            var taxe = parseMoneyToCents(document.getElementById("TaxeValide").value || "0");
             var ttcCents = ht + taxe;
             ttcInput.value = centsToMoneyString(ttcCents);
-            var vetusteCents = parseMoneyToCents(document.getElementById("MontantVetusteValide_" + id).value || "0");
+            var vetusteCents = parseMoneyToCents(document.getElementById("MontantVetusteValide").value || "0");
             if (ttcCents === 0n) {
                 // Undefined derivation -- left blank, never coerced to "0.00".
                 rateInput.value = "";
@@ -637,25 +642,37 @@ __PEC_ORIGINAL_ROWS__
     var normalTempCounter = 0;
 
     function ajouterLigneModeNormal() {
+        // Golden shape (9a2c57c): the portal shows ONE editing row at a
+        // time carrying UNSUFFIXED ids, and it is saved by the control in
+        // the 7th column. The previous mock issued #IdRubrique_<tempId>
+        // and a text="OK" link; neither exists on the real portal.
+        if (document.querySelector("#MontantHT")) {
+            logHUD("Mode Normal: an editing row is already open.");
+            return;
+        }
         normalTempCounter++;
         var tempId = "tmp-" + normalTempCounter;
         var tr = document.createElement("tr");
-        tr.id = "normal_row_" + tempId;
         tr.className = "tr-editing";
+        tr.setAttribute("data-temp-id", tempId);
 
         var rubTd = document.createElement("td");
         var sel = document.createElement("select");
-        [["1","FOURNITURES CARROSSERIE (ORIGINES)"],["3","FOURNITURES CARROSSERIE (RECUPERABLES)"],["7","MAIN D'OEUVRE CARROSSERIE"],["12","MAIN D'OEUVRE PEINTURE"],["16","PEINTURES ET INGREDIENTS"]].forEach(function(o) {
+        [["1","FOURNITURES CARROSSERIE (ORIGINES)"],["3","TOTAL PIECES OCCASIONS / RECUPERABLES"],["7","MAIN D'OEUVRE CARROSSERIE"],["12","MAIN D'OEUVRE PEINTURE"],["16","PEINTURES ET INGREDIENTS"]].forEach(function(o) {
             var opt = document.createElement("option"); opt.value = o[0]; opt.textContent = o[1]; sel.appendChild(opt);
         });
-        sel.id = "IdRubrique_" + tempId;
+        sel.id = "IdRubrique";
+        sel.name = "IdRubrique";
         wireFieldEvents(sel, "MODE_NORMAL", tempId, "IdRubrique");
         rubTd.appendChild(sel); tr.appendChild(rubTd);
 
         ["MontantHT", "Taxe", "TauxVetuste", "MontantVetuste"].forEach(function(field) {
             var td = document.createElement("td");
             var input = document.createElement("input");
-            input.type = "text"; input.id = field + "_" + tempId; input.value = field === "MontantHT" || field === "Taxe" ? "" : "0.00";
+            input.type = "text";
+            input.id = field;
+            input.name = field;
+            input.value = field === "MontantHT" || field === "Taxe" ? "" : "0.00";
             wireFieldEvents(input, "MODE_NORMAL", tempId, field);
             if (field === "MontantHT" || field === "Taxe") {
                 input.addEventListener("input", function() { recomputeNormalTtc(tempId); });
@@ -666,29 +683,38 @@ __PEC_ORIGINAL_ROWS__
 
         var ttcTd = document.createElement("td");
         var ttcInput = document.createElement("input");
-        ttcInput.type = "text"; ttcInput.id = "MontantTTC_" + tempId; ttcInput.readOnly = true; ttcInput.value = "0.00";
+        ttcInput.type = "text"; ttcInput.id = "MontantTTCLigne"; ttcInput.readOnly = true; ttcInput.value = "0.00";
         ttcTd.appendChild(ttcInput); tr.appendChild(ttcTd);
 
+        // 7th column. The driver clicks td:nth-child(7) or its clickable
+        // descendant, so the control must live exactly here.
         var actionTd = document.createElement("td");
         var check = document.createElement("a");
-        check.className = "btn-check"; check.textContent = "OK"; check.onclick = function() { saveNormalRow(tempId); };
+        check.className = "btn-check";
+        check.innerHTML = "<i class=\"fa-check\">&#10003;</i>";
+        check.onclick = function() { saveNormalRow(tempId); };
         actionTd.appendChild(check); tr.appendChild(actionTd);
 
         document.getElementById("tbodyModeNormal").prepend(tr);
-        logHUD("Mode Normal: Ajouter + created exactly one temporary row (" + tempId + ").");
+        logHUD("Mode Normal: Ajouter + opened one editing row with unsuffixed ids.");
     }
 
     function saveNormalRow(tempId) {
-        var rubSel = document.getElementById("IdRubrique_" + tempId);
+        var rubSel = document.getElementById("IdRubrique");
+        if (!rubSel) { return; }
         var fields = {
             IdRubrique: rubSel.value,
-            MontantHT: document.getElementById("MontantHT_" + tempId).value || "0.00",
-            Taxe: document.getElementById("Taxe_" + tempId).value || "0.00",
-            MontantTTC: document.getElementById("MontantTTC_" + tempId).value || "0.00",
-            TauxVetuste: document.getElementById("TauxVetuste_" + tempId).value || "0.00",
-            MontantVetuste: document.getElementById("MontantVetuste_" + tempId).value || "0.00",
+            MontantHT: document.getElementById("MontantHT").value || "0.00",
+            Taxe: document.getElementById("Taxe").value || "0.00",
+            MontantTTC: document.getElementById("MontantTTCLigne").value || "0.00",
+            TauxVetuste: document.getElementById("TauxVetuste").value || "0.00",
+            MontantVetuste: document.getElementById("MontantVetuste").value || "0.00",
             TempRowId: tempId
         };
+        // The mock still records the call for observability, but the DOM
+        // commit below does NOT depend on it: production no longer requires
+        // a createRapportDefDet response, because the golden Mode Normal
+        // never observed one.
         postForm("/SinAuto_MCMA/expertise/gestionExpert/createRapportDefDet", fields).then(function(res) {
             if (res.state === "success") {
                 logHUD("createRapportDefDet OK -> rubrique " + fields.IdRubrique + " committed.");
@@ -743,14 +769,21 @@ __PEC_ORIGINAL_ROWS__
         tbody.innerHTML = "";
         rows.forEach(function(item) {
             var tr = document.createElement("tr");
-            tr.id = "row_val_" + item.IdDevisDet;
+            // Golden shape (8e5e4e6): the row is identified by its
+            // DISPLAYED LABEL, not by an id the real table does not carry.
+            // data-id-devis-det is kept only so the mock's own save
+            // endpoint still has something to key on.
+            tr.setAttribute("data-id-devis-det", item.IdDevisDet);
             var labelTd = document.createElement("td"); labelTd.textContent = item.LibRubrique; tr.appendChild(labelTd);
             ["MontantHT", "Taxe", "MontantTTC", "TauxVetuste", "MontantVetuste"].forEach(function(f) {
                 var td = document.createElement("td"); td.className = "text-right col-" + f; td.textContent = item[f]; tr.appendChild(td);
             });
             var actionTd = document.createElement("td");
             var pencil = document.createElement("a");
-            pencil.className = "btn-pencil"; pencil.textContent = "edit"; pencil.onclick = (function(id) { return function() { editRowTable2(id); }; })(item.IdDevisDet);
+            // Golden pencil selector family.
+            pencil.className = "btn-pencil edit-row";
+            pencil.setAttribute("title", "Modifier");
+            pencil.innerHTML = "<i class=\"fa-pencil\">&#9998;</i>"; pencil.onclick = (function(id) { return function() { editRowTable2(id); }; })(item.IdDevisDet);
             actionTd.appendChild(pencil); tr.appendChild(actionTd);
             tbody.appendChild(tr);
         });
@@ -763,14 +796,15 @@ __PEC_ORIGINAL_ROWS__
     }
 
     function editRowTable2(id) {
-        var tr = document.getElementById("row_val_" + id);
+        var tr = document.querySelector('#DevisDetTableVal tbody tr[data-id-devis-det="' + id + '"]');
+        if (!tr) { return; }
         tr.classList.add("tr-editing");
         ["MontantHT", "Taxe"].forEach(function(f) {
             var td = tr.querySelector(".col-" + f);
             var current = td.textContent;
             td.innerHTML = "";
             var input = document.createElement("input");
-            input.type = "text"; input.id = f + "Valide_" + id; input.value = current;
+            input.type = "text"; input.id = f + "Valide"; input.name = f + "Valide"; input.value = current;
             wireFieldEvents(input, "GARAGE_CONVENTIONNE", String(id), f);
             input.addEventListener("input", function() { recomputePecDerived(id); });
             input.addEventListener("change", function() { recomputePecDerived(id); });
@@ -784,14 +818,14 @@ __PEC_ORIGINAL_ROWS__
         var ttcCurrent = ttcTd.textContent;
         ttcTd.innerHTML = "";
         var ttcInput = document.createElement("input");
-        ttcInput.type = "text"; ttcInput.id = "MontantTTCValide_" + id; ttcInput.readOnly = true; ttcInput.value = ttcCurrent;
+        ttcInput.type = "text"; ttcInput.id = "MontantTTCValide"; ttcInput.readOnly = true; ttcInput.value = ttcCurrent;
         ttcTd.appendChild(ttcInput);
         ["TauxVetuste", "MontantVetuste"].forEach(function(f) {
             var td = tr.querySelector(".col-" + f);
             var current = td.textContent;
             td.innerHTML = "";
             var input = document.createElement("input");
-            input.type = "text"; input.id = f + "Valide_" + id; input.value = current;
+            input.type = "text"; input.id = f + "Valide"; input.name = f + "Valide"; input.value = current;
             if (f === "TauxVetuste") { input.readOnly = true; }
             wireFieldEvents(input, "GARAGE_CONVENTIONNE", String(id), f);
             if (f === "MontantVetuste") {
@@ -804,7 +838,10 @@ __PEC_ORIGINAL_ROWS__
         var actionTd = tr.querySelector("td:last-child");
         actionTd.innerHTML = "";
         var check = document.createElement("a");
-        check.className = "btn-check"; check.textContent = "OK"; check.onclick = function() { saveRowTable2(id); };
+        check.className = "btn-check save-row";
+        check.setAttribute("title", "Enregistrer");
+        check.innerHTML = "<i class=\"fa-check\">&#10003;</i>";
+        check.onclick = function() { saveRowTable2(id); };
         actionTd.appendChild(check);
         logHUD("PEC: row " + id + " entered edit mode (exact row only).");
     }
@@ -813,11 +850,11 @@ __PEC_ORIGINAL_ROWS__
         pecNonceCounter++;
         var fields = {
             IdDevisDet: id,
-            MontantHTValide: document.getElementById("MontantHTValide_" + id).value,
-            TaxeValide: document.getElementById("TaxeValide_" + id).value,
-            MontantTTCValide: document.getElementById("MontantTTCValide_" + id) ? document.getElementById("MontantTTCValide_" + id).value : "0.00",
-            TauxVetusteValide: document.getElementById("TauxVetusteValide_" + id).value,
-            MontantVetusteValide: document.getElementById("MontantVetusteValide_" + id).value,
+            MontantHTValide: document.getElementById("MontantHTValide").value,
+            TaxeValide: document.getElementById("TaxeValide").value,
+            MontantTTCValide: document.getElementById("MontantTTCValide") ? document.getElementById("MontantTTCValide").value : "0.00",
+            TauxVetusteValide: document.getElementById("TauxVetusteValide").value,
+            MontantVetusteValide: document.getElementById("MontantVetusteValide").value,
             SubmissionNonce: "pec-" + id + "-" + pecNonceCounter
         };
         postForm("/SinAuto_MCMA/expertise/gestionexpert/updateDevisDet", fields).then(function(res) {

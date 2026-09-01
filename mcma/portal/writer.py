@@ -95,9 +95,18 @@ from urllib.parse import urlsplit
 
 from mcma.core.money import Money
 from mcma.domain.enums import FormFieldSelector, RepairWorkflow
+from mcma.domain.rubriques import RUBRIQUE_CATALOG
 from mcma.domain.values import FormFieldIntent, RubriqueId
 from mcma.portal.capabilities import LeaseHandle, SearchIdentifiers
 from mcma.portal.contracts import RouteContract, contracts_for_workflow
+from mcma.portal.mode_normal_live import ModeNormalLiveDriver
+from mcma.portal.mode_normal_live import (
+    READ_FINANCIAL_SUMMARY_JS as _NORMAL_SUMMARY_JS,
+)
+from mcma.portal.pec_live import PecLiveDriver, UnmatchedRubrique, match_all_rubriques
+from mcma.portal.pec_live import (
+    READ_FINANCIAL_SUMMARY_JS as _PEC_SUMMARY_JS,
+)
 from mcma.portal.final_endpoints import is_permanently_blocked
 from mcma.portal.identity import ExpectedIdentity, verify_identity
 from mcma.portal.interception import (
@@ -194,6 +203,15 @@ class WriterPlanData:
 
     def planned_rubrique_values(self) -> frozenset:
         return frozenset(i.rubrique_id.value for i in self.row_intents)
+
+    def label_for(self, rubrique_id: RubriqueId) -> str:
+        """The catalog label for a planned rubrique.
+
+        PEC matches the garage's Table 2 rows by their DISPLAYED label,
+        which is what the golden implementation did -- the real table
+        exposes no rubrique id per row. RUBRIQUE_CATALOG is the same
+        source the golden code fell back to."""
+        return RUBRIQUE_CATALOG.get(rubrique_id.value, "")
 
 
 def _workflow_key(repair_workflow: RepairWorkflow) -> str:
@@ -559,6 +577,25 @@ class CalculationLedger:
         self._last_calculation_version = calculation_version
         self._evidence = _CalculationEvidence(self.row_generation, calculation_version, expected)
 
+    def record_native_calculation(self, expected: FinancialSummary) -> None:
+        """Called after the PORTAL'S OWN calculation functions have run.
+
+        Replaces record_trigger() on the live path. record_trigger relied
+        on a server envelope carrying calculation_version and an expected
+        summary; that envelope is the mock's invention and the real portal
+        computes in the page, so there is nothing equivalent to receive.
+
+        BE CLEAR ABOUT WHAT THIS LOSES. The monotonic version counter is
+        gone, so a portal that silently returned a cached result would no
+        longer be caught by a version that failed to advance. What IS kept
+        is the property that actually guards against writing stale
+        figures: the summary read immediately after the trigger is stored
+        against the current row_generation, verify_fresh() re-reads it
+        independently, and any mutation in between still raises
+        NativeCalculationStale. Detecting a cached recalculation is now a
+        job for the onsite capture, not something this can assert."""
+        self._evidence = _CalculationEvidence(self.row_generation, 0, expected)
+
     def verify_fresh(self, observed: FinancialSummary) -> FinancialSummary:
         """Called with an INDEPENDENTLY read (never the same value read
         twice) observed summary."""
@@ -603,19 +640,6 @@ _FETCH_JSON_JS = """([url, payload]) => fetch(url, {
     body: new URLSearchParams(payload).toString()
 }).then(r => r.json())"""
 
-_FILL_NORMAL_ROW_JS = """([tempId, ht, tva]) => {
-    const setAndFire = (el, value) => {
-        el.focus();
-        el.value = value;
-        el.dispatchEvent(new Event('input', {bubbles: true}));
-        el.dispatchEvent(new Event('keyup', {bubbles: true}));
-        el.dispatchEvent(new Event('change', {bubbles: true}));
-        el.dispatchEvent(new Event('blur', {bubbles: true}));
-    };
-    setAndFire(document.getElementById('MontantHT_' + tempId), ht);
-    setAndFire(document.getElementById('Taxe_' + tempId), tva);
-}"""
-
 _FILL_PEC_ROW_JS = """([id, ht, tva, vetusteAmount]) => {
     const setAndFire = (el, value) => {
         el.focus();
@@ -644,36 +668,67 @@ _READ_PEC_ROW_JS = """([id]) => {
     };
 }"""
 
-_READ_FINANCIAL_SUMMARY_JS = """() => {
-    const readById = (id) => {
-        const el = document.getElementById(id);
-        return el ? el.value : null;
-    };
-    const readByAttr = (attr) => {
-        const el = document.querySelector('[' + attr + ']');
-        return el ? el.value : null;
-    };
-    return {
-        montant_charge_mutuelle: readById('DevisMontantChargeMutuelle'),
-        montant_charge_societaire: readById('DevisMontantChargeSocietaire'),
-        total_tva: readByAttr('data-mock-only-total-tva'),
-        total_ttc: readByAttr('data-mock-only-total-ttc'),
-        vetuste: readByAttr('data-mock-only-vetuste-total'),
-        franchise: readByAttr('data-mock-only-franchise'),
-        remise: readByAttr('data-mock-only-remise'),
-        montant_arrete: readByAttr('data-mock-only-montant-arrete'),
-        base_indemnite: readByAttr('data-mock-only-base-indemnite'),
-    };
-}"""
-
 _READ_TVA_RECUPERABLE_TOGGLE_JS = """() => {
     const el = document.getElementById('DevisTvaRecupI');
     return el ? !!el.checked : null;
 }"""
 
+def _financial_summary_from_dom(values: dict) -> FinancialSummary:
+    """Builds the summary from the PORTAL'S OWN fields.
+
+    The previous reader pulled seven of nine values from
+    `[data-mock-only-*]` attributes -- deliberately synthetic markers that
+    exist only in this repository's mock, so the production path could
+    never have read a real summary at all. The golden commits read the
+    portal's real ids, and those are what the drivers return.
+
+    A missing field is an error rather than a zero: a summary with silent
+    zeroes in it would compare equal to nothing and pass verification."""
+    def money(name):
+        raw = values.get(name)
+        if raw is None or str(raw).strip() == "":
+            raise ValueError(f"financial summary field {name!r} was not present")
+        return Money.of(str(raw))
+
+    return FinancialSummary(
+        montant_charge_mutuelle=money("charge_mutuelle"),
+        montant_charge_societaire=money("charge_societaire"),
+        total_tva=money("total_tva"),
+        total_ttc=money("total_ttc"),
+        vetuste=money("vetuste"),
+        franchise=money("franchise"),
+        remise=money("remise"),
+        montant_arrete=money("montant_arrete"),
+        base_indemnite=money("base_indemnite"),
+    )
+
+
 _DISPATCH_CHANGE_JS = """(id) => {
     const el = document.getElementById(id);
     if (el) { el.dispatchEvent(new Event('change', {bubbles: true})); }
+}"""
+
+# Mode Normal persisted rows, read from the rendered table the golden
+# commit used (#tableRapportDet / table.dataTable). Column order follows
+# the portal's own layout: rubrique, HT, taxe.
+_READ_NORMAL_ROWS_JS = """() => {
+    const rows = document.querySelectorAll(
+        '#tableRapportDet tbody tr, table.dataTable tbody tr'
+    );
+    const out = [];
+    rows.forEach((tr, index) => {
+        if (tr.querySelector('#MontantHT, #IdRubrique')) return;  // the editing row
+        const tds = tr.querySelectorAll('td');
+        const cell = i => (tds[i] ? (tds[i].innerText || '').trim() : '');
+        out.push({
+            index: index,
+            IdRubrique: (tr.getAttribute('data-idrubrique') || cell(0)).trim(),
+            rubrique_label: cell(1),
+            MontantHT: cell(2),
+            Taxe: cell(3)
+        });
+    });
+    return out;
 }"""
 
 _DOM_ROW_IDS_JS = """(selector) => Array.from(document.querySelectorAll(selector)).map((tr) => tr.id)"""
@@ -712,6 +767,11 @@ class VerifiedMissionWriter:
         "_terminally_aborted",
         "_ledger",
         "_pec_row_map",
+        # Golden DOM drivers. Declared here because __slots__ is a
+        # deliberate guard against ad-hoc attributes on a safety-critical
+        # object, and these are not an exception to it.
+        "_normal_driver",
+        "_pec_driver",
     )
 
     def __init__(
@@ -743,6 +803,11 @@ class VerifiedMissionWriter:
         self._terminally_aborted = False
         self._ledger = CalculationLedger()
         self._pec_row_map = dict(pec_row_map)
+        # Golden drivers own the DOM mechanics; this writer keeps every
+        # authorization decision and calls them only once a mutation is
+        # permitted.
+        self._normal_driver = ModeNormalLiveDriver(page)
+        self._pec_driver = PecLiveDriver(page)
 
     # -- guards ---------------------------------------------------------
 
@@ -788,12 +853,21 @@ class VerifiedMissionWriter:
         return f"http://{self._allowed_host}{path}"
 
     async def _fetch_rows(self) -> list:
+        """Reads the rows the portal is actually displaying.
+
+        This used to fetch a JSON endpoint that returns a tidy list with
+        IdRubrique and IdDevisDet on every row. No such endpoint exists on
+        SinAuto -- it is a convenience this repository's mock invented, and
+        neither golden commit uses one. Both golden implementations read
+        the rendered table, so that is what happens here."""
         try:
-            result = await self._page.evaluate(_FETCH_JSON_JS, [self._absolute_url(self._read_rows_route), {}])
-        except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain("could not fetch current rows"))
-        data = result.get("data", []) if isinstance(result, dict) else []
-        return list(data) if isinstance(data, list) else []
+            if self._writer_plan.repair_workflow is RepairWorkflow.GARAGE_CONVENTIONNE:
+                rows = await self._pec_driver.enumerate_rows()
+            else:
+                rows = await self._page.evaluate(_READ_NORMAL_ROWS_JS)
+        except Exception:
+            await self._terminal_abort(RowWriteUncertain("could not read the current rows"))
+        return list(rows) if isinstance(rows, list) else []
 
     # -- Mode Normal ------------------------------------------------------
 
@@ -824,55 +898,27 @@ class VerifiedMissionWriter:
         elif len(matches) > 1:
             await self._terminal_abort(RowAmbiguous("multiple existing rows match this rubrique"))
 
-        before_ids = set(await self._page.evaluate(_DOM_ROW_IDS_JS, "#tbodyModeNormal tr"))
-        ajouter = self._page.locator("#sectionModeNormal").get_by_text("Ajouter", exact=False)
+        # Live-tested SinAuto interaction recovered from 9a2c57c. The
+        # mutation itself is the golden DOM lifecycle: check #VehRepareI,
+        # click the real Ajouter control, fill the unsuffixed row fields
+        # with the golden event cascade, then click the 7th-column
+        # checkmark by both golden methods and wait for the AJAX redraw.
+        #
+        # It is deliberately NOT gated on a network response.
+        # createRapportDefDet appears in NEITHER golden commit -- only in
+        # this repository's mock -- so requiring it would abort a write
+        # that actually succeeded. The read-back below is what decides.
         try:
-            count = await ajouter.count()
-        except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain("could not locate the Ajouter control"))
-        if count != 1:
-            await self._terminal_abort(RowAmbiguous("Ajouter is not scoped to exactly one element"))
-        try:
-            await ajouter.click()
-        except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain("could not click Ajouter"))
-        after_ids = set(await self._page.evaluate(_DOM_ROW_IDS_JS, "#tbodyModeNormal tr"))
-        new_ids = after_ids - before_ids
-        if len(new_ids) != 1:
-            await self._terminal_abort(RowAmbiguous("Ajouter did not create exactly one new row"))
-        new_row_id = next(iter(new_ids))
-        temp_id = new_row_id.replace("normal_row_", "", 1)
-
-        try:
-            select_locator = self._page.locator(f"#IdRubrique_{temp_id}")
-            await select_locator.select_option(value=intent.rubrique_id.value)
-            await self._page.evaluate(
-                _FILL_NORMAL_ROW_JS, [temp_id, str(intent.ht.amount), str(intent.tva.amount)]
+            await self._normal_driver.add_rubrique_row(
+                intent.rubrique_id.value, str(intent.ht.amount), str(intent.tva.amount)
             )
-        except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain("could not fill the new row"))
-
-        try:
-            async with self._page.expect_response(
-                lambda r: r.url.endswith("/createRapportDefDet") and r.request.method == "POST",
-                timeout=5000,
-            ) as response_info:
-                await self._page.locator(f"#normal_row_{temp_id} >> text=OK").click()
-            response = await response_info.value
-        except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain("createRapportDefDet response was not observed"))
-
-        if response.status != 200:
-            await self._terminal_abort(RowWriteRejected("createRapportDefDet returned a non-200 status"))
-        try:
-            body = await response.json()
-        except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain("createRapportDefDet response body was not JSON"))
-        if body.get("state") != "success":
-            await self._terminal_abort(RowWriteRejected(_map_reason_code(body.get("reason"))))
+        except Exception:
+            await self._terminal_abort(RowWriteUncertain("the golden row lifecycle did not complete"))
 
         self._ledger.record_mutation()
 
+        # Verification is now the ONLY evidence the write landed, so it is
+        # exact: the row must exist once, with both amounts equal.
         fresh_rows = await self._fetch_rows()
         persisted = [
             r
@@ -882,7 +928,9 @@ class VerifiedMissionWriter:
             and Money.of(str(r.get("Taxe", ""))) == intent.tva
         ]
         if len(persisted) != 1:
-            await self._terminal_abort(RowReadBackMismatch("exact read-back after createRapportDefDet failed"))
+            await self._terminal_abort(
+                RowReadBackMismatch("the row was not present exactly once after the checkmark")
+            )
 
         await self._recheck_lease()
 
@@ -895,110 +943,67 @@ class VerifiedMissionWriter:
         intent = self._writer_plan.intent_for(rubrique_id)
         if intent is None:
             await self._terminal_abort(UnplannedRubrique("rubrique_id is not in the approved plan"))
-        cached_id_devis_det = self._pec_row_map.get(rubrique_id.value)
-        if cached_id_devis_det is None:
-            await self._terminal_abort(UnplannedRubrique("rubrique_id was not resolved during preflight"))
+        target_label = self._pec_row_map.get(rubrique_id.value)
+        if target_label is None:
+            await self._terminal_abort(UnplannedRubrique("rubrique_id was not matched during preflight"))
 
         await self._preflight_before_mutation()
 
+        # Live-tested PEC interaction recovered from 8e5e4e6. The row is
+        # re-located by its DISPLAYED LABEL every time, never by an index
+        # kept from before the last redraw -- the table is rebuilt after
+        # each save, so a stale index is a reference to a different row.
+        live_index = await self._pec_driver.relocate_row(target_label)
+        if live_index < 0:
+            await self._terminal_abort(RowAmbiguous("the planned row is no longer present in Table 2"))
+
         rows = await self._fetch_rows()
-        matches = [r for r in rows if str(r.get("IdRubrique")) == rubrique_id.value]
-        if len(matches) != 1:
-            await self._terminal_abort(RowAmbiguous("the planned rubrique no longer matches exactly one row"))
-        current = matches[0]
-        if current.get("IdDevisDet") != cached_id_devis_det:
-            await self._terminal_abort(RowAmbiguous("the cached row mapping no longer matches the fresh read"))
+        current = next((r for r in rows if r.get("index") == live_index), None)
+        if current is None:
+            await self._terminal_abort(RowAmbiguous("the relocated row could not be read back"))
 
         if (
-            Money.of(str(current.get("MontantHT", ""))) == intent.ht
-            and Money.of(str(current.get("Taxe", ""))) == intent.tva
-            and Money.of(str(current.get("MontantVetuste", ""))) == intent.vetuste
+            Money.of(str(current.get("current_ht", ""))) == intent.ht
+            and Money.of(str(current.get("current_taxe", ""))) == intent.tva
         ):
             return  # diff-before-write: already exactly equal -- no-op
 
-        id_devis_det = cached_id_devis_det
-        try:
-            await self._page.locator(f"#row_val_{id_devis_det} >> text=edit").click()
-        except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain("could not click the row's edit action"))
+        pencil = await self._pec_driver.click_pencil(live_index)
+        if not pencil.get("ok"):
+            await self._terminal_abort(RowWriteUncertain("could not open the row for editing"))
 
-        try:
-            await self._page.evaluate(
-                _FILL_PEC_ROW_JS,
-                [id_devis_det, str(intent.ht.amount), str(intent.tva.amount), str(intent.vetuste.amount)],
-            )
-        except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain("could not fill the row's fields"))
+        expected_rate = derive_vetuste_rate(intent.ht, intent.vetuste)
+        filled = await self._pec_driver.fill_editing_row(
+            str(intent.ht.amount),
+            str(intent.tva.amount),
+            "" if expected_rate is None else str(expected_rate),
+            str(intent.vetuste.amount),
+        )
+        if not filled.get("ht", {}).get("found") or not filled.get("taxe", {}).get("found"):
+            await self._terminal_abort(RowWriteUncertain("the editable row fields were not present"))
 
-        ttc = intent.ht + intent.tva
-        try:
-            expected_rate = derive_vetuste_rate(intent.vetuste, ttc)
-        except VetusteRateDerivationUndefined:
-            expected_rate = None
-
-        try:
-            rendered = await self._page.evaluate(_READ_PEC_ROW_JS, [id_devis_det])
-        except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain("could not read the row's rendered fields"))
-
-        rendered_rate_raw = rendered.get("TauxVetuste")
-        if expected_rate is None:
-            if rendered_rate_raw not in (None, ""):
-                await self._terminal_abort(
-                    VetusteRateDerivationUndefined("TTC is zero but a vetuste rate was rendered")
-                )
-        else:
-            if rendered.get("MontantTTC") in (None, ""):
-                await self._terminal_abort(VetusteRateDerivationUndefined("TTC was not rendered"))
-            if rendered_rate_raw in (None, ""):
-                await self._terminal_abort(VetusteRateDerivationUndefined("vetuste rate was not rendered"))
-            try:
-                rendered_rate = Decimal(str(rendered_rate_raw))
-            except Exception:
-                await self._terminal_abort(VetusteRateDerivationUndefined("vetuste rate is not a valid decimal"))
-            if rendered_rate != expected_rate:
-                await self._terminal_abort(
-                    VetusteRateDerivationUndefined("rendered vetuste rate disagrees with the exact formula result")
-                )
-
-        try:
-            async with self._page.expect_response(
-                lambda r: r.url.endswith("/updateDevisDet") and r.request.method == "POST",
-                timeout=5000,
-            ) as response_info:
-                await self._page.locator(f"#row_val_{id_devis_det} >> text=OK").click()
-            response = await response_info.value
-        except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain("updateDevisDet response was not observed"))
-
-        if response.status != 200:
-            await self._terminal_abort(RowWriteRejected("updateDevisDet returned a non-200 status"))
-        try:
-            body = await response.json()
-        except Exception as exc:
-            await self._terminal_abort(RowWriteUncertain("updateDevisDet response body was not JSON"))
-        if body.get("state") != "success":
-            await self._terminal_abort(RowWriteRejected(_map_reason_code(body.get("reason"))))
+        # The ONLY network fact the golden code established is that a
+        # response arrives whose URL CONTAINS "updateDevisDet". It never
+        # asserted the path, the method or a JSON body, so none of those
+        # are required -- and a missing response is not treated as failure,
+        # because the golden code fell back to clicking directly and let
+        # the read-back decide. Which is exactly what happens below.
+        await self._pec_driver.click_save_and_await_update(live_index)
 
         self._ledger.record_mutation()
 
+        # Re-locate again after the redraw, then verify exactly.
+        verify_index = await self._pec_driver.relocate_row(target_label)
+        if verify_index < 0:
+            await self._terminal_abort(RowReadBackMismatch("the row vanished after saving"))
         fresh_rows = await self._fetch_rows()
-        fresh_matches = [r for r in fresh_rows if r.get("IdDevisDet") == id_devis_det]
-        if len(fresh_matches) != 1:
-            await self._terminal_abort(RowReadBackMismatch("exact read-back after updateDevisDet failed"))
-        persisted = fresh_matches[0]
-        if Money.of(str(persisted.get("MontantHT", ""))) != intent.ht:
+        persisted = next((r for r in fresh_rows if r.get("index") == verify_index), None)
+        if persisted is None:
+            await self._terminal_abort(RowReadBackMismatch("the saved row could not be read back"))
+        if Money.of(str(persisted.get("current_ht", ""))) != intent.ht:
             await self._terminal_abort(RowReadBackMismatch("MontantHT"))
-        if Money.of(str(persisted.get("Taxe", ""))) != intent.tva:
+        if Money.of(str(persisted.get("current_taxe", ""))) != intent.tva:
             await self._terminal_abort(RowReadBackMismatch("Taxe"))
-        if Money.of(str(persisted.get("MontantVetuste", ""))) != intent.vetuste:
-            await self._terminal_abort(RowReadBackMismatch("MontantVetuste"))
-        if expected_rate is not None:
-            try:
-                if Decimal(str(persisted.get("TauxVetuste", ""))) != expected_rate:
-                    await self._terminal_abort(RowReadBackMismatch("TauxVetuste"))
-            except Exception:
-                await self._terminal_abort(RowReadBackMismatch("TauxVetuste"))
 
         await self._recheck_lease()
 
@@ -1100,83 +1105,102 @@ class VerifiedMissionWriter:
     # -- Native financial calculation -------------------------------------
 
     async def trigger_native_recalc(self) -> None:
-        self._ensure_open()
-        if self._writer_plan.repair_workflow is RepairWorkflow.MODE_NORMAL:
-            await self._terminal_abort(
-                NativeCalculationUnconfirmed(
-                    "MODE_NORMAL native financial recalculation has no confirmed contract"
-                )
-            )
+        """Invokes the PORTAL'S OWN calculation functions.
 
+        Both workflows are supported now. Mode Normal used to abort with
+        NativeCalculationUnconfirmed unconditionally, on the belief that no
+        mechanism was known -- but 9a2c57c contains one that was exercised
+        successfully against real dossiers (CalculerMontantDommage,
+        CalculerMntArrete, CalculerMontantTTC, CalculerMontantVetuste plus
+        an event sweep), and PEC's DevisCalculerMontantCharge() likewise
+        comes from 8e5e4e6.
+
+        No mock endpoint is involved. The previous implementation required
+        a POST to /_mock/pec/native_calculation returning a JSON envelope;
+        that endpoint exists only in this repository's mock and the real
+        portal computes in the page. What is asserted instead is that the
+        function was actually present and ran -- a portal that does not
+        expose it fails closed rather than silently skipping the step.
+
+        This never writes the charge split. #MontantChargeMutuelle and
+        #MontantChargeSocietaire are the portal's to compute and are only
+        ever read back (BUSINESS_RULES.md B.3), even though the golden
+        Mode Normal source wrote them directly.
+        """
+        self._ensure_open()
         await self._preflight_before_mutation()
 
+        driver = (
+            self._normal_driver
+            if self._writer_plan.repair_workflow is RepairWorkflow.MODE_NORMAL
+            else self._pec_driver
+        )
         try:
-            await self._page.evaluate(_DISPATCH_CHANGE_JS, "DevisTvaRecupI")
+            result = await driver.trigger_native_calculations()
         except Exception:
-            pass
-
-        try:
-            async with self._page.expect_response(
-                lambda r: r.url.endswith("/_mock/pec/native_calculation") and r.request.method == "POST",
-                timeout=5000,
-            ) as response_info:
-                await self._page.evaluate("DevisCalculerMontantCharge()")
-            response = await response_info.value
-        except Exception as exc:
-            await self._terminal_abort(NativeCalculationMissing("no native-calculation response observed"))
-
-        try:
-            body = await response.json()
-        except Exception as exc:
-            await self._terminal_abort(NativeCalculationMissing("native-calculation response body was not JSON"))
-
-        if body.get("state") != "success":
-            reason = _map_reason_code(body.get("reason"))
-            if body.get("reason") == "MISSING_CALCULATION_RESULT":
-                await self._terminal_abort(NativeCalculationMissing(reason))
-            await self._terminal_abort(NativeCalculationFailed(reason))
-
-        if "calculation_version" not in body or "expected" not in body:
             await self._terminal_abort(
-                NativeCalculationIncomplete("native-calculation response missing calculation_version/expected")
+                NativeCalculationMissing("the portal's calculation functions could not be invoked")
             )
 
-        try:
-            version = _require_valid_calculation_version(body["calculation_version"])
-        except ValueError as exc:
-            await self._terminal_abort(NativeCalculationMalformed("calculation_version is not a valid positive integer"))
+        if self._writer_plan.repair_workflow is RepairWorkflow.GARAGE_CONVENTIONNE:
+            state = (result or {}).get("devisCalc")
+            if state == "not_present":
+                await self._terminal_abort(
+                    NativeCalculationMissing("DevisCalculerMontantCharge is not present on this page")
+                )
+            if state != "executed":
+                await self._terminal_abort(
+                    NativeCalculationFailed("DevisCalculerMontantCharge did not complete")
+                )
 
         try:
-            expected = parse_financial_summary(body["expected"])
-        except WriteAborted as exc:
-            await self._terminal_abort(exc)
+            summary = _financial_summary_from_dom(await driver.read_financial_summary())
+        except Exception:
+            await self._terminal_abort(
+                NativeCalculationIncomplete("the portal's financial summary could not be read")
+            )
+        self._ledger.record_native_calculation(summary)
 
-        try:
-            self._ledger.record_trigger(version, expected)
-        except NativeCalculationStale as exc:
-            await self._terminal_abort(exc)
+    async def read_financial_summary(self):
+        """The portal's own summary, plus the TVA-recoverable toggle.
 
-    async def _read_financial_summary_dom(self) -> FinancialSummary:
-        first = await self._page.evaluate(_READ_FINANCIAL_SUMMARY_JS)
-        second = await self._page.evaluate(_READ_FINANCIAL_SUMMARY_JS)
-        if first != second:
-            raise NativeCalculationMalformed("financial summary DOM read was unstable (torn read)")
-        return parse_financial_summary(first)
-
-    async def read_financial_summary(self) -> Tuple[FinancialSummary, TvaRecuperableContext]:
+        Reads the REAL portal ids the golden commits used. The previous
+        implementation pulled seven of nine values from
+        `[data-mock-only-*]` attributes, so this method could never have
+        worked against SinAuto at all."""
         self._ensure_open()
+        driver = (
+            self._normal_driver
+            if self._writer_plan.repair_workflow is RepairWorkflow.MODE_NORMAL
+            else self._pec_driver
+        )
         try:
-            summary = await self._read_financial_summary_dom()
-            checked = await self._page.evaluate(_READ_TVA_RECUPERABLE_TOGGLE_JS)
-        except WriteAborted as exc:
-            await self._terminal_abort(exc)
-        except Exception as exc:
-            await self._terminal_abort(NativeCalculationMalformed("could not read the financial summary DOM"))
-        return summary, TvaRecuperableContext(checked=bool(checked))
+            values = await driver.read_financial_summary()
+            summary = _financial_summary_from_dom(values)
+        except Exception:
+            await self._terminal_abort(
+                NativeCalculationIncomplete("the portal's financial summary could not be read")
+            )
+        try:
+            tva_recuperable = await self._page.evaluate(_READ_TVA_RECUPERABLE_TOGGLE_JS)
+        except Exception:
+            tva_recuperable = None
+        return summary, tva_recuperable
 
     async def verify_financial_summary(self) -> FinancialSummary:
         self._ensure_open()
-        summary, _ = await self.read_financial_summary()
+        driver = (
+            self._normal_driver
+            if self._writer_plan.repair_workflow is RepairWorkflow.MODE_NORMAL
+            else self._pec_driver
+        )
+        try:
+            # Read INDEPENDENTLY -- never the value captured at trigger time.
+            summary = _financial_summary_from_dom(await driver.read_financial_summary())
+        except Exception:
+            await self._terminal_abort(
+                NativeCalculationIncomplete("the portal's financial summary could not be re-read")
+            )
         try:
             self._ledger.verify_fresh(summary)
         except WriteAborted as exc:
@@ -1346,19 +1370,33 @@ async def open_verified_writer(
         require_workflow_agreement(writer_plan.repair_workflow, observed_workflow)
 
         if writer_plan.repair_workflow is RepairWorkflow.GARAGE_CONVENTIONNE:
-            rows = await _fetch_rows_during_construction(page, allowed_host, read_rows_route)
-            resolved_ids: set = set()
-            for intent in writer_plan.row_intents:
-                matches = [r for r in rows if str(r.get("IdRubrique")) == intent.rubrique_id.value]
-                if len(matches) != 1:
-                    raise RowAmbiguous("preflight did not find exactly one existing row for a planned rubrique")
-                id_devis_det = matches[0].get("IdDevisDet")
-                if not isinstance(id_devis_det, int) or isinstance(id_devis_det, bool):
-                    raise RowMismatch("preflight resolved a malformed IdDevisDet")
-                if id_devis_det in resolved_ids:
-                    raise RowAmbiguous("preflight resolved a duplicate IdDevisDet across planned rubriques")
-                resolved_ids.add(id_devis_det)
-                pec_row_map[intent.rubrique_id.value] = id_devis_det
+            # Live-tested PEC preflight recovered from 8e5e4e6. The garage's
+            # rows are matched by their DISPLAYED LABEL -- exact, then a
+            # known alias, then a substring relation -- because the real
+            # Table 2 does not expose an IdRubrique or IdDevisDet per row.
+            # The previous implementation required both, which is a
+            # convenience this repository's mock invented.
+            #
+            # All-or-nothing, and BEFORE write is activated: if one planned
+            # rubrique has no row, the writer never becomes usable at all.
+            # Half-editing a dossier because the fourth line had no match is
+            # worse than editing none of it, and the portal has no undo.
+            pec_driver = PecLiveDriver(page)
+            if not await pec_driver.table_present():
+                raise RowAmbiguous("Table 2 (#DevisDetTableVal) is not present on this mission")
+            table_rows = await pec_driver.enumerate_rows()
+            if not table_rows:
+                raise RowAmbiguous("Table 2 is present but has no rows to edit")
+            planned = [
+                (intent.rubrique_id.value, writer_plan.label_for(intent.rubrique_id))
+                for intent in writer_plan.row_intents
+            ]
+            try:
+                matches = match_all_rubriques(planned, table_rows)
+            except UnmatchedRubrique as exc:
+                raise RowAmbiguous(str(exc)) from exc
+            for match in matches:
+                pec_row_map[match["rubrique_id"]] = match["target_label"]
 
         controller.activate_write_once()
     except Exception:

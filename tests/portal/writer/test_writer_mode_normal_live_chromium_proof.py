@@ -1,14 +1,18 @@
 """
 INC-09B (round-3 corrected) -- Mode Normal real-Chromium proof: real
 search+open against the SYNTHETIC NORMAL mission's own identity (item
-A.2: 77001-C-3 / 699001 / 612001 -- never the PEC mission's), real
-DOM-driven add via the scoped Ajouter locator and a set-difference-based
-new-row identification (never document.querySelector(...first)), a
-real fresh-rows read-before-write and read-after-write, exact
-HTTP-status+state-field validated createRapportDefDet -- then
-trigger_native_recalc() must raise NativeCalculationUnconfirmed and
-terminally abort the writer. This proof never claims
-READY_FOR_HUMAN_REVIEW or calculation success for Mode Normal.
+A.2: 77001-C-3 / 699001 / 612001 -- never the PEC mission's), the GOLDEN
+DOM lifecycle recovered from 9a2c57c -- #VehRepareI, the real Ajouter
+control, the unsuffixed editing-row fields and the 7th-column checkmark --
+followed by a fresh read-back.
+
+UPDATED for the golden port. This proof previously asserted that
+trigger_native_recalc() raises NativeCalculationUnconfirmed, and required
+an HTTP-status+state-field validated createRapportDefDet. Neither holds
+any more: 9a2c57c contains a Mode Normal calculation mechanism that was
+exercised successfully against real dossiers, and createRapportDefDet
+appears in NEITHER golden commit, so the write is no longer gated on it.
+The read-back is now the evidence that the row landed.
 """
 
 import pytest
@@ -17,7 +21,6 @@ from mcma.domain.enums import RepairWorkflow
 from mcma.domain.values import RubriqueId
 from mcma.portal.capabilities import SearchIdentifiers
 from mcma.portal.writer import (
-    NativeCalculationUnconfirmed,
     UnplannedRubrique,
     WriteAborted,
     WriterPlanData,
@@ -78,12 +81,13 @@ async def _scenario():
 
             await writer.verify_row(RubriqueId("3"))
 
-            with pytest.raises(NativeCalculationUnconfirmed):
-                await writer.trigger_native_recalc()
-
-            # Terminally aborted -- no retry, no further page interaction.
-            with pytest.raises(WriteAborted):
-                await writer.add_normal_row(RubriqueId("3"))
+            # The golden Mode Normal calculation mechanism now runs: the
+            # portal's own Calculer* functions are invoked in the page and
+            # the summary it computed is read back. Nothing here writes
+            # the charge split.
+            await writer.trigger_native_recalc()
+            summary = await writer.verify_financial_summary()
+            assert summary is not None
         finally:
             await browser.close()
 

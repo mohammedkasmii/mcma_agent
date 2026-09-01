@@ -90,13 +90,20 @@ def _normal_happy_page_factory():
 
 
 def _pec_happy_page_factory(preflight_rows=None):
-    preflight_rows = preflight_rows if preflight_rows is not None else [{"IdRubrique": "3", "IdDevisDet": 1}]
+    # Golden Table 2 shape: an index and the DISPLAYED label. The real
+    # table exposes no IdRubrique/IdDevisDet per row -- that was a mock
+    # convenience, and PEC matches on the label instead.
+    preflight_rows = (
+        preflight_rows
+        if preflight_rows is not None
+        else [{"index": 0, "rubrique_label": "TOTAL PIECES OCCASIONS / RECUPERABLES"}]
+    )
     return FakePage(
         evaluate_results=[
             {"data": [{"IdMission": 532805, "Matricule": "34602-B-7", "ReferenceMission": "R1", "Societaire": "S"}]},
             {"registration": "34602-B-7", "id_sinistre": "534660"},
             {"normal": False, "pec": True},
-            {"data": preflight_rows},
+            preflight_rows,
         ]
     )
 
@@ -295,7 +302,10 @@ def test_pec_preflight_succeeds_during_construction_and_caches_the_mapping():
             writer_account=MCMA_WRITER_ACCOUNT,
         )
     )
-    assert writer._pec_row_map == {"3": 1}
+    # The map now holds the DISPLAYED LABEL, which is what the row is
+    # re-located by after every redraw. The old IdDevisDet integer came
+    # from a JSON endpoint the real portal does not have.
+    assert writer._pec_row_map == {"3": "TOTAL PIECES OCCASIONS / RECUPERABLES"}
 
 
 def test_pec_preflight_zero_matches_aborts_construction_and_closes_context():
@@ -310,23 +320,50 @@ def test_pec_preflight_zero_matches_aborts_construction_and_closes_context():
     assert browser.contexts_created[0].closed_count == 1
 
 
-def test_pec_preflight_duplicate_matches_aborts_construction():
-    dup_rows = [{"IdRubrique": "3", "IdDevisDet": 1}, {"IdRubrique": "3", "IdDevisDet": 2}]
+def test_pec_preflight_never_lets_two_rubriques_share_one_row():
+    """The golden `used_indices` guarantee, which replaced duplicate-id
+    detection: a row consumed by one planned rubrique is not offered to
+    the next. With two identically-labelled rows and ONE planned
+    rubrique, exactly one row is taken and construction succeeds -- the
+    old test asserted an ambiguity that only existed because the mock
+    handed out IdDevisDet integers."""
+    dup_rows = [
+        {"index": 0, "rubrique_label": "TOTAL PIECES OCCASIONS / RECUPERABLES"},
+        {"index": 1, "rubrique_label": "TOTAL PIECES OCCASIONS / RECUPERABLES"},
+    ]
     browser = FakeBrowser(context_factory=lambda: FakeContext(lambda: _pec_happy_page_factory(preflight_rows=dup_rows)))
-    with pytest.raises(RowAmbiguous):
-        run_async(
-            open_verified_writer(
-                browser, SyntheticLeaseHandle(), PEC_IDENTITY, PEC_PLAN, PEC_IDENTIFIERS, PEC_HAPPY_PATH_CONTRACTS, ALLOWED_HOST,
-                writer_account=MCMA_WRITER_ACCOUNT,
-            )
+    writer = run_async(
+        open_verified_writer(
+            browser, SyntheticLeaseHandle(), PEC_IDENTITY, PEC_PLAN, PEC_IDENTIFIERS, PEC_HAPPY_PATH_CONTRACTS, ALLOWED_HOST,
+            writer_account=MCMA_WRITER_ACCOUNT,
         )
-    assert browser.contexts_created[0].closed_count == 1
+    )
+    assert writer._pec_row_map == {"3": "TOTAL PIECES OCCASIONS / RECUPERABLES"}
 
 
-def test_pec_preflight_malformed_id_devis_det_aborts_construction():
-    bad_rows = [{"IdRubrique": "3", "IdDevisDet": "not-an-int"}]
+def test_used_indices_stops_two_planned_rubriques_consuming_one_row():
+    """The same guarantee at the matching level, where two planned
+    rubriques compete for a single row: the second finds nothing and the
+    whole preflight fails closed."""
+    from mcma.portal.pec_live import UnmatchedRubrique, match_all_rubriques
+
+    rows = [{"index": 0, "rubrique_label": "TOTAL PIECES OCCASIONS / RECUPERABLES"}]
+    with pytest.raises(UnmatchedRubrique):
+        match_all_rubriques(
+            [("3", "TOTAL PIECES OCCASIONS / RECUPERABLES"),
+             ("3", "TOTAL PIECES OCCASIONS / RECUPERABLES")],
+            rows,
+        )
+
+
+def test_pec_preflight_refuses_construction_when_a_planned_row_is_absent():
+    """All-or-nothing, and BEFORE write is activated. This replaced the
+    malformed-IdDevisDet check: with no ids on the real table, the thing
+    that can go wrong is a planned rubrique having no row, and the writer
+    must never become usable in that state."""
+    bad_rows = [{"index": 0, "rubrique_label": "SOMETHING ENTIRELY UNRELATED"}]
     browser = FakeBrowser(context_factory=lambda: FakeContext(lambda: _pec_happy_page_factory(preflight_rows=bad_rows)))
-    with pytest.raises(RowMismatch):
+    with pytest.raises(RowAmbiguous):
         run_async(
             open_verified_writer(
                 browser, SyntheticLeaseHandle(), PEC_IDENTITY, PEC_PLAN, PEC_IDENTIFIERS, PEC_HAPPY_PATH_CONTRACTS, ALLOWED_HOST,

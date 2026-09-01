@@ -207,15 +207,32 @@ class SyntheticLeaseHandle:
             raise LeaseInvalid(self.account_id)
 
 
+class _FakeLocator:
+    def __init__(self, count):
+        self._count = count
+
+    @property
+    def first(self):
+        return self
+
+    async def count(self):
+        return self._count
+
+
 class FakePage:
     """Records goto()/evaluate() calls; queued results are popped in
-    order. locator()/expect_response() are exercised only by the real
-    Chromium proofs (a real Page), never by these fake-based unit tests --
-    open_verified_writer's construction sequence never calls them."""
+    order.
 
-    def __init__(self, evaluate_results=None, goto_results=None):
+    locator() exists because the golden PEC preflight checks that Table 2
+    is present before enumerating it -- the previous construction path
+    fetched a JSON endpoint and never touched a locator. It returns a
+    count only; expect_response() remains the real Chromium proofs' job."""
+
+    def __init__(self, evaluate_results=None, goto_results=None, locator_count=1):
         self.goto_calls = []
         self.evaluate_calls = []
+        self.locator_calls = []
+        self._locator_count = locator_count
         self._evaluate_results = list(evaluate_results) if evaluate_results is not None else None
         self._goto_results = list(goto_results) if goto_results is not None else None
 
@@ -225,6 +242,10 @@ class FakePage:
             result = self._goto_results.pop(0)
             if isinstance(result, Exception):
                 raise result
+
+    def locator(self, selector):
+        self.locator_calls.append(selector)
+        return _FakeLocator(self._locator_count)
 
     async def evaluate(self, script, arg=None):
         self.evaluate_calls.append((script, arg))
