@@ -1,8 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { AccountsLoadState, PortalAccount } from "@shared/types";
 import type { ApiError } from "@shared/types";
-import { fetchAccounts } from "@shared/api/accounts";
+import { fetchAccounts, refreshNotifications, startPortalLogin } from "@shared/api/accounts";
+import { claimsQueryKey } from "@features/work-queue/queries";
 import { ApiRequestError } from "@shared/api/client";
 import { responseShapeError } from "@shared/api/errors";
 import type { AccountRailData } from "./useAccountRail";
@@ -62,4 +63,40 @@ export function useAccountResolution(accountId: string | undefined): AccountReso
 
   const account = (query.data ?? []).find((candidate) => candidate.accountId === accountId);
   return account === undefined ? { status: "unknown" } : { status: "resolved", account };
+}
+
+/**
+ * Opening the portal login window for one account.
+ *
+ * No credentials cross this boundary — the mutation carries only the account
+ * in the path. On success the account list is refetched: the connection state
+ * shown to the employee is whatever the backend then reports, never a locally
+ * assumed CONNECTED.
+ */
+export function useStartLogin(accountId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => startPortalLogin(accountId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY });
+    },
+  });
+}
+
+/**
+ * A manual notification refresh for one account.
+ *
+ * Invalidates that account's claims only — a refresh on one agency must not
+ * discard another's rows — and the account list, because the poll can itself
+ * discover that a session has expired.
+ */
+export function useRefreshNotifications(accountId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => refreshNotifications(accountId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: claimsQueryKey(accountId) });
+      await queryClient.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY });
+    },
+  });
 }

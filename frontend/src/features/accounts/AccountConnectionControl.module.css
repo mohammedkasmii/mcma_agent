@@ -1,0 +1,30 @@
+.control {
+  padding: 0 var(--space-3) var(--space-2);
+}
+
+.button {
+  width: 100%;
+  height: 1.75rem;
+  font-size: var(--text-xs);
+  background: var(--surface-rail-item-active);
+  border-color: var(--line-rail);
+  color: var(--ink-on-rail);
+}
+
+.button:hover:not(:disabled) {
+  background: var(--surface-rail);
+}
+
+.hint {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--ink-on-rail-muted);
+}
+
+.error {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--status-reconnect-soft);
+  border-left: var(--marker-width) solid var(--status-reconnect);
+  padding-left: var(--space-2);
+}

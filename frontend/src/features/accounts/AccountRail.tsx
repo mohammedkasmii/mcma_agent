@@ -8,6 +8,7 @@ import {
   formatAccountIdentity,
 } from "@shared/utils/accountIdentity";
 import { accountAgentPath, accountWorkPath } from "@shared/utils/routes";
+import { AccountConnectionControl } from "./AccountConnectionControl";
 import { cx } from "@shared/utils/classNames";
 import styles from "./AccountRail.module.css";
 
@@ -96,6 +97,9 @@ function AccountItem({ account, isActive }: AccountItemProps) {
           {capabilityLabel(account)}
         </StatusBadge>
       </p>
+      {/* Connecting an account is not automating it: every profile gets this,
+          while the agent entry below stays gated on writable. */}
+      <AccountConnectionControl account={account} />
       {isActive ? (
         <ul className={styles.subNav}>
           <li>

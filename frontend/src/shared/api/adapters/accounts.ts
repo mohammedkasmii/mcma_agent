@@ -73,3 +73,33 @@ export function toPortalAccounts(body: unknown): PortalAccount[] {
   if (!Array.isArray(rows)) fail();
   return rows.map(toPortalAccount);
 }
+
+/**
+ * The result of a manual notification refresh.
+ *
+ * `message` is the backend's own employee-facing sentence, taken from its
+ * fixed _REFRESH_MESSAGES allowlist. It is length-bounded here anyway: a
+ * sentence this frontend renders should never be able to grow into a page of
+ * portal text if that allowlist ever changed.
+ */
+export interface RefreshOutcome {
+  readonly outcome: string;
+  readonly message: string;
+}
+
+const REFRESH_MESSAGE_MAX = 200;
+
+export function toRefreshOutcome(body: unknown): RefreshOutcome {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) fail();
+  const record = body as Record<string, unknown>;
+  const outcome = record["outcome"];
+  const message = record["message"];
+  if (typeof outcome !== "string" || outcome.length === 0) fail();
+  return {
+    outcome,
+    message:
+      typeof message === "string" && message.length > 0 && message.length <= REFRESH_MESSAGE_MAX
+        ? message
+        : "Actualisation terminée.",
+  };
+}

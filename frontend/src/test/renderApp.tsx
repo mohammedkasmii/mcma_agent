@@ -34,7 +34,17 @@ export function renderAppAt(initialEntry: string, queryClient?: QueryClient) {
   );
 }
 
-/** Mounts a single component that needs router context but not the shell. */
+/**
+ * Mounts a single component that needs router context but not the shell.
+ *
+ * The query provider is included because rail items now carry their own
+ * connection mutation; a component under test should not have to be composed
+ * differently from how the application composes it.
+ */
 export function renderWithRouter(ui: ReactElement, initialEntry = "/") {
-  return render(<MemoryRouter initialEntries={[initialEntry]}>{ui}</MemoryRouter>);
+  return render(
+    <AppProviders queryClient={createTestQueryClient()}>
+      <MemoryRouter initialEntries={[initialEntry]}>{ui}</MemoryRouter>
+    </AppProviders>,
+  );
 }
