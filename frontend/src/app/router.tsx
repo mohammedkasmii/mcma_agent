@@ -5,6 +5,7 @@ import { OverviewScreen } from "@features/overview/OverviewScreen";
 import { WorkQueueScreen } from "@features/work-queue/WorkQueueScreen";
 import { AgentScreen } from "@features/agent/AgentScreen";
 import { NotFoundScreen } from "./NotFoundScreen";
+import { AccountRoute } from "@features/accounts/AccountRoute";
 import { ROUTES } from "@shared/utils/routes";
 
 /**
@@ -21,8 +22,24 @@ export const appRoutes: RouteObject[] = [
     children: [
       { index: true, element: <Navigate to={ROUTES.overview} replace /> },
       { path: ROUTES.overview, element: <OverviewScreen /> },
-      { path: ROUTES.accountWork, element: <WorkQueueScreen /> },
-      { path: ROUTES.accountAgent, element: <AgentScreen /> },
+      {
+        path: ROUTES.accountWork,
+        element: (
+          <AccountRoute title="File de travail">
+            {(account) => <WorkQueueScreen account={account} />}
+          </AccountRoute>
+        ),
+      },
+      {
+        // requireWritable is the enforcement: a directly typed agent URL for
+        // a read-only account never mounts AgentScreen.
+        path: ROUTES.accountAgent,
+        element: (
+          <AccountRoute title="Agent dossier" requireWritable>
+            {(account) => <AgentScreen account={account} />}
+          </AccountRoute>
+        ),
+      },
       { path: "*", element: <NotFoundScreen /> },
     ],
   },

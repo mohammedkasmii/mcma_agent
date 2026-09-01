@@ -1,4 +1,5 @@
 import type { AccountsLoadState, PortalAccount } from "@shared/types";
+import { useAccountRailData } from "./queries";
 
 export interface AccountRailData {
   readonly state: AccountsLoadState;
@@ -8,12 +9,10 @@ export interface AccountRailData {
 /**
  * The rail's data source.
  *
- * STEP 1 connects to no backend, so this reports the loading state and an
- * empty list. It deliberately returns no invented accounts: a placeholder
- * record here would be indistinguishable from a real portal account in the
- * interface. The TanStack Query call against GET /accounts replaces the body
- * of this hook without any change to AccountRail.
+ * Backed by the single TanStack Query cache entry for GET /accounts, so the
+ * rail, the workspace headers and the route guards all read the same
+ * authoritative list. There is no second account store.
  */
 export function useAccountRail(): AccountRailData {
-  return { state: "loading", accounts: [] };
+  return useAccountRailData();
 }

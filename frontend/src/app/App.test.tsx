@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { screen } from "@testing-library/react";
 import { renderAppAt } from "../test/renderApp";
+import { mockAccounts } from "../test/apiMock";
+
+// Routing is what these cases are about, so the account list is stubbed to a
+// benign empty response rather than left to hit a real network.
+beforeEach(() => {
+  mockAccounts([]);
+});
 
 describe("application routing", () => {
   it("sends the root address to the overview screen", () => {

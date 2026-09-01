@@ -1,11 +1,18 @@
+import type { PortalAccount } from "@shared/types";
 import { AccountWorkspaceHeader } from "@features/accounts/AccountWorkspaceHeader";
 import { EmptyState, Panel } from "@shared/ui";
 
+interface AgentScreenProps {
+  /**
+   * Resolved by the account route guard, which has already established that
+   * the backend marks this account writable. This screen never re-decides
+   * that, and never infers it from the entity name.
+   */
+  readonly account: PortalAccount;
+}
+
 /**
- * Dossier automation for one MCMA account.
- *
- * STEP 1 renders the frame only: no upload control, no plan preparation, no
- * plan review and no execution authorization exist yet.
+ * Dossier automation for one writable account.
  *
  * Wording note for later steps: plan preparation is not a "simulation". It
  * performs no write, but it does read SinAuto for identity verification, so
@@ -16,10 +23,10 @@ import { EmptyState, Panel } from "@shared/ui";
  * The staged workflow is deliberately not collapsed into a single action, so
  * this screen stays empty until each stage can be built as its own step.
  */
-export function AgentScreen() {
+export function AgentScreen({ account }: AgentScreenProps) {
   return (
     <div className="u-stack-5">
-      <AccountWorkspaceHeader title="Agent dossier" account={null} />
+      <AccountWorkspaceHeader title="Agent dossier" resolution={{ status: "resolved", account }} />
 
       <Panel
         title="Automatisation"

@@ -1,18 +1,22 @@
+import type { PortalAccount } from "@shared/types";
 import { AccountWorkspaceHeader } from "@features/accounts/AccountWorkspaceHeader";
 import { EmptyState, Panel } from "@shared/ui";
+
+interface WorkQueueScreenProps {
+  /** Resolved by the account route guard before this screen mounts. */
+  readonly account: PortalAccount;
+}
 
 /**
  * The claims an employee works through for one portal account.
  *
- * STEP 1 renders the frame only. The account is unresolved because the
- * account list is not connected yet, so the header says so instead of
- * showing an identifier. No claim row, status control or note field exists
- * here yet.
+ * Reachable for every account the employee can see, including read-only
+ * ones. The claim list itself is not implemented yet.
  */
-export function WorkQueueScreen() {
+export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
   return (
     <div className="u-stack-5">
-      <AccountWorkspaceHeader title="File de travail" account={null} />
+      <AccountWorkspaceHeader title="File de travail" resolution={{ status: "resolved", account }} />
 
       <Panel
         title="Sinistres"

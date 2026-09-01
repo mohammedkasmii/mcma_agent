@@ -40,6 +40,9 @@ const MESSAGES: Record<string, string> = {
   MAMDA_ACCOUNT_NOT_WRITABLE: "Ce compte est en lecture seule.",
   INTERNAL_ERROR: "Le serveur a rencontré une erreur. Réessayez.",
   NETWORK: "Le serveur est injoignable. Vérifiez que MCMA est démarré.",
+  INVALID_RESPONSE: "Réponse inattendue du serveur. Rechargez la page.",
+  CSRF_UNAVAILABLE: "Jeton de sécurité indisponible. Rechargez la page.",
+  OFF_ORIGIN_REQUEST: "Requête refusée. Rechargez la page.",
 };
 
 /** Only the field this module reads. The rest of the body is ignored. */
@@ -68,4 +71,35 @@ export function normalizeApiError(status: number, body: unknown): ApiError {
 
 export function networkError(): ApiError {
   return { status: 0, code: "NETWORK", message: MESSAGES["NETWORK"] as string };
+}
+
+/**
+ * A request was refused before it was sent because its path did not provably
+ * resolve to this application's own origin.
+ *
+ * The path is never echoed back: it is attacker-influenced input, and an
+ * employee can do nothing with it.
+ */
+export function offOriginError(): ApiError {
+  return {
+    status: 0,
+    code: "OFF_ORIGIN_REQUEST",
+    message: MESSAGES["OFF_ORIGIN_REQUEST"] as string,
+  };
+}
+
+/**
+ * The server answered, but not with something this frontend understands: a
+ * body that is not JSON, or JSON whose shape does not match the contract.
+ *
+ * Raised instead of working with a partially-understood payload. The
+ * offending body is never included — an HTML login page or a portal error
+ * document is exactly the kind of thing that reaches this path.
+ */
+export function responseShapeError(): ApiError {
+  return {
+    status: 0,
+    code: "INVALID_RESPONSE",
+    message: MESSAGES["INVALID_RESPONSE"] as string,
+  };
 }

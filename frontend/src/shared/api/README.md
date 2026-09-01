@@ -1,9 +1,18 @@
 # api
 
-The single place requests are made and errors are shaped. UI components never
-call `fetch` directly.
+The single place HTTP happens and the single place errors are shaped. UI
+components never call `fetch` and never see a snake_case response object.
 
-STEP 1 contains `errors.ts` only: a pure normalizer with no request code, no
-network access and no side effects. It maps a backend error `code` to a
-sentence written for an employee, so raw server text, exception detail or
-portal HTML can never reach the interface.
+- `client.ts` — same-origin requests with `credentials: "include"`, central
+  JSON parsing, and every failure normalized into an `ApiError` carried by
+  `ApiRequestError`. State-changing methods attach the `X-CSRF-Token` header;
+  no application code sends one yet.
+- `csrf.ts` — reads the non-HttpOnly `mcma_csrf` cookie. The session cookie is
+  HttpOnly and is never read here.
+- `errors.ts` — pure normalizer. Only the backend's stable `error` code is
+  trusted; the server's own message, `correlation_id`, portal HTML and any
+  unexpected body are dropped.
+- `wire.ts` — the backend's snake_case shapes, consumed only by adapters.
+- `adapters/` — the wire-to-frontend mapping. Validates rather than casts and
+  fails closed on anything it does not understand.
+- `accounts.ts` — GET /accounts, the one endpoint called so far.
