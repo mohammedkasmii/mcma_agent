@@ -1,0 +1,74 @@
+.shell {
+  display: grid;
+  grid-template-columns: var(--rail-width) minmax(0, 1fr);
+  grid-template-rows: var(--topbar-height) minmax(0, 1fr);
+  grid-template-areas:
+    "topbar topbar"
+    "rail content";
+  height: 100%;
+}
+
+.topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 0 var(--space-5);
+  background: var(--surface-rail);
+  color: var(--ink-on-rail);
+  border-bottom: var(--border-width) solid var(--line-rail);
+}
+
+.brand {
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight);
+}
+
+.environment {
+  font-size: var(--text-xs);
+  color: var(--ink-on-rail-muted);
+}
+
+.skipLink {
+  position: absolute;
+  left: var(--space-3);
+  top: -3rem;
+  z-index: 2;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-raised);
+  color: var(--ink-strong);
+  border-radius: var(--radius-sm);
+}
+
+.skipLink:focus-visible {
+  top: var(--space-2);
+}
+
+.content {
+  grid-area: content;
+  overflow-y: auto;
+  padding: var(--space-6) var(--space-6) var(--space-7);
+}
+
+.contentInner {
+  max-width: var(--content-max);
+}
+
+/* Below tablet width the rail stacks above the content instead of
+   competing with it for horizontal space. */
+@media (max-width: 60rem) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: var(--topbar-height) auto minmax(0, 1fr);
+    grid-template-areas:
+      "topbar"
+      "rail"
+      "content";
+  }
+
+  .content {
+    padding: var(--space-5) var(--space-4) var(--space-6);
+  }
+}

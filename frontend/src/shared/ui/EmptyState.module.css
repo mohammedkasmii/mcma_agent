@@ -1,0 +1,13 @@
+.root {
+  border: var(--border-width) dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-5);
+  background: var(--surface-sunken);
+}
+
+.title {
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  color: var(--ink-strong);
+  margin-bottom: var(--space-1);
+}

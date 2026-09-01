@@ -45,3 +45,8 @@ input_documents/*
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Frontend V2 build artefacts (frontend/)
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/

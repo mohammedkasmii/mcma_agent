@@ -1,0 +1,132 @@
+/*
+ * MCMA Operations — design tokens.
+ *
+ * One source of truth for colour, type, spacing and status semantics.
+ * Components reference these variables and never literal hex values, so a
+ * status colour can never drift between two screens.
+ *
+ * Fonts are system stacks only: the application is local-first and the
+ * Content-Security-Policy forbids remote font origins.
+ *
+ * Status colour is never the sole signal. Every status token is paired
+ * with a text label in the UI, and the account rail additionally encodes
+ * connection state as a marker shape.
+ */
+
+:root {
+  /* --- surfaces -------------------------------------------------------- */
+  /* A cool paper ground with white working surfaces: claim tables are read
+     for hours at a time, so the contrast stays low outside the data. */
+  --surface-ground: #eef0f3;
+  --surface-raised: #ffffff;
+  --surface-rail: #1c2430;
+  --surface-rail-item: #26313f;
+  /* The account currently open in the rail. */
+  --surface-rail-item-active: #2f3d4e;
+  --surface-sunken: #f5f6f8;
+  --surface-overlay: rgba(15, 21, 28, 0.45);
+
+  /* --- ink ------------------------------------------------------------- */
+  --ink-strong: #12171e;
+  --ink: #2b333d;
+  --ink-muted: #5d6875;
+  --ink-faint: #8a94a1;
+  --ink-on-rail: #eef2f7;
+  --ink-on-rail-muted: #9aa7b8;
+  --ink-inverted: #ffffff;
+
+  /* --- lines ----------------------------------------------------------- */
+  --line-hairline: #dfe3e8;
+  --line-strong: #c4cbd4;
+  --line-rail: #313d4d;
+
+  /* --- accent ---------------------------------------------------------- */
+  /* Deep verdigris. Used for the active account and primary actions only —
+     it is the single loud colour in the interface. */
+  --accent: #10504c;
+  --accent-hover: #0b3d3a;
+  --accent-soft: #dcebe8;
+  --accent-on: #ffffff;
+
+  /* --- status ---------------------------------------------------------- */
+  --status-connected: #1c6b45;
+  --status-connected-soft: #dff0e6;
+  --status-reconnect: #8a5a06;
+  --status-reconnect-soft: #fbeed6;
+  --status-readonly: #4c5666;
+  --status-readonly-soft: #e6e9ee;
+  --status-running: #1d4f8f;
+  --status-running-soft: #dee8f6;
+  --status-review: #8c3a12;
+  --status-review-soft: #fae2d6;
+  --status-failed: #a3231c;
+  --status-failed-soft: #f8dedd;
+  --status-completed: #1c6b45;
+  --status-completed-soft: #dff0e6;
+  --status-idle: #6b7583;
+  --status-idle-soft: #eceff3;
+
+  /* --- type ------------------------------------------------------------ */
+  --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --font-data: ui-monospace, "SFMono-Regular", "Cascadia Mono", "Segoe UI Mono",
+    "Roboto Mono", Menlo, Consolas, monospace;
+
+  --text-xs: 0.6875rem; /* 11px — rail meta, badges */
+  --text-sm: 0.8125rem; /* 13px — table body, secondary */
+  --text-base: 0.9375rem; /* 15px — body */
+  --text-md: 1.0625rem; /* 17px — section titles */
+  --text-lg: 1.375rem; /* 22px — screen titles */
+  --text-xl: 1.75rem; /* 28px — figures */
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+  --tracking-tight: -0.01em;
+  --tracking-wide: 0.02em;
+
+  /* --- space ----------------------------------------------------------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  /* --- shape ----------------------------------------------------------- */
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --radius-pill: 999px;
+  --border-width: 1px;
+  --marker-width: 3px;
+
+  /* --- layout ---------------------------------------------------------- */
+  --rail-width: 15.5rem;
+  --topbar-height: 3.25rem;
+  --content-max: 78rem;
+  --measure: 68ch;
+
+  /* --- elevation ------------------------------------------------------- */
+  /* Restrained: a hairline does most of the separation work. */
+  --shadow-raised: 0 1px 2px rgba(18, 23, 30, 0.06);
+  --shadow-overlay: 0 8px 24px rgba(18, 23, 30, 0.18);
+
+  /* --- focus ----------------------------------------------------------- */
+  --focus-ring: #1d4f8f;
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* --- motion ---------------------------------------------------------- */
+  --duration-fast: 90ms;
+  --easing-standard: cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+  }
+}

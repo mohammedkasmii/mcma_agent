@@ -1,0 +1,56 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  height: 1.25rem;
+  border: var(--border-width) solid currentColor;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-wide);
+  white-space: nowrap;
+}
+
+.connected {
+  color: var(--status-connected);
+  background: var(--status-connected-soft);
+}
+
+.reconnect {
+  color: var(--status-reconnect);
+  background: var(--status-reconnect-soft);
+  border-style: dashed;
+}
+
+.readonly {
+  color: var(--status-readonly);
+  background: var(--status-readonly-soft);
+  border-style: dotted;
+}
+
+.running {
+  color: var(--status-running);
+  background: var(--status-running-soft);
+}
+
+.review {
+  color: var(--status-review);
+  background: var(--status-review-soft);
+  border-width: 2px;
+}
+
+.failed {
+  color: var(--status-failed);
+  background: var(--status-failed-soft);
+}
+
+.completed {
+  color: var(--status-completed);
+  background: var(--status-completed-soft);
+}
+
+.idle {
+  color: var(--status-idle);
+  background: var(--status-idle-soft);
+}

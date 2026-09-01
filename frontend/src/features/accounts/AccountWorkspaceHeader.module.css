@@ -1,0 +1,22 @@
+.header {
+  margin-bottom: var(--space-5);
+}
+
+.identityRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.identity {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  color: var(--accent);
+}
+
+.identityPending {
+  font-size: var(--text-sm);
+  color: var(--ink-faint);
+}

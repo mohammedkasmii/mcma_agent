@@ -1,0 +1,130 @@
+.rail {
+  grid-area: rail;
+  background: var(--surface-rail);
+  color: var(--ink-on-rail);
+  border-right: var(--border-width) solid var(--line-rail);
+  padding: var(--space-4) var(--space-3) var(--space-6);
+  overflow-y: auto;
+}
+
+.railTitle {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  color: var(--ink-on-rail-muted);
+  padding: 0 var(--space-2) var(--space-3);
+}
+
+.list,
+.loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.loadingItem {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--surface-rail-item);
+  color: var(--ink-on-rail);
+}
+
+.notice {
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--ink-on-rail-muted);
+}
+
+.item {
+  border-radius: var(--radius-sm);
+  background: var(--surface-rail-item);
+  border-left: var(--marker-width) solid transparent;
+  padding-bottom: var(--space-2);
+}
+
+/* The open account is marked by the accent edge AND by carrying the only
+   expanded sub-navigation in the rail — never by colour alone. */
+.itemActive {
+  border-left-color: var(--accent-soft);
+  background: var(--surface-rail-item-active);
+}
+
+.itemLink {
+  display: block;
+  padding: var(--space-3);
+}
+
+.identity {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+}
+
+.label {
+  display: block;
+  font-size: var(--text-xs);
+  color: var(--ink-on-rail-muted);
+  margin-top: var(--space-1);
+}
+
+.state {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--ink-on-rail);
+}
+
+.marker {
+  width: 0.5rem;
+  height: 0.5rem;
+  border: 1px solid currentColor;
+  flex: none;
+}
+
+/* Three distinguishable shapes: filled square, half-filled, hollow circle. */
+.solid {
+  background: currentColor;
+}
+
+.half {
+  background: linear-gradient(to right, currentColor 50%, transparent 50%);
+}
+
+.hollow {
+  border-radius: var(--radius-pill);
+  background: transparent;
+}
+
+.capability {
+  padding: 0 var(--space-3);
+}
+
+.subNav {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-2);
+  border-top: var(--border-width) solid var(--line-rail);
+}
+
+.subLink {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--ink-on-rail-muted);
+}
+
+.subLink:hover {
+  color: var(--ink-on-rail);
+}
+
+.subLink[aria-current="page"] {
+  color: var(--ink-on-rail);
+  font-weight: var(--weight-medium);
+  box-shadow: inset var(--marker-width) 0 0 var(--accent-soft);
+}

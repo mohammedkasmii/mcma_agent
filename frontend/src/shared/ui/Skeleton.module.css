@@ -1,0 +1,19 @@
+.bar {
+  display: block;
+  height: 0.5rem;
+  border-radius: var(--radius-sm);
+  background: currentColor;
+  opacity: 0.18;
+}
+
+.sm {
+  width: 30%;
+}
+
+.md {
+  width: 62%;
+}
+
+.lg {
+  width: 88%;
+}
