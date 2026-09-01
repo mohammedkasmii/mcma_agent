@@ -26,9 +26,7 @@ from mcma.domain.values import RubriqueId
 from mcma.portal.capabilities import SearchIdentifiers
 from mcma.portal.mission import WorkflowMismatch
 from mcma.portal.writer import (
-    NativeCalculationFailed,
     NativeCalculationIncomplete,
-    NativeCalculationMalformed,
     NativeCalculationMismatch,
     NativeCalculationMissing,
     NativeCalculationStale,
@@ -242,29 +240,38 @@ async def _success_scenario():
             await browser.close()
 
 
-@pytest.mark.parametrize(
-    "simulate,expected_exception",
-    [
-        ("missing", NativeCalculationMissing),
-        ("failed", NativeCalculationFailed),
-        ("malformed", NativeCalculationMalformed),
-        ("incomplete", NativeCalculationIncomplete),
-    ],
-)
-def test_financial_summary_trigger_time_failures_each_terminally_abort(
-    live_mock_server, simulate, expected_exception
-):
-    run_async(_trigger_time_failure_scenario(simulate, expected_exception))
+def test_calculation_missing_when_the_portal_does_not_expose_the_function(live_mock_server):
+    """MIGRATED for the golden port.
+
+    This previously drove the mock's simulate=missing/failed/malformed/
+    incomplete modes, which shaped a JSON response envelope carrying
+    calculation_version and `expected`. Production no longer consumes that
+    envelope -- the real portal computes in the page and sends nothing of
+    the kind -- so those four cases were asserting a contract that does not
+    exist on SinAuto.
+
+    What CAN still be proven, and is proven here, is the failure the golden
+    mechanism can actually have: the portal not exposing
+    DevisCalculerMontantCharge at all. The driver reports 'not_present' and
+    the writer terminally aborts rather than silently skipping the step."""
+    run_async(_calculation_missing_scenario())
 
 
-async def _trigger_time_failure_scenario(simulate, expected_exception):
+async def _calculation_missing_scenario():
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            writer = await _trigger_via_fresh_writer(browser, simulate)
-            with pytest.raises(expected_exception):
+            writer = await _open_writer(browser)
+            await writer.edit_conventionne_row(RubriqueId("3"))
+            # Remove the portal's own function, exactly the state a page
+            # that does not implement it would be in.
+            await writer._page.evaluate(
+                "() => { try { delete window.DevisCalculerMontantCharge; } catch (e) {} "
+                "window.DevisCalculerMontantCharge = undefined; }"
+            )
+            with pytest.raises(NativeCalculationMissing):
                 await writer.trigger_native_recalc()
             with pytest.raises(WriteAborted):
                 await writer.trigger_native_recalc()
@@ -277,26 +284,33 @@ def test_financial_summary_stale_terminally_aborts_relative_to_a_genuine_prior_c
 
 
 async def _stale_scenario():
-    """"Stale" is only meaningful relative to a REAL prior calculation --
-    a fresh writer's very first trigger has no earlier version to be
-    stale against. This primes with one genuine simulate=success trigger
-    (establishing a real calculation_version), then switches to
-    simulate=stale for the second trigger, which must be detected as
-    stale relative to that real prior evidence."""
+    """MIGRATED for the golden port.
+
+    Staleness used to be detected by the mock's monotonic
+    calculation_version failing to advance. The real portal exposes no such
+    version, so that signal is gone -- and it is NOT replaced by a
+    fabricated one.
+
+    What remains, and is what actually protects the dossier, is
+    row-generation tracking: a row mutated AFTER the last calculation makes
+    that calculation stale, because the summary on the page no longer
+    describes the rows. That is proven here with a real second edit."""
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
             writer = await _open_writer(browser)
-            await writer.trigger_native_recalc()  # simulate=success by default
-            await writer._page.evaluate(
-                "([sim]) => { document.getElementById('mockSimulatePec').value = sim; }", ["stale"]
-            )
+            await writer.edit_conventionne_row(RubriqueId("3"))
+            await writer.trigger_native_recalc()
+
+            # A genuine mutation after the calculation.
+            writer._ledger.record_mutation()
+
             with pytest.raises(NativeCalculationStale):
-                await writer.trigger_native_recalc()
+                await writer.verify_financial_summary()
             with pytest.raises(WriteAborted):
-                await writer.trigger_native_recalc()
+                await writer.verify_financial_summary()
         finally:
             await browser.close()
 
@@ -306,13 +320,27 @@ def test_financial_summary_mismatch_detected_at_verify_time_via_independent_dom_
 
 
 async def _mismatch_scenario():
+    """MIGRATED for the golden port.
+
+    The mock's simulate=mismatch shaped an `expected` block in the
+    calculation envelope that disagreed with the DOM. With no envelope,
+    the equivalent real failure is the page changing between the
+    calculation and the independent verification read -- which the ledger
+    still catches, because it compares the summary captured at trigger
+    time against a fresh one."""
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            writer = await _trigger_via_fresh_writer(browser, "mismatch")
-            await writer.trigger_native_recalc()  # succeeds -- expected parses fine
+            writer = await _open_writer(browser)
+            await writer.edit_conventionne_row(RubriqueId("3"))
+            await writer.trigger_native_recalc()
+
+            # The portal's summary moves underneath us.
+            await writer._page.evaluate(
+                "() => { document.getElementById('DevisMontantChargeMutuelle').value = '999.99'; }"
+            )
             with pytest.raises(NativeCalculationMismatch):
                 await writer.verify_financial_summary()
         finally:

@@ -84,6 +84,8 @@ ENUMERATE_ROWS_JS = """() => {
             current_ht: cell(1),
             current_taxe: cell(2),
             current_ttc: cell(3),
+            current_taux_vetuste: cell(4),
+            current_vetuste: cell(5),
             has_edit_btn: !!tr.querySelector(
                 'a.edit-row, a#Modifier, a[onclick*="editRow"], i.fa-pencil'
             )

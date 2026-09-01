@@ -95,6 +95,7 @@ from urllib.parse import urlsplit
 
 from mcma.core.money import Money
 from mcma.domain.enums import FormFieldSelector, RepairWorkflow
+from mcma.domain.normalize import normalize_text
 from mcma.domain.rubriques import RUBRIQUE_CATALOG
 from mcma.domain.values import FormFieldIntent, RubriqueId
 from mcma.portal.capabilities import LeaseHandle, SearchIdentifiers
@@ -720,16 +721,18 @@ _READ_NORMAL_ROWS_JS = """() => {
         if (tr.querySelector('#MontantHT, #IdRubrique')) return;  // the editing row
         const tds = tr.querySelectorAll('td');
         const cell = i => (tds[i] ? (tds[i].innerText || '').trim() : '');
+        // Column order is the portal's own header: Rubrique | HT | Taxe |
+        // TTC | Taux Vet. | Mt Vet. | Action.
         out.push({
             index: index,
-            IdRubrique: (tr.getAttribute('data-idrubrique') || cell(0)).trim(),
-            rubrique_label: cell(1),
-            MontantHT: cell(2),
-            Taxe: cell(3)
+            rubrique_cell: cell(0),
+            MontantHT: cell(1),
+            Taxe: cell(2)
         });
     });
     return out;
 }"""
+
 
 _DOM_ROW_IDS_JS = """(selector) => Array.from(document.querySelectorAll(selector)).map((tr) => tr.id)"""
 
@@ -883,11 +886,16 @@ class VerifiedMissionWriter:
 
         rows = await self._fetch_rows()
         planned = self._writer_plan.planned_rubrique_values()
+        planned_labels = {
+            normalize_text(self._writer_plan.label_for(i.rubrique_id))
+            for i in self._writer_plan.row_intents
+        }
         for row in rows:
-            if str(row.get("IdRubrique")) not in planned:
+            cell = str(row.get("rubrique_cell", "")).strip()
+            if cell not in planned and normalize_text(cell) not in planned_labels:
                 await self._terminal_abort(UnplannedExistingRow("an unplanned existing row is present"))
 
-        matches = [r for r in rows if str(r.get("IdRubrique")) == rubrique_id.value]
+        matches = [r for r in rows if self._row_matches(r, rubrique_id)]
         if len(matches) == 1:
             existing = matches[0]
             if Money.of(str(existing.get("MontantHT", ""))) == intent.ht and Money.of(
@@ -920,10 +928,14 @@ class VerifiedMissionWriter:
         # Verification is now the ONLY evidence the write landed, so it is
         # exact: the row must exist once, with both amounts equal.
         fresh_rows = await self._fetch_rows()
+        # The first column is whatever the portal DISPLAYS there: the mock
+        # renders the numeric id, the real page renders the label. Matching
+        # on only one of them would pass here and fail against SinAuto, so
+        # both are accepted -- the same reason PEC matches by label.
         persisted = [
             r
             for r in fresh_rows
-            if str(r.get("IdRubrique")) == rubrique_id.value
+            if self._row_matches(r, rubrique_id)
             and Money.of(str(r.get("MontantHT", ""))) == intent.ht
             and Money.of(str(r.get("Taxe", ""))) == intent.tva
         ]
@@ -1009,12 +1021,33 @@ class VerifiedMissionWriter:
 
     # -- Read-back / verification (shared) --------------------------------
 
+    def _row_matches(self, row: dict, rubrique_id: RubriqueId) -> bool:
+        """Does this displayed row belong to this rubrique?
+
+        Mode Normal reads the rendered table, whose first column is
+        whatever the portal PRINTS there -- the numeric id in the mock,
+        the label on the real page. PEC rows carry only a label. Matching
+        on one or the other alone would pass in one environment and fail
+        in the other, so both are accepted, and the label comparison is
+        normalized exactly as PEC's is."""
+        expected_label = normalize_text(self._writer_plan.label_for(rubrique_id))
+        for key in ("rubrique_cell", "rubrique_label", "IdRubrique"):
+            raw = row.get(key)
+            if raw is None:
+                continue
+            value = str(raw).strip()
+            if value == rubrique_id.value:
+                return True
+            if expected_label and normalize_text(value) == expected_label:
+                return True
+        return False
+
     async def read_row(self, rubrique_id: RubriqueId) -> dict:
         """Never a first-row/positional fallback -- zero or multiple
         matches for this rubrique fails closed."""
         self._ensure_open()
         rows = await self._fetch_rows()
-        matches = [r for r in rows if str(r.get("IdRubrique")) == rubrique_id.value]
+        matches = [r for r in rows if self._row_matches(r, rubrique_id)]
         if len(matches) != 1:
             await self._terminal_abort(RowAmbiguous("read_row did not find exactly one matching row"))
         return dict(matches[0])
@@ -1025,12 +1058,17 @@ class VerifiedMissionWriter:
         if intent is None:
             await self._terminal_abort(UnplannedRubrique("rubrique_id is not in the approved plan"))
         row = await self.read_row(rubrique_id)
-        if Money.of(str(row.get("MontantHT", ""))) != intent.ht:
+        # PEC rows come from the golden enumerator (current_ht/current_taxe);
+        # Mode Normal rows from the rendered table (MontantHT/Taxe).
+        ht_raw = row.get("MontantHT", row.get("current_ht", ""))
+        taxe_raw = row.get("Taxe", row.get("current_taxe", ""))
+        if Money.of(str(ht_raw)) != intent.ht:
             await self._terminal_abort(RowReadBackMismatch("MontantHT"))
-        if Money.of(str(row.get("Taxe", ""))) != intent.tva:
+        if Money.of(str(taxe_raw)) != intent.tva:
             await self._terminal_abort(RowReadBackMismatch("Taxe"))
         if self._writer_plan.repair_workflow is RepairWorkflow.GARAGE_CONVENTIONNE:
-            if Money.of(str(row.get("MontantVetuste", ""))) != intent.vetuste:
+            vetuste_raw = row.get("MontantVetuste", row.get("current_vetuste", ""))
+            if Money.of(str(vetuste_raw)) != intent.vetuste:
                 await self._terminal_abort(RowReadBackMismatch("MontantVetuste"))
             ttc = intent.ht + intent.tva
             try:
@@ -1039,7 +1077,8 @@ class VerifiedMissionWriter:
                 expected_rate = None
             if expected_rate is not None:
                 try:
-                    if Decimal(str(row.get("TauxVetuste", ""))) != expected_rate:
+                    taux_raw = row.get("TauxVetuste", row.get("current_taux_vetuste", ""))
+                    if Decimal(str(taux_raw)) != expected_rate:
                         await self._terminal_abort(RowReadBackMismatch("TauxVetuste"))
                 except Exception:
                     await self._terminal_abort(RowReadBackMismatch("TauxVetuste"))

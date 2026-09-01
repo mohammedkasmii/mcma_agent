@@ -521,9 +521,19 @@ __PEC_ORIGINAL_ROWS__
                 </table>
 
                 <div class="summary-box">
+                    <!-- Golden Mode Normal summary ids (9a2c57c). The driver
+                         reads exactly this set after invoking the portal's own
+                         Calculer* functions; MontantTVA, MontantTTC, MontantRemise,
+                         MontantArrete and BaseIndemnite were missing from this
+                         mock entirely, so the summary could not be read at all. -->
                     <label>Mt Reparation:</label> <input type="text" id="MontantReparation" value="0.00">
+                    <label>Mt TVA:</label> <input type="text" id="MontantTVA" value="0.00">
+                    <label>Mt TTC:</label> <input type="text" id="MontantTTC" value="0.00">
                     <label>Franchise:</label> <input type="text" id="MontantFranchise" value="0.00">
+                    <label>Remise:</label> <input type="text" id="MontantRemise" value="0.00">
                     <label>Vetuste Total:</label> <input type="text" id="MontantVetusteTotal" value="0.00">
+                    <label>Mt Arrete:</label> <input type="text" id="MontantArrete" value="0.00" readonly>
+                    <label>Base Indemnite:</label> <input type="text" id="BaseIndemnite" value="0.00" readonly>
                     <br><br>
                     <label>Charge Societaire:</label>
                     <input type="text" id="MontantChargeSocietaire" value="0.00" disabled>
@@ -691,7 +701,10 @@ __PEC_ORIGINAL_ROWS__
         var actionTd = document.createElement("td");
         var check = document.createElement("a");
         check.className = "btn-check";
-        check.innerHTML = "<i class=\"fa-check\">&#10003;</i>";
+        var checkIcon = document.createElement("i");
+        checkIcon.className = "fa-check";
+        checkIcon.textContent = "\u2713";
+        check.appendChild(checkIcon);
         check.onclick = function() { saveNormalRow(tempId); };
         actionTd.appendChild(check); tr.appendChild(actionTd);
 
@@ -783,7 +796,10 @@ __PEC_ORIGINAL_ROWS__
             // Golden pencil selector family.
             pencil.className = "btn-pencil edit-row";
             pencil.setAttribute("title", "Modifier");
-            pencil.innerHTML = "<i class=\"fa-pencil\">&#9998;</i>"; pencil.onclick = (function(id) { return function() { editRowTable2(id); }; })(item.IdDevisDet);
+            var pencilIcon = document.createElement("i");
+            pencilIcon.className = "fa-pencil";
+            pencilIcon.textContent = "\u270e";
+            pencil.appendChild(pencilIcon); pencil.onclick = (function(id) { return function() { editRowTable2(id); }; })(item.IdDevisDet);
             actionTd.appendChild(pencil); tr.appendChild(actionTd);
             tbody.appendChild(tr);
         });
@@ -840,7 +856,10 @@ __PEC_ORIGINAL_ROWS__
         var check = document.createElement("a");
         check.className = "btn-check save-row";
         check.setAttribute("title", "Enregistrer");
-        check.innerHTML = "<i class=\"fa-check\">&#10003;</i>";
+        var checkIcon = document.createElement("i");
+        checkIcon.className = "fa-check";
+        checkIcon.textContent = "\u2713";
+        check.appendChild(checkIcon);
         check.onclick = function() { saveRowTable2(id); };
         actionTd.appendChild(check);
         logHUD("PEC: row " + id + " entered edit mode (exact row only).");
@@ -869,11 +888,11 @@ __PEC_ORIGINAL_ROWS__
 
     function DevisCalculerMontantCharge() {
         var payload = {
-            total_ttc: document.getElementById("mockOnlyTotalTtc").value || "0",
-            total_tva: document.getElementById("mockOnlyTotalTva").value || "0",
-            franchise: document.getElementById("mockOnlyFranchise").value || "0",
-            vetuste: document.getElementById("mockOnlyVetusteTotal").value || "0",
-            remise: document.getElementById("mockOnlyRemise").value || "0",
+            total_ttc: document.getElementById("DevisMontantTTC").value || "0",
+            total_tva: document.getElementById("DevisMontantTVA").value || "0",
+            franchise: document.getElementById("DevisMontantFranchise").value || "0",
+            vetuste: document.getElementById("DevisMontantVetusteTotal").value || "0",
+            remise: document.getElementById("DevisMontantRemise").value || "0",
             part_resp: "100",
             simulate: document.getElementById("mockSimulatePec").value
         };
@@ -882,13 +901,13 @@ __PEC_ORIGINAL_ROWS__
                 var applied = res.apply_to_dom;
                 document.getElementById("DevisMontantChargeMutuelle").value = applied.montant_charge_mutuelle;
                 document.getElementById("DevisMontantChargeSocietaire").value = applied.montant_charge_societaire;
-                document.getElementById("mockOnlyTotalTva").value = applied.total_tva;
-                document.getElementById("mockOnlyTotalTtc").value = applied.total_ttc;
-                document.getElementById("mockOnlyVetusteTotal").value = applied.vetuste;
-                document.getElementById("mockOnlyFranchise").value = applied.franchise;
-                document.getElementById("mockOnlyRemise").value = applied.remise;
-                if (applied.montant_arrete !== undefined) { document.getElementById("mockOnlyMontantArrete").value = applied.montant_arrete; }
-                if (applied.base_indemnite !== undefined) { document.getElementById("mockOnlyBaseIndemnite").value = applied.base_indemnite; }
+                document.getElementById("DevisMontantTVA").value = applied.total_tva;
+                document.getElementById("DevisMontantTTC").value = applied.total_ttc;
+                document.getElementById("DevisMontantVetusteTotal").value = applied.vetuste;
+                document.getElementById("DevisMontantFranchise").value = applied.franchise;
+                document.getElementById("DevisMontantRemise").value = applied.remise;
+                if (applied.montant_arrete !== undefined) { document.getElementById("MontantArrete").value = applied.montant_arrete; }
+                if (applied.base_indemnite !== undefined) { document.getElementById("BaseIndemnite").value = applied.base_indemnite; }
                 logHUD("DevisCalculerMontantCharge() (" + payload.simulate + ") executed.");
             } else {
                 logHUD("DevisCalculerMontantCharge() " + (res.state === "success" ? "SUCCEEDED WITHOUT apply_to_dom" : "FAILED: " + res.reason));
