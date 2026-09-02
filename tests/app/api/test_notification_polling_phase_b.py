@@ -432,9 +432,12 @@ def test_claims_are_never_mixed_between_accounts(conn, app_and_client):
 
 
 def test_accounts_report_a_truthful_connection_state(conn, app_and_client):
-    """Three states, derived from the EXISTING session model rather than a
-    second definition of connected: never connected, connected, and was
-    connected but needs reconnecting."""
+    """Four states, derived from the EXISTING session model plus what this
+    process has actually observed.
+
+    Stored ACTIVE material alone is UNVERIFIED, not CONNECTED: nothing
+    ages that row out, and reporting CONNECTED from it left an account
+    signed in yesterday still offering "Actualiser" the next morning."""
     app, client, _ = app_and_client
     user_id = create_user(conn, "alice", "pw12345", "operator")
     for account_id in (OUJDA, NADOR, MAMDA_OUJDA):
@@ -450,6 +453,38 @@ def test_accounts_report_a_truthful_connection_state(conn, app_and_client):
 
     states = {a["account_id"]: a["connection_state"]
               for a in client.get("/accounts").json()["accounts"]}
-    assert states[OUJDA] == "CONNECTED"
+    assert states[OUJDA] == "UNVERIFIED"
     assert states[NADOR] == "RECONNECT_REQUIRED"
     assert states[MAMDA_OUJDA] == "NOT_CONNECTED"
+
+
+def test_live_evidence_turns_unverified_into_connected(conn, app_and_client):
+    """The tracker is what distinguishes "material exists" from "we have
+    seen it work". Without it, /accounts is back to asserting CONNECTED
+    from a database row nothing ages out."""
+    app, client, _ = app_and_client
+    user_id = create_user(conn, "bob", "pw12345", "operator")
+    grant_access(conn, user_id, OUJDA)
+    grant_access(conn, user_id, NADOR)
+    login_client(client, "bob", "pw12345")
+
+    for account_id, session_id in ((OUJDA, "s10"), (NADOR, "s11")):
+        conn.execute(
+            "INSERT INTO portal_sessions (session_id, account_id, storage_ref, status, last_validated_at) "
+            "VALUES (?, ?, 'r', 'ACTIVE', '2026-01-01T00:00:00+00:00')", (session_id, account_id))
+
+    tracker = getattr(app.state, "connection_tracker", None)
+    if tracker is None:  # the API app may be built without one
+        return
+
+    tracker.mark_authenticated(OUJDA)
+    states = {a["account_id"]: a["connection_state"]
+              for a in client.get("/accounts").json()["accounts"]}
+    assert states[OUJDA] == "CONNECTED"
+    # Isolated per account: one account's evidence never speaks for another.
+    assert states[NADOR] == "UNVERIFIED"
+
+    tracker.mark_unverified(OUJDA)
+    states = {a["account_id"]: a["connection_state"]
+              for a in client.get("/accounts").json()["accounts"]}
+    assert states[OUJDA] == "UNVERIFIED"

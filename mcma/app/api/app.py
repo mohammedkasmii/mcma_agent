@@ -32,6 +32,7 @@ from mcma.app.api.authz import (
 )
 from mcma.app.api.deps import get_principal_dependency, require_csrf
 from mcma.app.api.errors import ApiError, install_error_handlers
+from mcma.app.connection_state import resolve_connection_state
 from mcma.app.auth.csrf import CSRF_COOKIE_NAME, generate_csrf_token
 from mcma.app.auth.provider import AuthProvider
 from mcma.app.auth.sessions import SESSION_COOKIE_NAME, SessionStore, clear_session_cookie, set_session_cookie
@@ -108,6 +109,7 @@ def create_api_app(
     portal_login_opener=None,
     local_user_id: str | None = None,
     notification_refresher=None,
+    connection_state_tracker=None,
 ) -> FastAPI:
     app = FastAPI(title="MCMA API")
     install_error_handlers(app)
@@ -211,10 +213,11 @@ def create_api_app(
                 f"SELECT account_id, label, entity, scope FROM accounts WHERE account_id IN ({placeholders})",
                 tuple(visible),
             ).fetchall()
-        # session_active tells the dashboard which accounts can currently
-        # be polled or written to at all. Without it, an account with no
-        # captured portal session looks identical to one that simply has
-        # no notifications, and "why is this list empty" has no answer.
+        # session_active tells the dashboard which accounts have captured
+        # portal session MATERIAL. It is not the same claim as "this
+        # session works": nothing ages an ACTIVE row out, so reporting
+        # CONNECTED from this alone left an account signed in yesterday
+        # still offering "Actualiser" this morning.
         active_sessions = {
             row["account_id"]
             for row in conn.execute("SELECT account_id FROM portal_sessions WHERE status = 'ACTIVE'")
@@ -230,13 +233,19 @@ def create_api_app(
         accounts = []
         for row in rows:
             account = dict(row)
-            account["session_active"] = account["account_id"] in active_sessions
-            if account["account_id"] in active_sessions:
-                account["connection_state"] = "CONNECTED"
-            elif account["account_id"] in ever_connected:
-                account["connection_state"] = "RECONNECT_REQUIRED"
-            else:
-                account["connection_state"] = "NOT_CONNECTED"
+            account_id = account["account_id"]
+            account["session_active"] = account_id in active_sessions
+            # Stored material plus what THIS PROCESS has observed. Without
+            # live evidence, ACTIVE material is UNVERIFIED -- never
+            # CONNECTED, which is the claim that was untrue every morning.
+            account["connection_state"] = resolve_connection_state(
+                has_active_session=account_id in active_sessions,
+                has_session_history=account_id in ever_connected,
+                verified_live=(
+                    connection_state_tracker is not None
+                    and connection_state_tracker.is_verified(account_id)
+                ),
+            )
             # A MAMDA account is readable but can never be the target of a
             # form job. Stating it here means the dashboard never has to
             # re-derive the rule from the entity string.

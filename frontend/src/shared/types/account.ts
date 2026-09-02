@@ -19,7 +19,18 @@ export type PortalEntity = "MCMA" | "MAMDA";
 /** Agency scope (e.g. a city). Left open: the backend owns the vocabulary. */
 export type PortalScope = string;
 
-export type ConnectionState = "CONNECTED" | "RECONNECT_REQUIRED" | "NOT_CONNECTED";
+/**
+ * What the backend has established about a portal session.
+ *
+ * UNVERIFIED is the honest middle: session material exists, but this
+ * process has not seen evidence it is live. It is NOT "expired" -- the
+ * remedy is to check, not to make someone type an OTP again.
+ */
+export type ConnectionState =
+  | "CONNECTED"
+  | "UNVERIFIED"
+  | "RECONNECT_REQUIRED"
+  | "NOT_CONNECTED";
 
 export interface PortalAccount {
   /** Opaque server identifier. Used in routes, never shown as primary copy. */

@@ -49,6 +49,7 @@ async def poll_one_account(
     conn, browser, account_id: str, category_codes, *,
     instance_id: str, allowed_host: str, vault_dir, crypto_backend,
     entity: str = "MCMA",
+    session_observer=None,
 ) -> str:
     """Polls every category for ONE account. Returns a short outcome
     string; never raises for an expected state, because in an office where
@@ -117,6 +118,7 @@ async def poll_one_account(
                 # everything is fine while their notifications silently
                 # stop.
                 state = await discovery.observe_session_state()
+                _report_session_state(session_observer, account_id, state)
                 if state == "LOGGED_OUT":
                     return _mark_reconnect_required(conn, account_id, vault_dir)
                 if state != "AUTHENTICATED":
@@ -134,6 +136,7 @@ async def poll_one_account(
                     # -- which is precisely when an empty result is most
                     # misleading.
                     state = await discovery.observe_session_state()
+                    _report_session_state(session_observer, account_id, state)
                     if state == "LOGGED_OUT":
                         return _mark_reconnect_required(conn, account_id, vault_dir)
                     if state != "AUTHENTICATED":
@@ -198,6 +201,22 @@ async def poll_one_account(
         lease.release()
 
 
+def _report_session_state(observer, account_id: str, state: str) -> None:
+    """Hands one observed session state to whoever is watching.
+
+    A callback rather than an import: this layer must not know about
+    mcma.app, and the observation is the only thing worth sharing --
+    never the reader, the page or the session material. An observer that
+    raises must not fail a poll that otherwise worked.
+    """
+    if observer is None:
+        return
+    try:
+        observer(account_id, state)
+    except Exception:
+        logger.warning("the session-state observer raised; the poll is unaffected", exc_info=True)
+
+
 def _log_unavailable(stage: str, *, exc: BaseException | None = None, state: str | None = None) -> None:
     """Names the branch a PORTAL_UNAVAILABLE came from.
 
@@ -230,6 +249,7 @@ def _mark_reconnect_required(conn, account_id: str, vault_dir) -> str:
 async def poll_all_accounts(
     conn, browser, category_codes, *,
     instance_id: str, allowed_host: str, vault_dir, crypto_backend,
+    session_observer=None,
 ) -> dict:
     """One pass over every active account this installation knows about.
 
@@ -245,6 +265,7 @@ async def poll_all_accounts(
                 instance_id=instance_id, allowed_host=allowed_host,
                 vault_dir=vault_dir, crypto_backend=crypto_backend,
                 entity=account.entity,
+                session_observer=session_observer,
             )
         except Exception as exc:  # pragma: no cover - defensive isolation only
             # One account's unexpected failure must never stop the others.

@@ -3,6 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderAppAt } from "../../test/renderApp";
 import { mockRoutes, setCsrfCookie } from "../../test/apiMock";
+import { connectionLabel, connectionMarker } from "@shared/utils/accountIdentity";
 import {
   READ_ONLY_ACCOUNT_WIRE,
   TEST_ACCOUNTS_WIRE,
@@ -300,5 +301,107 @@ describe("errors", () => {
     for (const button of screen.getAllByRole("button")) {
       expect(button).toBeEnabled();
     }
+  });
+});
+
+describe("the unverified state", () => {
+  const unverified = [{ ...WRITABLE_ACCOUNT_WIRE, connection_state: "UNVERIFIED" }];
+
+  it("says the session exists but is not confirmed", async () => {
+    backend({ accounts: unverified });
+    renderAppAt("/overview");
+
+    expect(await screen.findByRole("button", { name: "Vérifier" })).toBeInTheDocument();
+    expect(rail()).toHaveTextContent("Connexion à vérifier");
+    // Not "expired": it has not been shown to be anything yet.
+    expect(rail()).not.toHaveTextContent("Reconnexion requise");
+    expect(screen.queryByRole("button", { name: "Se connecter" })).toBeNull();
+  });
+
+  it("checks with the stored session rather than demanding another OTP", async () => {
+    setCsrfCookie();
+    const stub = backend({ accounts: unverified });
+    const user = userEvent.setup();
+    renderAppAt("/overview");
+
+    await user.click(await screen.findByRole("button", { name: "Vérifier" }));
+
+    await waitFor(() => {
+      const posted = stub.mock.calls.find(([url]) =>
+        (url as string).includes("/refresh-notifications"),
+      );
+      expect(posted?.[0]).toBe(`/accounts/${WRITABLE_ID}/refresh-notifications`);
+    });
+    // No login window was opened for a session that may be perfectly good.
+    expect(stub.mock.calls.some(([url]) => (url as string).includes("/login"))).toBe(false);
+  });
+
+  it("still offers reconnecting when checking cannot settle it", async () => {
+    setCsrfCookie();
+    const stub = backend({ accounts: unverified });
+    const user = userEvent.setup();
+    renderAppAt("/overview");
+
+    await user.click(await screen.findByRole("button", { name: "Reconnecter" }));
+
+    await waitFor(() => {
+      const posted = stub.mock.calls.find(([url]) => (url as string).includes("/login"));
+      expect(posted?.[0]).toBe(`/accounts/${WRITABLE_ID}/login`);
+    });
+  });
+});
+
+describe("each state maps to the action that actually helps", () => {
+  it("connected refreshes", async () => {
+    setCsrfCookie();
+    const stub = backend({ accounts: [{ ...WRITABLE_ACCOUNT_WIRE, connection_state: "CONNECTED" }] });
+    const user = userEvent.setup();
+    renderAppAt("/overview");
+
+    await user.click(await screen.findByRole("button", { name: "Actualiser" }));
+    await waitFor(() =>
+      expect(
+        stub.mock.calls.some(([url]) => (url as string).includes("/refresh-notifications")),
+      ).toBe(true),
+    );
+    expect(stub.mock.calls.some(([url]) => (url as string).includes("/login"))).toBe(false);
+  });
+
+  it("reconnect-required signs in again", async () => {
+    setCsrfCookie();
+    const stub = backend({
+      accounts: [{ ...WRITABLE_ACCOUNT_WIRE, connection_state: "RECONNECT_REQUIRED" }],
+    });
+    const user = userEvent.setup();
+    renderAppAt("/overview");
+
+    await user.click(await screen.findByRole("button", { name: "Reconnecter" }));
+    await waitFor(() =>
+      expect(stub.mock.calls.some(([url]) => (url as string).includes("/login"))).toBe(true),
+    );
+  });
+
+  it("never-connected signs in", async () => {
+    setCsrfCookie();
+    const stub = backend({
+      accounts: [{ ...WRITABLE_ACCOUNT_WIRE, connection_state: "NOT_CONNECTED" }],
+    });
+    const user = userEvent.setup();
+    renderAppAt("/overview");
+
+    await user.click(await screen.findByRole("button", { name: "Se connecter" }));
+    await waitFor(() =>
+      expect(stub.mock.calls.some(([url]) => (url as string).includes("/login"))).toBe(true),
+    );
+  });
+
+  it("gives every state its own label and marker", () => {
+    // Colour is never the only signal: four labels, four marker shapes.
+    const states = ["CONNECTED", "UNVERIFIED", "RECONNECT_REQUIRED", "NOT_CONNECTED"] as const;
+    const labels = states.map(connectionLabel);
+    const markers = states.map(connectionMarker);
+    expect(new Set(labels).size).toBe(4);
+    expect(new Set(markers).size).toBe(4);
+    expect(connectionLabel("UNVERIFIED")).toBe("Connexion à vérifier");
   });
 });

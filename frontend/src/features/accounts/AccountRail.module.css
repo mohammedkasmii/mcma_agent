@@ -96,6 +96,12 @@
   background: linear-gradient(to right, currentColor 50%, transparent 50%);
 }
 
+/* Session material exists but has not been verified in this process. */
+.dashed {
+  background: transparent;
+  border-style: dashed;
+}
+
 .hollow {
   border-radius: var(--radius-pill);
   background: transparent;

@@ -27,14 +27,30 @@ export function AccountConnectionControl({ account }: AccountConnectionControlPr
   const login = useStartLogin(account.accountId);
   const refresh = useRefreshNotifications(account.accountId);
 
-  const connected = account.connectionState === "CONNECTED";
-  const action = connected ? refresh : login;
-  const label = connected
+  const state = account.connectionState;
+  const connected = state === "CONNECTED";
+  const unverified = state === "UNVERIFIED";
+
+  // "Vérifier" is the refresh: it opens the stored session and probes it.
+  // An unverified account is NOT an expired one, so the first thing
+  // offered must not be a username, password and OTP for a session that
+  // may be perfectly good. Reconnecting stays available underneath for
+  // when checking keeps coming back inconclusive.
+  const primary = connected || unverified ? refresh : login;
+  const primaryLabel = connected
     ? "Actualiser"
-    : account.connectionState === "RECONNECT_REQUIRED"
-      ? "Reconnecter"
-      : "Se connecter";
-  const pendingLabel = connected ? "Actualisation…" : "Connexion…";
+    : unverified
+      ? "Vérifier"
+      : state === "RECONNECT_REQUIRED"
+        ? "Reconnecter"
+        : "Se connecter";
+  const primaryPendingLabel = connected
+    ? "Actualisation…"
+    : unverified
+      ? "Vérification…"
+      : "Connexion…";
+
+  const busy = login.isPending || refresh.isPending;
 
   return (
     <div className={styles.control}>
@@ -42,13 +58,25 @@ export function AccountConnectionControl({ account }: AccountConnectionControlPr
         className={styles.button}
         // Disabled while in flight, so a second click cannot open a second
         // portal window or start a second poll on the same account.
-        disabled={action.isPending}
-        onClick={() => action.mutate()}
+        disabled={busy}
+        onClick={() => primary.mutate()}
       >
-        {action.isPending ? pendingLabel : label}
+        {primary.isPending ? primaryPendingLabel : primaryLabel}
       </Button>
 
-      {!connected && login.isPending ? (
+      {unverified ? (
+        <Button className={styles.secondary} disabled={busy} onClick={() => login.mutate()}>
+          {login.isPending ? "Connexion…" : "Reconnecter"}
+        </Button>
+      ) : null}
+
+      {unverified && !busy ? (
+        <p className={styles.hint}>
+          Une session est enregistrée pour ce compte, sans confirmation qu'elle est encore valide.
+        </p>
+      ) : null}
+
+      {!connected && !unverified && login.isPending ? (
         <p className={styles.hint} role="status">
           Terminez la connexion dans la fenêtre SinAuto qui s'ouvre.
         </p>
@@ -61,9 +89,9 @@ export function AccountConnectionControl({ account }: AccountConnectionControlPr
         </p>
       ) : null}
 
-      {action.isError ? (
+      {login.isError || refresh.isError ? (
         <p className={styles.error} role="alert">
-          {toApiError(action.error).message}
+          {toApiError(login.error ?? refresh.error).message}
         </p>
       ) : null}
     </div>

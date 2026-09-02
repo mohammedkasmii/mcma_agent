@@ -15,6 +15,7 @@ export function formatAccountIdentity(account: Pick<PortalAccount, "entity" | "s
 
 const CONNECTION_LABELS: Record<ConnectionState, string> = {
   CONNECTED: "Connecté",
+  UNVERIFIED: "Connexion à vérifier",
   RECONNECT_REQUIRED: "Reconnexion requise",
   NOT_CONNECTED: "Non connecté",
 };
@@ -23,17 +24,21 @@ export function connectionLabel(state: ConnectionState): string {
   return CONNECTION_LABELS[state];
 }
 
+/** Four distinguishable shapes, so colour is never the only signal. */
+export type ConnectionMarker = "solid" | "half" | "dashed" | "hollow";
+
 /**
  * Marker shape for a connection state. Colour is never the only signal, so
  * each state also gets its own outline treatment in CSS.
  */
-const CONNECTION_MARKERS: Record<ConnectionState, "solid" | "half" | "hollow"> = {
+const CONNECTION_MARKERS: Record<ConnectionState, ConnectionMarker> = {
   CONNECTED: "solid",
+  UNVERIFIED: "dashed",
   RECONNECT_REQUIRED: "half",
   NOT_CONNECTED: "hollow",
 };
 
-export function connectionMarker(state: ConnectionState): "solid" | "half" | "hollow" {
+export function connectionMarker(state: ConnectionState): ConnectionMarker {
   return CONNECTION_MARKERS[state];
 }
 

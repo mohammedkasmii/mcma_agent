@@ -86,6 +86,17 @@ export const TEST_ACCOUNTS: readonly PortalAccount[] = [
   SECOND_WRITABLE_ACCOUNT,
 ];
 
+/** Stored session material with no live confirmation. */
+export const UNVERIFIED_ACCOUNT_WIRE: AccountWire = {
+  account_id: "test-account-unverified",
+  label: "Compte de test D",
+  entity: "MCMA",
+  scope: "ZONE-D",
+  session_active: true,
+  connection_state: "UNVERIFIED",
+  writable: true,
+};
+
 /** An id no fixture account carries, for fail-closed route tests. */
 export const UNKNOWN_ACCOUNT_ID = "test-account-not-attributed";
 

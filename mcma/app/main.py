@@ -75,6 +75,7 @@ from mcma.execution.runner import (
     process_queued_dry_run_jobs,
     process_queued_planned_execute_jobs,
 )
+from mcma.app.connection_state import ConnectionStateTracker
 from mcma.app.portal_login import capture_session_for_account
 from mcma.notifications.poller import poll_all_accounts, poll_one_account
 from mcma.persistence.db import open_database
@@ -108,12 +109,47 @@ def build_encryptor(settings: Settings) -> InputEncryptor:
     )
 
 
-def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=None, supervisor=None):
+def _make_session_observer(tracker: ConnectionStateTracker):
+    """Turns an observed session state into a tracker update.
+
+    Shared by the API's manual refresh and the background loop so both
+    report the same way, and defined here rather than in the poller
+    because mcma.notifications must not know about mcma.app.
+    """
+
+    def observe(account_id: str, state: str) -> None:
+        if state == "AUTHENTICATED":
+            tracker.mark_authenticated(account_id)
+        elif state == "LOGGED_OUT":
+            tracker.mark_logged_out(account_id)
+        else:
+            tracker.mark_unverified(account_id)
+
+    return observe
+
+
+def build_app(
+    conn, settings: Settings, encryptor: InputEncryptor, *,
+    lifespan=None, supervisor=None, connection_tracker=None,
+):
     """Assembles the one ASGI app: authenticated API + the built employee
     UI + the two loopback-only sub-apps. The sub-apps enforce their own loopback checks
     internally (mcma.app.auth.bootstrap._require_loopback,
     mcma.app.onboarding._require_loopback), so mounting them on the same
     LAN-served app does not expose them to the LAN."""
+    # What THIS process has observed about each portal session. Stored
+    # ACTIVE material starts unverified: a fresh process has seen nothing,
+    # and claiming CONNECTED from a database row is what left an account
+    # signed in yesterday still offering "Actualiser" this morning.
+    # Injected so the background poll loop -- which runs on its own
+    # connection -- reports into the SAME tracker the API reads. Two
+    # trackers would mean the loop's observations never reached /accounts.
+    connection_tracker = connection_tracker or ConnectionStateTracker()
+
+    # The narrow observer handed to the poller: an account and an observed
+    # state, nothing else -- no reader, no page, no session material.
+    _observe_session_state = _make_session_observer(connection_tracker)
+
     async def _open_portal_login(account_id: str) -> str:
         """Runs the login capture on the process's ONE browser -- the same
         one the runner uses -- so the window the employee signs into is a
@@ -121,7 +157,7 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
         # Raises BrowserNotReady / BrowserUnavailable, which the API
         # reports as themselves -- never as a failed portal login.
         browser = supervisor.get()
-        return await capture_session_for_account(
+        session_id = await capture_session_for_account(
             conn, browser, account_id,
             instance_id=settings.instance_id,
             allowed_host=settings.portal_host,
@@ -129,6 +165,13 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
             crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.allow_test_only_session_vault),
             acl_verifier=WindowsAclVerifier(),
         )
+        # A completed login is positive evidence, not an assumption:
+        # capture_session_for_account returns only after
+        # perform_manual_login() has observed the logged-in markers; every
+        # other outcome raises. So the employee sees "Connecté"
+        # immediately rather than being told to verify what they just did.
+        connection_tracker.mark_authenticated(account_id)
+        return session_id
 
     local_user_id = None
     if settings.local_single_user_mode:
@@ -159,6 +202,7 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
             vault_dir=settings.vault_dir,
             crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.allow_test_only_session_vault),
             entity=account.entity,
+            session_observer=_observe_session_state,
         )
 
     app = create_api_app(
@@ -169,6 +213,7 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
         portal_login_opener=_open_portal_login if supervisor is not None else None,
         local_user_id=local_user_id,
         notification_refresher=_refresh_notifications if supervisor is not None else None,
+        connection_state_tracker=connection_tracker,
     )
     if lifespan is not None:
         app.router.lifespan_context = lifespan
@@ -196,12 +241,15 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
             lease_provider=_lease_provider,
         ),
     )
+    # Reachable by the composition root so the runner can report into it.
+    app.state.connection_tracker = connection_tracker
     return app
 
 
 async def run_job_poll_loop(
     conn, cfg: RunnerConfig, encryptor: InputEncryptor, settings: Settings,
     supervisor: "BrowserSupervisor | None" = None,
+    session_observer=None,
 ) -> None:
     """Drains QUEUED DRY_RUN jobs and PLANNED EXECUTE jobs forever, on the
     caller's event loop, until cancelled at shutdown.
@@ -287,6 +335,7 @@ async def run_job_poll_loop(
                             allowed_host=settings.portal_host,
                             vault_dir=settings.vault_dir,
                             crypto_backend=cfg.crypto_backend,
+                            session_observer=session_observer,
                         )
             except asyncio.CancelledError:
                 raise
@@ -417,11 +466,17 @@ def main(settings: Optional[Settings] = None) -> None:  # pragma: no cover - rea
     tls_config = build_tls_config(settings)
 
     supervisor = BrowserSupervisor()
+    # One tracker for the whole process: the API reads what the poll loop
+    # observes.
+    connection_tracker = ConnectionStateTracker()
 
     @contextlib.asynccontextmanager
     async def _lifespan(app):
         task = asyncio.create_task(
-            run_job_poll_loop(runner_conn, cfg, encryptor, settings, supervisor)
+            run_job_poll_loop(
+                runner_conn, cfg, encryptor, settings, supervisor,
+                session_observer=_make_session_observer(connection_tracker),
+            )
         )
         # Observed even if nothing ever awaits it, so a browser that dies
         # later cannot leave a healthy-looking dashboard behind.
@@ -446,7 +501,7 @@ def main(settings: Optional[Settings] = None) -> None:  # pragma: no cover - rea
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
 
-    app = build_app(api_conn, settings, encryptor, lifespan=_lifespan, supervisor=supervisor)
+    app = build_app(api_conn, settings, encryptor, lifespan=_lifespan, supervisor=supervisor, connection_tracker=connection_tracker)
     try:
         serve(app, tls_config)
     finally:

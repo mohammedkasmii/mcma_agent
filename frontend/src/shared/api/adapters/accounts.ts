@@ -18,6 +18,7 @@ import { responseShapeError } from "../errors";
 
 const ENTITIES: readonly string[] = ["MCMA", "MAMDA"];
 const CONNECTION_STATES: readonly string[] = [
+  "UNVERIFIED",
   "CONNECTED",
   "RECONNECT_REQUIRED",
   "NOT_CONNECTED",
