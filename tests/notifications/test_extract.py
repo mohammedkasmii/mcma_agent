@@ -25,7 +25,7 @@ def test_extraction_is_read_only(conn):
 
 def test_run_poll_upserts_claims_and_applies_presence(conn):
     reader = StubReader({CATEGORY: [{"idSinistre": "1", "reference": "R1"}]})
-    poll_run_id = run_async(run_poll(conn, OUJDA, reader, [CATEGORY], version=1))
+    poll_run_id, _status = run_async(run_poll(conn, OUJDA, reader, [CATEGORY], version=1))
     row = CategoryPresenceRepository(conn).get(OUJDA, f"{OUJDA}:1", CATEGORY)
     assert row["presence_status"] == "ACTIVE"
     assert row["consecutive_absence_count"] == 0
@@ -34,14 +34,14 @@ def test_run_poll_upserts_claims_and_applies_presence(conn):
 
 def test_run_poll_records_failed_category_without_raising(conn):
     reader = StubReader({CATEGORY: RuntimeError("session expired")})
-    poll_run_id = run_async(run_poll(conn, OUJDA, reader, [CATEGORY], version=1))
+    poll_run_id, _status = run_async(run_poll(conn, OUJDA, reader, [CATEGORY], version=1))
     assert PollRunCategoriesRepository(conn).get(poll_run_id, CATEGORY)["status"] == "FAILED"
 
 
 def test_run_poll_partial_when_some_categories_succeed(conn):
     CategoriesRepository(conn).ensure("CAT_OTHER", "Other")
     reader = StubReader({CATEGORY: [], "CAT_OTHER": RuntimeError("boom")})
-    poll_run_id = run_async(run_poll(conn, OUJDA, reader, [CATEGORY, "CAT_OTHER"], version=1))
+    poll_run_id, _status = run_async(run_poll(conn, OUJDA, reader, [CATEGORY, "CAT_OTHER"], version=1))
     from mcma.persistence.repositories.claims import PollRunsRepository
 
     assert PollRunsRepository(conn).get(poll_run_id)["status"] == "PARTIAL"

@@ -28,7 +28,7 @@ def test_malformed_response_never_advances_absence_and_never_resolves(conn):
     reader = _MalformedResponseReader()
 
     for _ in range(5):  # far more than the 3-poll resolve threshold
-        poll_run_id = run_async(run_poll(conn, OUJDA, reader, [CATEGORY], version=1))
+        poll_run_id, _status = run_async(run_poll(conn, OUJDA, reader, [CATEGORY], version=1))
         assert PollRunCategoriesRepository(conn).get(poll_run_id, CATEGORY)["status"] == "FAILED"
 
     row = CategoryPresenceRepository(conn).get(OUJDA, "claim-1", CATEGORY)

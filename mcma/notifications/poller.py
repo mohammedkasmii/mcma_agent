@@ -183,8 +183,15 @@ async def poll_one_account(
                 categories.ensure(code, code)
 
             version = AccountStateVersionRepository(conn).bump(account_id)
-            await run_poll(conn, account_id, reader, codes, version)
-            return "POLLED"
+            _poll_run_id, run_status = await run_poll(conn, account_id, reader, codes, version)
+            if run_status == "COMPLETE":
+                return "POLLED"
+            # Reaching run_poll is not the same as reading anything. A run
+            # whose every category FAILED was still reported as POLLED,
+            # and the employee was told "Notifications actualisées." after
+            # a refresh that read nothing at all.
+            logger.warning("notification poll finished with status=%s", run_status)
+            return "POLL_INCOMPLETE" if run_status == "PARTIAL" else "POLL_FAILED"
         finally:
             await reader.close()
     finally:

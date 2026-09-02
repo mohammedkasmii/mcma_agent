@@ -311,6 +311,11 @@ def create_api_app(
 
         _REFRESH_MESSAGES = {
             "POLLED": "Notifications actualisées.",
+            # Reaching the poll is not reading anything: saying
+            # "actualisées" after a run that read nothing is the kind of
+            # false reassurance that hides an outage for a day.
+            "POLL_INCOMPLETE": "Actualisation partielle — certaines catégories n'ont pas pu être lues.",
+            "POLL_FAILED": "Aucune catégorie n'a pu être lue — réessayez ou reconnectez ce compte.",
             "NO_SESSION": "Compte non connecté — cliquez sur Se connecter.",
             "RECONNECT_REQUIRED": "Session expirée — reconnectez ce compte.",
             "LEASE_BUSY": "Compte occupé par un dossier en cours — réessayez dans un instant.",

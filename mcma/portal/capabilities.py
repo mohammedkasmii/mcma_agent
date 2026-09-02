@@ -634,6 +634,28 @@ DEFAULT_PORTAL_BASE = "/SinAuto_MCMA"
 
 _NOTIFICATION_ROUTE_TEMPLATE = "{base}/expertise/notification/getAlerte/CodeAlerte/{code}"
 
+
+class NotificationReadFailed(Exception):
+    """A category read that did not produce rows, and WHY.
+
+    Four different things end a read: the request never completed (the
+    interceptor aborted it, or the transport failed), the portal answered
+    non-2xx, the body was not JSON, or the JSON was not one of the three
+    shapes the portal is known to answer with. Until now all four raised
+    an indistinguishable ValueError, so a poll recorded eight FAILED
+    categories with nothing to say which had happened -- and three
+    successive onsite rounds could not tell a policy denial from a 403.
+
+    Carries the stage and, when the portal answered at all, the HTTP
+    status. It never carries the body: a portal error page can contain the
+    employee's username, and the status is what an operator needs.
+    """
+
+    def __init__(self, stage: str, status: int | None = None) -> None:
+        super().__init__(f"notification read failed at {stage}" + (f" (HTTP {status})" if status else ""))
+        self.stage = stage
+        self.status = status
+
 _FETCH_JSON_JS = """([url, payload]) => fetch(url, {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
@@ -665,7 +687,9 @@ _NOTIFICATION_FETCH_JS = """([url, payload]) => fetch(url, {
     if (!r.ok) return {ok: false, status: r.status};
     const text = await r.text();
     try { return {ok: true, parsed: JSON.parse(text)}; }
-    catch (e) { return {ok: false}; }
+    // The body is NEVER returned, only the fact that it would not parse:
+    // a session-expired login page is exactly what lands here.
+    catch (e) { return {ok: false, parse_error: true}; }
 }).catch(() => ({ok: false}))"""
 
 # The full-dataset parameters the proven extractor sends. length=-1 asks
@@ -945,13 +969,27 @@ class ReadCapability:
             _NOTIFICATION_FETCH_JS,
             [self._absolute_url(route), dict(_NOTIFICATION_FULL_DATASET_PAYLOAD)],
         )
-        rows = None
-        if isinstance(outcome, dict) and outcome.get("ok"):
-            rows = _notification_rows_from_payload(outcome.get("parsed"))
+        if not isinstance(outcome, dict):
+            # evaluate() returned something unusable; the script never
+            # produced its own result object.
+            raise NotificationReadFailed("script_result")
+        if not outcome.get("ok"):
+            status = outcome.get("status")
+            if isinstance(status, int):
+                # The portal answered and refused: 401/403 point at the
+                # session, 5xx at the portal.
+                raise NotificationReadFailed("http_status", status)
+            if outcome.get("parse_error"):
+                raise NotificationReadFailed("not_json")
+            # No status at all means the fetch itself never completed:
+            # either the guard aborted it (blockedbyclient) or the
+            # transport failed. This is the branch a contract mismatch
+            # lands in.
+            raise NotificationReadFailed("request_not_completed")
+
+        rows = _notification_rows_from_payload(outcome.get("parsed"))
         if rows is None:
-            raise ValueError(
-                "notification fetch returned a malformed/incomplete payload -- treating as a failed poll"
-            )
+            raise NotificationReadFailed("unexpected_json_shape")
         # Rows are returned as they arrived. A non-dict row is evidence,
         # and run_poll() already records it through the malformed/unmatched
         # path; dropping it here would lose that evidence and make

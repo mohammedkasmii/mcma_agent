@@ -24,6 +24,7 @@ cross-account pairing at the DB layer, INC-10).
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Sequence
@@ -40,6 +41,9 @@ from mcma.persistence.repositories.claims import (
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+logger = logging.getLogger(__name__)
 
 
 async def run_poll(conn, account_id: str, reader, category_codes: Sequence[str], version: int) -> str:
@@ -61,7 +65,20 @@ async def run_poll(conn, account_id: str, reader, category_codes: Sequence[str],
         try:
             rows = await reader.read_notifications(category_code)
             per_category_results.append((category_code, "COMPLETE", True, rows))
-        except Exception:
+        except Exception as exc:
+            # A failed category was recorded silently, so eight FAILED rows
+            # with rows_seen=None were all a poll left behind. The stage
+            # (and HTTP status, when the portal answered) is what tells an
+            # operator whether the request was refused, denied or simply
+            # not understood. The category code is NOT logged: it is an
+            # account-scoped portal identifier, and the stage is what
+            # matters.
+            logger.warning(
+                "notification category read failed: %s stage=%s status=%s",
+                type(exc).__name__,
+                getattr(exc, "stage", "unknown"),
+                getattr(exc, "status", None),
+            )
             per_category_results.append((category_code, "FAILED", False, ()))
             overall_session_valid = False
 
@@ -126,4 +143,4 @@ async def run_poll(conn, account_id: str, reader, category_codes: Sequence[str],
                 observed_present=claim_pk in seen_claim_pks,
             )
 
-    return poll_run_id
+    return poll_run_id, overall_status

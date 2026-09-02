@@ -15,6 +15,7 @@ import pytest
 from mcma.app.browser_supervisor import BrowserSupervisor
 from mcma.notifications.rows import to_canonical_notification
 from mcma.portal.capabilities import (
+    NotificationReadFailed,
     _CATEGORY_LINKS_JS,
     _CATEGORY_MATCH_JS,
     _CATEGORY_SURFACE_JS,
@@ -293,7 +294,7 @@ def test_a_malformed_payload_raises_rather_than_reporting_zero_rows(outcome):
     """Zero rows means "this category is clear" and advances the presence
     lifecycle. A session-expired page must never be able to say that."""
     reader, _page = _reader([outcome])
-    with pytest.raises(ValueError):
+    with pytest.raises(NotificationReadFailed):
         asyncio.run(reader.read_notifications("CODE-1"))
 
 
@@ -429,7 +430,7 @@ def test_a_non_2xx_response_is_a_failed_category_even_with_an_empty_data_body(st
     would advance the presence lifecycle and retire notifications that are
     still open on the portal."""
     reader, _page = _reader([{"ok": False, "status": status}])
-    with pytest.raises(ValueError):
+    with pytest.raises(NotificationReadFailed):
         asyncio.run(reader.read_notifications("CODE-1"))
 
 
@@ -611,3 +612,70 @@ process.stdout.write(JSON.stringify(r));
     result = subprocess.run([_NODE, "-e", harness], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == ["CODE-1", "CODE-2"]
+
+
+# --------------------------------------------------------------------- #
+# A failed read says WHICH of the four things happened
+# --------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "outcome,stage,status",
+    [
+        ({"ok": False}, "request_not_completed", None),
+        ({"ok": False, "status": 403}, "http_status", 403),
+        ({"ok": False, "status": 500}, "http_status", 500),
+        ({"ok": False, "parse_error": True}, "not_json", None),
+        ({"ok": True, "parsed": {"unexpected": []}}, "unexpected_json_shape", None),
+        (None, "script_result", None),
+    ],
+)
+def test_a_failed_read_names_its_stage(outcome, stage, status):
+    """Three onsite rounds could not tell a policy denial from a 403,
+    because all four failures raised the same bare ValueError."""
+    reader, _page = _reader([outcome])
+    with pytest.raises(NotificationReadFailed) as raised:
+        asyncio.run(reader.read_notifications("CODE-1"))
+    assert raised.value.stage == stage
+    assert raised.value.status == status
+
+
+def test_a_failed_read_never_carries_the_response_body():
+    """A portal error page can contain the employee's username."""
+    reader, _page = _reader([{"ok": False, "parse_error": True}])
+    with pytest.raises(NotificationReadFailed) as raised:
+        asyncio.run(reader.read_notifications("CODE-1"))
+    assert "html" not in str(raised.value).lower()
+    assert raised.value.args[0].startswith("notification read failed at")
+
+
+def test_the_fetch_script_reports_a_parse_failure_without_the_body():
+    from mcma.portal.capabilities import _NOTIFICATION_FETCH_JS
+
+    assert "parse_error: true" in _NOTIFICATION_FETCH_JS
+    # The text is never put in the result object.
+    assert "text}" not in _NOTIFICATION_FETCH_JS
+    assert "raw: text" not in _NOTIFICATION_FETCH_JS
+
+
+def test_a_run_that_read_nothing_is_not_reported_as_refreshed():
+    """POLLED after eight failed categories told the employee
+    'Notifications actualisées.' about a refresh that read nothing."""
+    import inspect
+
+    from mcma.notifications import poller
+
+    source = inspect.getsource(poller.poll_one_account)
+    assert 'if run_status == "COMPLETE":' in source
+    assert '"POLL_FAILED"' in source
+    assert '"POLL_INCOMPLETE"' in source
+
+
+def test_both_new_outcomes_have_employee_facing_sentences():
+    import inspect
+
+    from mcma.app.api import app as api_app
+
+    source = inspect.getsource(api_app)
+    assert '"POLL_FAILED": "Aucune catégorie n\'a pu être lue' in source
+    assert '"POLL_INCOMPLETE": "Actualisation partielle' in source
