@@ -554,3 +554,60 @@ def test_an_unavailable_outcome_logs_which_stage_and_only_the_exception_type(cap
     assert "session state before discovery: state=INDETERMINATE" in text
     # The exception message is never logged.
     assert "secret username inside" not in text
+
+
+# --------------------------------------------------------------------- #
+# The discovery scripts must be what page.evaluate() can actually call
+# --------------------------------------------------------------------- #
+
+
+import json
+import shutil
+import subprocess
+
+
+_NODE = shutil.which("node")
+
+
+def _js_invocable_as_playwright_does(script: str) -> bool:
+    """page.evaluate(str, arg) compiles the string as ONE expression and,
+    if it is a function, calls it with the argument. A helper declaration
+    prepended to the function is not that: Playwright then calls the
+    helper. This checks the string the way Playwright uses it."""
+    probe = "const f = (" + script + ");process.stdout.write(typeof f);"
+    result = subprocess.run([_NODE, "-e", probe], capture_output=True, text=True)
+    return result.returncode == 0 and result.stdout.strip() == "function"
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not available to compile the script")
+def test_both_discovery_scripts_are_single_callable_functions():
+    """Regression for the onsite 'category discovery failed: Error'. Each
+    script must evaluate to ONE function whose parameter is the argument
+    the reader passes, not to a helper that happens to come first."""
+    assert _js_invocable_as_playwright_does(_CATEGORY_SURFACE_JS)
+    assert _js_invocable_as_playwright_does(_CATEGORY_LINKS_JS)
+    # And their first token is the parameter list the reader supplies.
+    assert _CATEGORY_SURFACE_JS.lstrip().startswith("([url, prefixes]) =>")
+    assert _CATEGORY_LINKS_JS.lstrip().startswith("(prefixes) =>")
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not available to run the script")
+def test_the_in_page_script_returns_only_reviewed_codes_when_actually_run():
+    """The script is executed, not inspected, against a DOM carrying both
+    real shapes plus a cross-origin, a wrong-base and a malformed href."""
+    harness = """
+const links = [
+  '/SinAuto_MCMA/expertise/notification/alerte/CODE-1',
+  '/SinAuto_MCMA/expertise/notification/notification/alerte/CODE-2',
+  'https://evil.example.com/SinAuto_MCMA/expertise/notification/alerte/CODE-3',
+  '/SinAuto_MAMDA/expertise/notification/alerte/CODE-4',
+  '/SinAuto_MCMA/expertise/notification/alerte/../evil',
+].map(h => ({ getAttribute: () => h }));
+global.document = { querySelectorAll: (sel) => sel.startsWith('#listeAlertes') ? links : [] };
+global.location = { href: 'https://portal.test/SinAuto_MCMA/expertise/frontexpert', origin: 'https://portal.test' };
+const r = (%s)(['/SinAuto_MCMA/expertise/notification/alerte','/SinAuto_MCMA/expertise/notification/notification/alerte']);
+process.stdout.write(JSON.stringify(r));
+""" % _CATEGORY_LINKS_JS
+    result = subprocess.run([_NODE, "-e", harness], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == ["CODE-1", "CODE-2"]

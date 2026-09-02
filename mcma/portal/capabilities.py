@@ -185,31 +185,6 @@ _LOGIN_PAGE_OPERATION_TYPE = "login_page"
 # never inserted into the live page: DOMParser does not execute scripts,
 # so a hostile fragment cannot run, and nothing from it can touch the
 # document the capability is standing on.
-_CATEGORY_SURFACE_JS = """([url, prefixes]) => fetch(url, {
-    method: 'GET',
-    headers: {'X-Requested-With': 'XMLHttpRequest'}
-}).then(r => r.ok ? r.text() : null).then(html => {
-    if (html === null) return null;
-    const parsed = new DOMParser().parseFromString(html, 'text/html');
-    const links = parsed.querySelectorAll('a[href]');
-    const codes = [];
-    links.forEach(a => {
-        const code = matchCategoryHref(a.getAttribute('href') || '', prefixes);
-        if (code) codes.push(code);
-    });
-    return codes;
-}).catch(() => null)"""
-
-_CATEGORY_LINKS_JS = """(prefixes) => {
-    const links = document.querySelectorAll('#listeAlertes a[href]');
-    const codes = [];
-    links.forEach(a => {
-        const code = matchCategoryHref(a.getAttribute('href') || '', prefixes);
-        if (code) codes.push(code);
-    });
-    return codes;
-}"""
-
 # The one rule both discovery scripts apply to a portal-supplied href.
 #
 # It is a WHOLE-PATH match, not a prefix test. The href must resolve to
@@ -219,30 +194,57 @@ _CATEGORY_LINKS_JS = """(prefixes) => {
 #   <base>/expertise/notification/alerte/<code>
 #   <base>/expertise/notification/notification/alerte/<code>
 #
-# The second shape is the one the real portal renders; the previous guard
-# recognised it in the selector but then rejected it on the prefix test,
-# which is why discovery still found nothing onsite.
+# The second shape is the one the real portal renders. Nothing wider is
+# accepted: an extra segment, a different notification path, a query
+# string smuggled into the segment, or a code with a slash or a dot in it
+# all fail here rather than being sanitized. And the href itself never
+# leaves the page -- only the code does.
 #
-# Nothing wider is accepted: an extra segment, a different notification
-# path, a query string smuggled into the segment, or a code with a slash
-# or a dot in it all fail here rather than being sanitized. And the href
-# itself never leaves the page -- only the code does.
+# EMBEDDED INSIDE each script's arrow function, never prepended in front
+# of it. page.evaluate() takes ONE expression it can call with the
+# argument. A `function` declaration followed by an arrow is a different
+# thing: Playwright sees a string beginning with `function`, calls THAT
+# with our argument, and the fetch is never reached. That was the onsite
+# "category discovery failed: Error" on 2026-09-02, with a fresh session
+# and eight categories plainly on the page.
 _CATEGORY_MATCH_JS = """
-function matchCategoryHref(href, prefixes) {
-    let resolved;
-    try { resolved = new URL(href, location.href); } catch (e) { return null; }
-    if (resolved.origin !== location.origin) return null;
-    for (const prefix of prefixes) {
-        if (resolved.pathname.indexOf(prefix + '/') !== 0) continue;
-        const rest = resolved.pathname.slice(prefix.length + 1);
-        if (/^[A-Za-z0-9-]+$/.test(rest)) return rest;
-    }
-    return null;
-}
+    const matchCategoryHref = (href, prefixes) => {
+        let resolved;
+        try { resolved = new URL(href, location.href); } catch (e) { return null; }
+        if (resolved.origin !== location.origin) return null;
+        for (const prefix of prefixes) {
+            if (resolved.pathname.indexOf(prefix + '/') !== 0) continue;
+            const rest = resolved.pathname.slice(prefix.length + 1);
+            if (/^[A-Za-z0-9-]+$/.test(rest)) return rest;
+        }
+        return null;
+    };
 """
 
-_CATEGORY_SURFACE_JS = f"{_CATEGORY_MATCH_JS}\n({_CATEGORY_SURFACE_JS})"
-_CATEGORY_LINKS_JS = f"{_CATEGORY_MATCH_JS}\n({_CATEGORY_LINKS_JS})"
+_CATEGORY_SURFACE_JS = """([url, prefixes]) => {""" + _CATEGORY_MATCH_JS + """
+    return fetch(url, {
+        method: 'GET',
+        headers: {'X-Requested-With': 'XMLHttpRequest'}
+    }).then(r => r.ok ? r.text() : null).then(html => {
+        if (html === null) return null;
+        const parsed = new DOMParser().parseFromString(html, 'text/html');
+        const codes = [];
+        parsed.querySelectorAll('a[href]').forEach(a => {
+            const code = matchCategoryHref(a.getAttribute('href') || '', prefixes);
+            if (code) codes.push(code);
+        });
+        return codes;
+    }).catch(() => null);
+}"""
+
+_CATEGORY_LINKS_JS = """(prefixes) => {""" + _CATEGORY_MATCH_JS + """
+    const codes = [];
+    document.querySelectorAll('#listeAlertes a[href]').forEach(a => {
+        const code = matchCategoryHref(a.getAttribute('href') || '', prefixes);
+        if (code) codes.push(code);
+    });
+    return codes;
+}"""
 
 _CATEGORY_CODE_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
 
