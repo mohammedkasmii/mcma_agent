@@ -272,12 +272,32 @@ _MAX_DISCOVERED_CATEGORIES = 50
 # Returns booleans only. No URL, no HTML, no DOM: this page can be a
 # login form holding a username, a password and an OTP, and none of that
 # is anything to read, log or return.
+# Evidence of an authenticated portal page.
+#
+# The original three markers came from the search form. Onsite, the real
+# frontexpert page presented NONE of them to the probe while being
+# unmistakably signed in -- the debug run on 2026-09-02 showed
+# `listeAlertes exists = True` and `typeof actualierAlertes = function`
+# on that very page with a session minted minutes earlier. With no
+# logged-in marker and no logged-out marker the probe answered
+# INDETERMINATE, the poll returned PORTAL_UNAVAILABLE before run_poll,
+# and no poll_run was ever recorded. That is the exact failure shape:
+# "refresh says unavailable, poll_runs never grows".
+#
+# #listeAlertes is the alert navbar of the authenticated application and
+# actualierAlertes() is the portal's own function that populates it. The
+# golden extractor (browser/notifications.py @ 5d12c3d) discovers from
+# exactly that element. Neither exists on a login page, so adding them as
+# logged-in evidence narrows nothing and guesses nothing: it records what
+# the real authenticated page was observed to contain.
 _SESSION_STATE_JS = """() => {
     const url = (location.href || '').toLowerCase();
     const html = document.documentElement ? document.documentElement.innerHTML : '';
+    const markerPresent = ['#formRecherche', '#ReferenceCie', "a[href*='logout']", '#listeAlertes']
+        .some(sel => document.querySelector(sel) !== null);
+    const alertFunctionPresent = typeof window.actualierAlertes === 'function';
     return {
-        logged_in: ['#formRecherche', '#ReferenceCie', "a[href*='logout']"]
-            .some(sel => document.querySelector(sel) !== null),
+        logged_in: markerPresent || alertFunctionPresent,
         logged_out: url.indexOf('login') !== -1
             || document.querySelector("input[name='login'], #login, #password") !== null
             || html.indexOf('expert_.phtml') !== -1
@@ -285,7 +305,7 @@ _SESSION_STATE_JS = """() => {
 }"""
 
 _LOGGED_IN_MARKER_JS = """(selectors) => selectors.some(sel => document.querySelector(sel) !== null)"""
-LOGGED_IN_MARKERS = ("#formRecherche", "#ReferenceCie", "a[href*='logout']")
+LOGGED_IN_MARKERS = ("#formRecherche", "#ReferenceCie", "a[href*='logout']", "#listeAlertes")
 
 
 def _find_single_navigation_route(

@@ -105,7 +105,8 @@ async def poll_one_account(
                     allowed_host, context_options={"storage_state": storage_state},
                     portal_base=base,
                 )
-            except Exception:
+            except Exception as exc:
+                _log_unavailable("discovery reader could not open", exc=exc)
                 return "PORTAL_UNAVAILABLE"
             try:
                 # Before trusting an empty list, establish whether this
@@ -122,6 +123,7 @@ async def poll_one_account(
                     # Cannot tell. Revoking a session on a guess would
                     # force a pointless re-login for what may be a network
                     # blip, so nothing is changed.
+                    _log_unavailable("session state before discovery", state=state)
                     return "PORTAL_UNAVAILABLE"
 
                 codes = await discovery.discover_notification_categories()
@@ -135,11 +137,13 @@ async def poll_one_account(
                     if state == "LOGGED_OUT":
                         return _mark_reconnect_required(conn, account_id, vault_dir)
                     if state != "AUTHENTICATED":
+                        _log_unavailable("session state after empty discovery", state=state)
                         return "PORTAL_UNAVAILABLE"
-            except Exception:
+            except Exception as exc:
                 # A failure reading the surface is NOT evidence that the
                 # session expired: revoking here would log the employee
                 # out because the network hiccupped.
+                _log_unavailable("category discovery failed", exc=exc)
                 return "PORTAL_UNAVAILABLE"
             finally:
                 await discovery.close()
@@ -157,7 +161,8 @@ async def poll_one_account(
                 allowed_host, context_options={"storage_state": storage_state},
                 portal_base=base,
             )
-        except Exception:
+        except Exception as exc:
+            _log_unavailable("notification reader could not open", exc=exc)
             return "PORTAL_UNAVAILABLE"
 
         try:
@@ -184,6 +189,21 @@ async def poll_one_account(
             await reader.close()
     finally:
         lease.release()
+
+
+def _log_unavailable(stage: str, *, exc: BaseException | None = None, state: str | None = None) -> None:
+    """Names the branch a PORTAL_UNAVAILABLE came from.
+
+    Five exits produced that one outcome with no trace of which, so a
+    refresh that failed before run_poll left nothing to distinguish "the
+    browser did not open" from "the session probe could not decide" from
+    "discovery threw". The exception TYPE is logged and its message is
+    not: a portal failure page can carry the employee's username, and the
+    type is what tells an operator what happened."""
+    if exc is not None:
+        logger.warning("notification poll unavailable at %s: %s", stage, type(exc).__name__)
+    else:
+        logger.warning("notification poll unavailable at %s: state=%s", stage, state)
 
 
 def _mark_reconnect_required(conn, account_id: str, vault_dir) -> str:

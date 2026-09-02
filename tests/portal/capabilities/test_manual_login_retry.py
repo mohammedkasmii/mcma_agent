@@ -235,8 +235,17 @@ def test_no_session_is_captured_on_timeout():
 
 def test_markers_are_the_only_thing_the_probe_looks_at():
     """The probe reads a fixed marker list and nothing else -- never the
-    form, its values, or the portal's error text."""
-    assert LOGGED_IN_MARKERS == ("#formRecherche", "#ReferenceCie", "a[href*='logout']")
+    form, its values, or the portal's error text.
+
+    #listeAlertes was added on 2026-09-02 from onsite evidence: the real
+    authenticated frontexpert page carried it while carrying none of the
+    first three, and the probe was answering INDETERMINATE."""
+    assert LOGGED_IN_MARKERS == (
+        "#formRecherche", "#ReferenceCie", "a[href*='logout']", "#listeAlertes",
+    )
+    # Still only CSS selectors: nothing reads a value or a message.
+    for marker in LOGGED_IN_MARKERS:
+        assert marker.startswith(("#", "a["))
 
 
 def test_the_service_reports_the_typed_reason(conn=None):

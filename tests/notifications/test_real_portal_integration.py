@@ -482,3 +482,75 @@ def test_a_code_with_surrounding_whitespace_is_not_canonical(code):
     from mcma.portal.capabilities import is_valid_category_code
 
     assert not is_valid_category_code(code)
+
+
+# --------------------------------------------------------------------- #
+# Session probe: the authenticated page as it was actually observed
+# --------------------------------------------------------------------- #
+
+
+class _ProbePage:
+    def __init__(self, state):
+        self._state = state
+
+    async def evaluate(self, script, arg=None):
+        return self._state
+
+
+def _probe(state):
+    return ReadCapability(_FakeContext(), _ProbePage(state), "portal.test", "/SinAuto_MCMA")
+
+
+def test_the_probe_script_counts_the_alert_navbar_as_logged_in_evidence():
+    """Onsite (2026-09-02) the real frontexpert page showed #listeAlertes and
+    a live actualierAlertes() while carrying none of the search-form
+    markers. Without these two the probe answered INDETERMINATE and every
+    refresh died before run_poll."""
+    from mcma.portal.capabilities import _SESSION_STATE_JS, LOGGED_IN_MARKERS
+
+    assert "#listeAlertes" in _SESSION_STATE_JS
+    assert "typeof window.actualierAlertes === 'function'" in _SESSION_STATE_JS
+    assert "#listeAlertes" in LOGGED_IN_MARKERS
+    # The logged-out evidence is unchanged: nothing became easier to
+    # mistake for a signed-in page.
+    assert "url.indexOf('login') !== -1" in _SESSION_STATE_JS
+    assert "input[name='login'], #login, #password" in _SESSION_STATE_JS
+
+
+def test_logged_in_evidence_without_logged_out_evidence_is_authenticated():
+    assert asyncio.run(_probe({"logged_in": True, "logged_out": False}).observe_session_state()) == "AUTHENTICATED"
+
+
+def test_logged_out_evidence_alone_is_logged_out():
+    assert asyncio.run(_probe({"logged_in": False, "logged_out": True}).observe_session_state()) == "LOGGED_OUT"
+
+
+def test_no_evidence_either_way_stays_indeterminate():
+    """Still never a guess: a page with neither marker is not declared
+    authenticated, and not revoked either."""
+    assert asyncio.run(_probe({"logged_in": False, "logged_out": False}).observe_session_state()) == "INDETERMINATE"
+
+
+def test_contradictory_evidence_stays_indeterminate():
+    assert asyncio.run(_probe({"logged_in": True, "logged_out": True}).observe_session_state()) == "INDETERMINATE"
+
+
+# --------------------------------------------------------------------- #
+# PORTAL_UNAVAILABLE names its branch
+# --------------------------------------------------------------------- #
+
+
+def test_an_unavailable_outcome_logs_which_stage_and_only_the_exception_type(caplog):
+    import logging
+
+    from mcma.notifications.poller import _log_unavailable
+
+    with caplog.at_level(logging.WARNING, logger="mcma.notifications.poller"):
+        _log_unavailable("discovery reader could not open", exc=RuntimeError("secret username inside"))
+        _log_unavailable("session state before discovery", state="INDETERMINATE")
+
+    text = caplog.text
+    assert "discovery reader could not open: RuntimeError" in text
+    assert "session state before discovery: state=INDETERMINATE" in text
+    # The exception message is never logged.
+    assert "secret username inside" not in text
