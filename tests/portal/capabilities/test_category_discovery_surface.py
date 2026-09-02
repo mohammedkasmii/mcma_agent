@@ -222,10 +222,19 @@ def test_the_fetch_context_is_the_only_one_that_can_read_categories():
     from mcma.portal.canonical import canonicalize_request
 
     fetch_contracts = notification_contracts(DEFAULT_SINAUTO_HOST, ["MISSIONS"], "MCMA")
+    # The request as the reader actually sends it: a urlencoded DataTables
+    # body. This previously asserted a bodyless POST, which is not a
+    # request this application ever makes -- and asserting ALLOW on it
+    # hid the fact that the real one was denied.
     canonical = canonicalize_request(
         raw_url=f"https://{DEFAULT_SINAUTO_HOST}"
                 "/SinAuto_MCMA/expertise/notification/getAlerte/CodeAlerte/MISSIONS",
-        raw_method="POST", raw_content_type=None, raw_body=None,
+        raw_method="POST",
+        raw_content_type="application/x-www-form-urlencoded; charset=UTF-8",
+        raw_body=(
+            "length=-1&start=0&iDisplayLength=-1&iDisplayStart=0"
+            "&rows=999999&limit=999999&page=1&draw=1"
+        ),
     )
     assert evaluate_request(canonical, fetch_contracts, DEFAULT_SINAUTO_HOST) is Decision.ALLOW
 

@@ -138,6 +138,21 @@ def category_discovery_contracts(host: str, entity: str = "MCMA") -> tuple[Route
     )
 
 
+# The exact DataTables body the notification read sends. Kept beside the
+# contract so the request and the thing that authorizes it cannot drift:
+# ReadCapability builds its payload from this same tuple.
+NOTIFICATION_BODY_FIELDS: tuple[str, ...] = (
+    "length",
+    "start",
+    "iDisplayLength",
+    "iDisplayStart",
+    "rows",
+    "limit",
+    "page",
+    "draw",
+)
+
+
 def notification_contracts(host: str, category_codes, entity: str = "MCMA") -> tuple[RouteContract, ...]:
     """One contract per alert category, plus the same-origin landing page
     a reader must navigate to before any fetch-based read runs.
@@ -150,7 +165,19 @@ def notification_contracts(host: str, category_codes, entity: str = "MCMA") -> t
     Source: PORTAL_CONTRACT.md §7 -- POST .../notification/getAlerte/
     CodeAlerte/{code} with DataTables length=-1/iDisplayLength=-1, which
     asks for the complete dataset rather than a page (the poll-run
-    lifecycle needs completeness evidence, not a first page)."""
+    lifecycle needs completeness evidence, not a first page).
+
+    THE BODY IS PART OF THE CONTRACT. evaluate_request() compares
+    content_type and body_fields for exact equality, so a contract
+    declared with neither denies the very request this capability sends:
+    the reader posts a urlencoded body of eight DataTables fields, the
+    contract said "no body", and default-deny did the rest. That is why
+    an authenticated poll could discover eight real categories and then
+    fail every single read with rows_seen=None.
+
+    Declared exactly, not wildcarded. The point of naming the eight
+    fields is that a request carrying a ninth -- or one fewer -- is a
+    different request and must be reviewed, not waved through."""
     host = sinauto_allowed_host(host)
     base = portal_base_for(entity)
     contracts = [
@@ -166,6 +193,10 @@ def notification_contracts(host: str, category_codes, entity: str = "MCMA") -> t
                 "POST",
                 capability="read",
                 operation_type="read_notifications",
+                # The charset parameter the reader sends is stripped by
+                # canonicalization, so the contract names the bare type.
+                content_type="application/x-www-form-urlencoded",
+                body_fields=NOTIFICATION_BODY_FIELDS,
             )
         )
     return tuple(contracts)

@@ -50,6 +50,7 @@ from mcma.portal.contracts import RouteContract
 from mcma.portal.final_endpoints import is_permanently_blocked
 from mcma.portal.identity import ObservedIdentity
 from mcma.portal.identity import observe_identity as _observe_identity
+from mcma.portal.sinauto_contracts import NOTIFICATION_BODY_FIELDS
 from mcma.portal.session import open_guarded_context, open_guarded_context_for_login
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -649,7 +650,7 @@ _NOTIFICATION_FETCH_JS = """([url, payload]) => fetch(url, {
 # DataTables for every row; the duplicated iDisplay*/rows/limit/page/draw
 # names are what the real portal answered to, and are kept verbatim
 # rather than trimmed to the ones that look sufficient.
-_NOTIFICATION_FULL_DATASET_PAYLOAD = {
+_NOTIFICATION_FULL_DATASET_VALUES = {
     "length": "-1",
     "start": "0",
     "iDisplayLength": "-1",
@@ -658,6 +659,19 @@ _NOTIFICATION_FULL_DATASET_PAYLOAD = {
     "limit": "999999",
     "page": "1",
     "draw": "1",
+}
+
+# Ordered by the contract's own field tuple, and asserted to cover it
+# exactly. The interceptor compares body_fields for equality, so a field
+# added here and not there (or the reverse) is a denied request rather
+# than a loose one -- this makes that mismatch impossible at import time
+# instead of at the agency.
+assert set(_NOTIFICATION_FULL_DATASET_VALUES) == set(NOTIFICATION_BODY_FIELDS), (
+    "the notification request body and its route contract have drifted apart"
+)
+
+_NOTIFICATION_FULL_DATASET_PAYLOAD = {
+    field: _NOTIFICATION_FULL_DATASET_VALUES[field] for field in NOTIFICATION_BODY_FIELDS
 }
 
 
