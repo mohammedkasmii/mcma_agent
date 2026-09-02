@@ -651,10 +651,14 @@ class NotificationReadFailed(Exception):
     employee's username, and the status is what an operator needs.
     """
 
-    def __init__(self, stage: str, status: int | None = None) -> None:
+    def __init__(
+        self, stage: str, status: int | None = None, shape_keys: tuple[str, ...] = ()
+    ) -> None:
         super().__init__(f"notification read failed at {stage}" + (f" (HTTP {status})" if status else ""))
         self.stage = stage
         self.status = status
+        # Sanitized key names of an unrecognised payload; empty otherwise.
+        self.shape_keys = shape_keys
 
 _FETCH_JSON_JS = """([url, payload]) => fetch(url, {
     method: 'POST',
@@ -721,18 +725,55 @@ _NOTIFICATION_FULL_DATASET_PAYLOAD = {
 }
 
 
-def _notification_rows_from_payload(parsed):
-    """The three shapes the real portal was observed to answer with:
-    a bare array, {"data": [...]} and {"rows": [...]}.
+# The keys a DataTables payload is known to carry its rows under.
+#
+# `aaData` is the legacy (DataTables 1.9) name, and it is here on evidence
+# rather than optimism: the body this application sends uses the 1.9
+# parameter names -- iDisplayStart/iDisplayLength -- and that is precisely
+# the request generation whose response is
+# {sEcho, iTotalRecords, iTotalDisplayRecords, aaData}. Onsite the request
+# completed, returned 2xx and parsed as JSON, and only the shape was
+# unrecognised; a 1.9 request answered in 1.9 format is the reading that
+# fits every one of those facts.
+#
+# `data` is the 1.10+ name and `rows` a common variant; both were already
+# accepted and are unchanged.
+_NOTIFICATION_ROW_KEYS = ("data", "rows", "aaData")
 
-    Returns None for anything else -- including a dict with a non-list
-    `data`. None means FAILED at the caller, never zero rows: an empty
+_IDENTIFIER_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,39}$")
+
+
+def _payload_shape_keys(parsed) -> tuple[str, ...]:
+    """The top-level KEY NAMES of a payload that was not understood.
+
+    Names only, never values, so nothing about a claim is recorded. Even
+    the names are filtered: a portal answering with an object keyed by
+    claim identifiers would otherwise leak them, so anything that is not
+    an ordinary identifier becomes a placeholder, and the list is capped.
+
+    This exists so an unknown shape can be named the first time it is seen
+    rather than costing another round of onsite testing.
+    """
+    if not isinstance(parsed, dict):
+        return (type(parsed).__name__,)
+    return tuple(
+        key if _IDENTIFIER_KEY.match(key) else "<non-identifier>"
+        for key in (str(k) for k in list(parsed)[:10])
+    )
+
+
+def _notification_rows_from_payload(parsed):
+    """The shapes the real portal is known to answer with: a bare array,
+    or an object carrying its rows under one of _NOTIFICATION_ROW_KEYS.
+
+    Returns None for anything else -- including a dict whose row key holds
+    a non-list. None means FAILED at the caller, never zero rows: an empty
     result is evidence a category is clear, and a session-expired page
     must never be able to produce it."""
     if isinstance(parsed, list):
         return parsed
     if isinstance(parsed, dict):
-        for key in ("data", "rows"):
+        for key in _NOTIFICATION_ROW_KEYS:
             value = parsed.get(key)
             if isinstance(value, list):
                 return value
@@ -987,9 +1028,12 @@ class ReadCapability:
             # lands in.
             raise NotificationReadFailed("request_not_completed")
 
-        rows = _notification_rows_from_payload(outcome.get("parsed"))
+        parsed = outcome.get("parsed")
+        rows = _notification_rows_from_payload(parsed)
         if rows is None:
-            raise NotificationReadFailed("unexpected_json_shape")
+            raise NotificationReadFailed(
+                "unexpected_json_shape", shape_keys=_payload_shape_keys(parsed)
+            )
         # Rows are returned as they arrived. A non-dict row is evidence,
         # and run_poll() already records it through the malformed/unmatched
         # path; dropping it here would lose that evidence and make

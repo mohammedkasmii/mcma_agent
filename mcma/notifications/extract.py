@@ -74,10 +74,13 @@ async def run_poll(conn, account_id: str, reader, category_codes: Sequence[str],
             # account-scoped portal identifier, and the stage is what
             # matters.
             logger.warning(
-                "notification category read failed: %s stage=%s status=%s",
+                "notification category read failed: %s stage=%s status=%s keys=%s",
                 type(exc).__name__,
                 getattr(exc, "stage", "unknown"),
                 getattr(exc, "status", None),
+                # Sanitized top-level key names when the shape was not
+                # understood; empty for every other failure.
+                ",".join(getattr(exc, "shape_keys", ()) or ()) or "-",
             )
             per_category_results.append((category_code, "FAILED", False, ()))
             overall_session_valid = False

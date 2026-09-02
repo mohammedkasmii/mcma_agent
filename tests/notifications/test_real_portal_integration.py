@@ -679,3 +679,70 @@ def test_both_new_outcomes_have_employee_facing_sentences():
     source = inspect.getsource(api_app)
     assert '"POLL_FAILED": "Aucune catégorie n\'a pu être lue' in source
     assert '"POLL_INCOMPLETE": "Actualisation partielle' in source
+
+
+# --------------------------------------------------------------------- #
+# The DataTables 1.9 response shape
+# --------------------------------------------------------------------- #
+
+
+def test_the_legacy_datatables_shape_is_accepted():
+    """The body this application sends uses the 1.9 parameter names
+    (iDisplayStart/iDisplayLength), so the portal answers in 1.9 format:
+    {sEcho, iTotalRecords, iTotalDisplayRecords, aaData}. Onsite the
+    request completed, returned 2xx and parsed as JSON, and only the shape
+    was unrecognised."""
+    payload = {
+        "sEcho": 1,
+        "iTotalRecords": 2,
+        "iTotalDisplayRecords": 2,
+        "aaData": [{"IdSinistre": "1"}, {"IdSinistre": "2"}],
+    }
+    reader, _page = _reader([{"ok": True, "parsed": payload}])
+    rows = asyncio.run(reader.read_notifications("CODE-1"))
+    assert rows == ({"IdSinistre": "1"}, {"IdSinistre": "2"})
+
+
+def test_the_request_and_the_accepted_shape_belong_to_the_same_generation():
+    from mcma.portal.capabilities import (
+        _NOTIFICATION_FULL_DATASET_PAYLOAD,
+        _NOTIFICATION_ROW_KEYS,
+    )
+
+    # 1.9 request parameters...
+    assert "iDisplayStart" in _NOTIFICATION_FULL_DATASET_PAYLOAD
+    assert "iDisplayLength" in _NOTIFICATION_FULL_DATASET_PAYLOAD
+    # ...and the 1.9 response key alongside the modern ones.
+    assert _NOTIFICATION_ROW_KEYS == ("data", "rows", "aaData")
+
+
+def test_an_empty_legacy_payload_is_zero_rows_not_a_failure():
+    reader, _page = _reader([{"ok": True, "parsed": {"sEcho": 1, "aaData": []}}])
+    assert asyncio.run(reader.read_notifications("CODE-1")) == ()
+
+
+def test_a_legacy_key_holding_a_non_list_still_fails_closed():
+    reader, _page = _reader([{"ok": True, "parsed": {"aaData": "not-a-list"}}])
+    with pytest.raises(NotificationReadFailed):
+        asyncio.run(reader.read_notifications("CODE-1"))
+
+
+def test_an_unknown_shape_reports_its_key_names_and_no_values():
+    """So the next unknown shape is named the first time it is seen."""
+    reader, _page = _reader([{"ok": True, "parsed": {"sEcho": 1, "unexpectedKey": {}}}])
+    with pytest.raises(NotificationReadFailed) as raised:
+        asyncio.run(reader.read_notifications("CODE-1"))
+    assert raised.value.shape_keys == ("sEcho", "unexpectedKey")
+
+
+def test_shape_keys_never_leak_a_portal_identifier():
+    from mcma.portal.capabilities import _payload_shape_keys
+
+    # A payload keyed by claim references must not put them in a log.
+    keys = _payload_shape_keys({"REF-0001": {}, "0000-A-0": {}, "sEcho": 1})
+    assert "REF-0001" not in keys
+    assert "0000-A-0" not in keys
+    assert keys.count("<non-identifier>") == 2
+    assert "sEcho" in keys
+    # And the list is capped rather than unbounded.
+    assert len(_payload_shape_keys({f"k{i}": i for i in range(50)})) == 10
