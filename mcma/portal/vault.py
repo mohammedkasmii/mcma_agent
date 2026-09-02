@@ -122,18 +122,30 @@ class WindowsAclVerifier:
     def verify_restrictive(self, path: Path) -> bool:
         import subprocess
 
+        # The path travels in the ENVIRONMENT, not as a trailing argv item.
+        # powershell.exe -Command treats what follows the script as further
+        # command text, not as $args -- so `$args[0]` was empty on a real
+        # Windows host and Get-Acl ran against an empty -LiteralPath. That
+        # made the verifier fail every time it was actually exercised.
+        #
+        # An environment variable also removes the quoting question
+        # entirely: a vault path containing a space, a quote or a `$` is
+        # read as data by $env:, never parsed as PowerShell.
         script = (
-            "$acl = Get-Acl -LiteralPath $args[0]; "
+            "$acl = Get-Acl -LiteralPath $env:MCMA_ACL_PATH; "
             "$acl.Access | ForEach-Object { "
             "  try { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } "
             "  catch { $_.IdentityReference.Value } "
             "}"
         )
+        environment = {**os.environ, "MCMA_ACL_PATH": str(path)}
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script, str(path)],
-            capture_output=True, text=True, timeout=15,
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=15, env=environment,
         )
         if result.returncode != 0:
+            # Fail closed: a verifier that could not run has not verified
+            # anything, and "could not check" must never read as "safe".
             return False
         sids_granted = {line.strip() for line in result.stdout.splitlines() if line.strip()}
         return not any(sid in sids_granted for sid in self._DISALLOWED_SIDS)

@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Sequence
 
 from mcma.notifications.presence import apply_category_result
+from mcma.notifications.rows import to_canonical_notification
 from mcma.notifications.staging import stage_or_upsert_claim
 from mcma.persistence.repositories.claims import (
     PollRunCategoriesRepository,
@@ -86,7 +87,13 @@ async def run_poll(conn, account_id: str, reader, category_codes: Sequence[str],
             try:
                 if not isinstance(notification, dict):
                     raise TypeError("notification row is not an object")
-                claim_pk = stage_or_upsert_claim(conn, account_id, notification, version)
+                # The portal speaks IdSinistre/ReferenceCie/...; staging
+                # speaks idSinistre/reference/.... Translating here, once,
+                # is what stops every real row from looking identity-less
+                # and landing in unmatched_notifications.
+                claim_pk = stage_or_upsert_claim(
+                    conn, account_id, to_canonical_notification(notification), version
+                )
             except Exception:
                 # A single malformed row is staged as an opaque unmatched
                 # record and skipped -- it must never abort the whole

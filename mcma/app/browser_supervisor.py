@@ -52,6 +52,7 @@ class BrowserUnavailable(Exception):
 class BrowserSupervisor:
     def __init__(self) -> None:
         self._browser = None
+        self._notification_browser = None
         self._failure: BaseException | None = None
         self._ready = asyncio.Event()
         self._shutting_down = False
@@ -63,12 +64,51 @@ class BrowserSupervisor:
         self._failure = None
         self._ready.set()
 
+    def mark_notification_ready(self, browser) -> None:
+        """Publishes the SECOND, headless browser used only for
+        notification polling.
+
+        Notification refreshes happen on a timer and on every click of
+        Actualiser. Running them in the shared visible browser made a
+        Chromium window appear and disappear on the employee's screen
+        each time, which looks like the machine is doing something it was
+        not asked to do. Login and the human handoff still need to be
+        seen; a background read does not.
+
+        Separate browser, not a separate context: contexts of a headful
+        browser are headful too.
+        """
+        self._notification_browser = browser
+
+    def get_notification(self):
+        """The headless browser, or a typed failure.
+
+        Deliberately does NOT fall back to the visible browser. A silent
+        fallback would mean the exact behaviour this exists to remove --
+        Chromium windows appearing and vanishing while an employee works
+        -- returning without anyone being told why. A refresh that cannot
+        run headlessly fails, says so, and is fixed; one that quietly runs
+        headfully looks like the machine is doing something it was not
+        asked to do.
+        """
+        if self._notification_browser is not None:
+            return self._notification_browser
+        if self._failure is not None:
+            raise BrowserUnavailable(
+                f"the shared browser is not available ({type(self._failure).__name__})"
+            ) from self._failure
+        raise BrowserUnavailable(
+            "the headless notification browser is not available -- "
+            "notification refresh is disabled until it starts"
+        )
+
     def mark_failed(self, cause: BaseException) -> None:
         """Recorded whether the failure happens before or after READY: a
         browser that dies at hour six leaves the same broken buttons as
         one that never started, and the dashboard must be able to say so
         either way."""
         self._browser = None
+        self._notification_browser = None
         self._failure = cause
         logger.error("shared browser unavailable: %s: %s", type(cause).__name__, cause)
         # Wake anything waiting; waiters re-check state rather than

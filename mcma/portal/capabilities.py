@@ -184,54 +184,83 @@ _LOGIN_PAGE_OPERATION_TYPE = "login_page"
 # never inserted into the live page: DOMParser does not execute scripts,
 # so a hostile fragment cannot run, and nothing from it can touch the
 # document the capability is standing on.
-_CATEGORY_SURFACE_JS = """([url, prefix]) => fetch(url, {
+_CATEGORY_SURFACE_JS = """([url, prefixes]) => fetch(url, {
     method: 'GET',
     headers: {'X-Requested-With': 'XMLHttpRequest'}
-}).then(r => r.text()).then(html => {
+}).then(r => r.ok ? r.text() : null).then(html => {
+    if (html === null) return null;
     const parsed = new DOMParser().parseFromString(html, 'text/html');
-    const links = parsed.querySelectorAll('a[href*="notification/alerte/"]');
+    const links = parsed.querySelectorAll('a[href]');
     const codes = [];
     links.forEach(a => {
-        const href = a.getAttribute('href') || '';
-        // "Belongs to this application" is checked by RESOLVING the href
-        // against the current origin and comparing origin + path prefix.
-        // A substring test was not literally true: an absolute URL like
-        // https://evil.example.com/SinAuto_MCMA/expertise/notification/
-        // alerte/X contains the prefix and would have passed.
-        let resolved;
-        try { resolved = new URL(href, location.href); } catch (e) { return; }
-        if (resolved.origin !== location.origin) return;
-        if (resolved.pathname.indexOf(prefix + '/') !== 0) return;
-        const match = href.match(/alerte\\/([A-Za-z0-9\\-]+)/i);
-        if (match) codes.push(match[1]);
+        const code = matchCategoryHref(a.getAttribute('href') || '', prefixes);
+        if (code) codes.push(code);
     });
     return codes;
 }).catch(() => null)"""
 
-_CATEGORY_LINKS_JS = """(prefix) => {
-    const links = document.querySelectorAll(
-        '#listeAlertes a[href*="notification/alerte/"], '
-        + '#listeAlertes a[href*="notification/notification/alerte/"]'
-    );
+_CATEGORY_LINKS_JS = """(prefixes) => {
+    const links = document.querySelectorAll('#listeAlertes a[href]');
     const codes = [];
     links.forEach(a => {
-        const href = a.getAttribute('href') || '';
-        // Same rule as the fetched surface: see above. "Belongs to this application" is checked by RESOLVING the href
-        // against the current origin and comparing origin + path prefix.
-        // A substring test was not literally true: an absolute URL like
-        // https://evil.example.com/SinAuto_MCMA/expertise/notification/
-        // alerte/X contains the prefix and would have passed.
-        let resolved;
-        try { resolved = new URL(href, location.href); } catch (e) { return; }
-        if (resolved.origin !== location.origin) return;
-        if (resolved.pathname.indexOf(prefix + '/') !== 0) return;
-        const match = href.match(/alerte\\/([A-Za-z0-9\\-]+)/i);
-        if (match) codes.push(match[1]);
+        const code = matchCategoryHref(a.getAttribute('href') || '', prefixes);
+        if (code) codes.push(code);
     });
     return codes;
 }"""
 
+# The one rule both discovery scripts apply to a portal-supplied href.
+#
+# It is a WHOLE-PATH match, not a prefix test. The href must resolve to
+# this origin, and its path must be exactly one of the two reviewed
+# category paths followed by one segment that looks like a code:
+#
+#   <base>/expertise/notification/alerte/<code>
+#   <base>/expertise/notification/notification/alerte/<code>
+#
+# The second shape is the one the real portal renders; the previous guard
+# recognised it in the selector but then rejected it on the prefix test,
+# which is why discovery still found nothing onsite.
+#
+# Nothing wider is accepted: an extra segment, a different notification
+# path, a query string smuggled into the segment, or a code with a slash
+# or a dot in it all fail here rather than being sanitized. And the href
+# itself never leaves the page -- only the code does.
+_CATEGORY_MATCH_JS = """
+function matchCategoryHref(href, prefixes) {
+    let resolved;
+    try { resolved = new URL(href, location.href); } catch (e) { return null; }
+    if (resolved.origin !== location.origin) return null;
+    for (const prefix of prefixes) {
+        if (resolved.pathname.indexOf(prefix + '/') !== 0) continue;
+        const rest = resolved.pathname.slice(prefix.length + 1);
+        if (/^[A-Za-z0-9-]+$/.test(rest)) return rest;
+    }
+    return null;
+}
+"""
+
+_CATEGORY_SURFACE_JS = f"{_CATEGORY_MATCH_JS}\n({_CATEGORY_SURFACE_JS})"
+_CATEGORY_LINKS_JS = f"{_CATEGORY_MATCH_JS}\n({_CATEGORY_LINKS_JS})"
+
 _CATEGORY_CODE_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
+
+
+def is_valid_category_code(value) -> bool:
+    """A code may be substituted into the getAlerte route only if it looks
+    like a code. Applied to CONFIGURED codes as well as discovered ones:
+    a value from a settings file is no more trustworthy as a URL segment
+    than one from the portal, and percent-encoding alone is not the
+    defence -- `..%2Fevil` is still not a category.
+
+    The value is judged EXACTLY as given, with no strip() first. The route
+    is built from the original string, so validating a trimmed copy would
+    accept " CODE-1 " and then fetch `%20CODE-1%20` -- a check that passes
+    on a different value than the one used is not a check. A caller with
+    whitespace around its code has a malformed code, and fixing it here
+    would be repairing input this layer has no authority to interpret.
+    """
+    return isinstance(value, str) and _CATEGORY_CODE_PATTERN.fullmatch(value) is not None
 _MAX_DISCOVERED_CATEGORIES = 50
 
 # Session state (recovered from browser/mission_navigator.py's
@@ -588,6 +617,67 @@ _FETCH_JSON_JS = """([url, payload]) => fetch(url, {
     body: new URLSearchParams(payload).toString()
 }).then(r => r.json())"""
 
+# The getAlerte request exactly as the proven extractor issues it
+# (browser/notifications.py at 5d12c3d). The headers are not decoration:
+# without X-Requested-With the portal answers with an HTML page rather
+# than the DataTable JSON, and the charset on the content type is what
+# the working request sent.
+#
+# The response is returned as TEXT and parsed here rather than with
+# r.json(), so a non-JSON body (a session-expired login page) becomes a
+# recognisable failure instead of a rejected promise with no shape.
+_NOTIFICATION_FETCH_JS = """([url, payload]) => fetch(url, {
+    method: 'POST',
+    headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+        'Accept': 'application/json, text/javascript, */*',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+    },
+    body: new URLSearchParams(payload).toString()
+}).then(async r => {
+    // The status is checked BEFORE the body is looked at, as the proven
+    // extractor does. A 401/403/500 often still carries a JSON-ish body,
+    // and a body of {"data":[]} from an expired session would otherwise
+    // read as "this category is clear" and retire real notifications.
+    if (!r.ok) return {ok: false, status: r.status};
+    const text = await r.text();
+    try { return {ok: true, parsed: JSON.parse(text)}; }
+    catch (e) { return {ok: false}; }
+}).catch(() => ({ok: false}))"""
+
+# The full-dataset parameters the proven extractor sends. length=-1 asks
+# DataTables for every row; the duplicated iDisplay*/rows/limit/page/draw
+# names are what the real portal answered to, and are kept verbatim
+# rather than trimmed to the ones that look sufficient.
+_NOTIFICATION_FULL_DATASET_PAYLOAD = {
+    "length": "-1",
+    "start": "0",
+    "iDisplayLength": "-1",
+    "iDisplayStart": "0",
+    "rows": "999999",
+    "limit": "999999",
+    "page": "1",
+    "draw": "1",
+}
+
+
+def _notification_rows_from_payload(parsed):
+    """The three shapes the real portal was observed to answer with:
+    a bare array, {"data": [...]} and {"rows": [...]}.
+
+    Returns None for anything else -- including a dict with a non-list
+    `data`. None means FAILED at the caller, never zero rows: an empty
+    result is evidence a category is clear, and a session-expired page
+    must never be able to produce it."""
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        for key in ("data", "rows"):
+            value = parsed.get(key)
+            if isinstance(value, list):
+                return value
+    return None
+
 _SCRAPE_JS = """(pairs) => {
     const out = {};
     for (const [name, sel] of pairs) {
@@ -717,15 +807,16 @@ class ReadCapability:
         # from this source" and never a crash.
         collected = []
         surface_route = self._notification_surface_route()
+        prefixes = self._category_path_prefixes()
         fetched = await self._page.evaluate(
-            _CATEGORY_SURFACE_JS, [self._absolute_url(surface_route), surface_route]
+            _CATEGORY_SURFACE_JS, [self._absolute_url(surface_route), prefixes]
         )
         if isinstance(fetched, list):
             collected.extend(fetched)
 
         # Then the live page, for a portal that populated the navbar on
         # its own. Costs no request and cannot introduce a route.
-        in_page = await self._page.evaluate(_CATEGORY_LINKS_JS, surface_route)
+        in_page = await self._page.evaluate(_CATEGORY_LINKS_JS, prefixes)
         if isinstance(in_page, list):
             collected.extend(in_page)
 
@@ -775,6 +866,15 @@ class ReadCapability:
     def _notification_surface_route(self) -> str:
         return f"{self._portal_base}/expertise/notification/alerte"
 
+    def _category_path_prefixes(self) -> list[str]:
+        """The two category paths the real portal was observed to render.
+        Both are anchored on THIS account's application base, so a MAMDA
+        reader can never accept an MCMA category link."""
+        return [
+            f"{self._portal_base}/expertise/notification/alerte",
+            f"{self._portal_base}/expertise/notification/notification/alerte",
+        ]
+
     async def read_notifications(self, code_alerte: str) -> tuple[dict, ...]:
         """INC-14: the recovered getAlerte/DataTable contract
         (PORTAL_CONTRACT.md §7), read-only -- length=-1 asks for the full
@@ -795,13 +895,32 @@ class ReadCapability:
         self._ensure_open()
         if not isinstance(code_alerte, str) or not code_alerte.strip():
             raise TypeError("read_notifications() requires a non-empty code_alerte string")
+        # Validated HERE too, at the boundary that builds the route, so a
+        # code that reached this method from anywhere -- discovery, a
+        # settings file, a future caller -- cannot become a path segment
+        # without looking like a code. Percent-encoding is not the check:
+        # `..%2Fevil` encodes cleanly and is still not a category.
+        if not is_valid_category_code(code_alerte):
+            raise ValueError("read_notifications() rejected a malformed category code")
         route = _NOTIFICATION_ROUTE_TEMPLATE.format(
             base=self._portal_base, code=quote(code_alerte, safe="")
         )
-        result = await self._fetch_json(route, {"length": "-1", "iDisplayLength": "-1"})
-        if not isinstance(result, dict) or "data" not in result or not isinstance(result["data"], list):
-            raise ValueError("notification fetch returned a malformed/incomplete payload -- treating as a failed poll")
-        return tuple(result["data"])
+        outcome = await self._page.evaluate(
+            _NOTIFICATION_FETCH_JS,
+            [self._absolute_url(route), dict(_NOTIFICATION_FULL_DATASET_PAYLOAD)],
+        )
+        rows = None
+        if isinstance(outcome, dict) and outcome.get("ok"):
+            rows = _notification_rows_from_payload(outcome.get("parsed"))
+        if rows is None:
+            raise ValueError(
+                "notification fetch returned a malformed/incomplete payload -- treating as a failed poll"
+            )
+        # Rows are returned as they arrived. A non-dict row is evidence,
+        # and run_poll() already records it through the malformed/unmatched
+        # path; dropping it here would lose that evidence and make
+        # rows_seen disagree with what the portal actually sent.
+        return tuple(rows)
 
     async def read_rows(self, workflow: RepairWorkflow) -> tuple[dict, ...]:
         self._ensure_open()

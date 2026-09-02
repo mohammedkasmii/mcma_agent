@@ -151,7 +151,9 @@ def build_app(conn, settings: Settings, encryptor: InputEncryptor, *, lifespan=N
         if account is None:
             return "NO_SESSION"
         return await poll_one_account(
-            conn, supervisor.get(), account_id, settings.notification_category_codes,
+            # The headless browser: a manual refresh must not make a
+            # window appear and vanish on the employee's screen.
+            conn, supervisor.get_notification(), account_id, settings.notification_category_codes,
             instance_id=settings.instance_id,
             allowed_host=settings.portal_host,
             vault_dir=settings.vault_dir,
@@ -224,6 +226,31 @@ async def run_job_poll_loop(
             supervisor.mark_failed(exc)
         raise
 
+    # A SECOND browser, headless and long-lived, for notification polling
+    # only. One per process, not one per refresh or per category: starting
+    # Chromium on every Actualiser would be slow and would still show in
+    # the task list. Session isolation is unaffected -- each poll still
+    # opens its own guarded context from that account's own storage_state.
+    #
+    # Its failure is not fatal to the application, but it IS fatal to
+    # notification refresh: there is no fallback to the visible browser,
+    # because a silent fallback reintroduces the flashing windows this
+    # exists to remove. Refreshes then fail visibly instead.
+    notification_context = None
+    notification_browser = None
+    try:
+        notification_context = launch_browser(headless=True)
+        notification_browser = await notification_context.__aenter__()
+        if supervisor is not None:
+            supervisor.mark_notification_ready(notification_browser)
+    except Exception:
+        notification_context = None
+        logger.warning(
+            "the headless notification browser could not start; "
+            "notification polling is unavailable until it does",
+            exc_info=True,
+        )
+
     try:
         # Published here, once, so login, notification reads, the dossier
         # runner and the human handoff all share ONE browser.
@@ -243,13 +270,24 @@ async def run_job_poll_loop(
                 if (settings.notifications_enabled
                         and since_notification_poll >= settings.notification_poll_interval_seconds):
                     since_notification_poll = 0
-                    await poll_all_accounts(
-                        conn, browser, settings.notification_category_codes,
-                        instance_id=settings.instance_id,
-                        allowed_host=settings.portal_host,
-                        vault_dir=settings.vault_dir,
-                        crypto_backend=cfg.crypto_backend,
-                    )
+                    if notification_browser is None:
+                        # No fallback to the visible browser. `continue`
+                        # is deliberately NOT used here: it would skip the
+                        # sleep below and spin this loop.
+                        logger.warning(
+                            "skipping the notification poll pass: the headless "
+                            "notification browser is not available"
+                        )
+                    else:
+                        await poll_all_accounts(
+                            conn,
+                            notification_browser,
+                            settings.notification_category_codes,
+                            instance_id=settings.instance_id,
+                            allowed_host=settings.portal_host,
+                            vault_dir=settings.vault_dir,
+                            crypto_backend=cfg.crypto_backend,
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -262,6 +300,17 @@ async def run_job_poll_loop(
                 logger.exception("job poll pass failed")
             await asyncio.sleep(settings.poll_interval_seconds)
     finally:
+        # The notification browser first: it owns no window an employee is
+        # looking at, so nothing is lost by closing it early, and leaking
+        # a headless Chromium keeps a driver process alive after the app
+        # exits on Windows.
+        if notification_context is not None:
+            try:
+                await notification_context.__aexit__(None, None, None)
+            except Exception:
+                logger.info(
+                    "the notification browser was already gone at shutdown", exc_info=True
+                )
         try:
             await browser_context.__aexit__(None, None, None)
         except Exception:

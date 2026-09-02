@@ -30,18 +30,19 @@ import json
 import logging
 
 from mcma.notifications.extract import run_poll
-
-logger = logging.getLogger(__name__)
 from mcma.persistence.leases import LeaseNotHeld, acquire_lease
 from mcma.persistence.repositories.accounts import AccountsRepository
+from mcma.persistence.repositories.claims import CategoriesRepository
 from mcma.persistence.repositories.outbox import AccountStateVersionRepository
-from mcma.portal.capabilities import open_reader
+from mcma.portal.capabilities import is_valid_category_code, open_reader
 from mcma.portal.sinauto_contracts import (
     category_discovery_contracts,
     notification_contracts,
     portal_base_for,
 )
 from mcma.portal.vault import load_and_verify_session, revoke_session
+
+logger = logging.getLogger(__name__)
 
 
 async def poll_one_account(
@@ -86,7 +87,17 @@ async def poll_one_account(
         # validated codes. Contracts stay fixed at context creation, and a
         # code that arrived from the portal cannot widen the policy of the
         # context that found it.
-        codes = tuple(category_codes)
+        # CONFIGURED codes are validated exactly like discovered ones. A
+        # value from a settings file is no more trustworthy as a URL
+        # segment than one scraped from a page, and `../evil` must be
+        # rejected here rather than relying on percent-encoding downstream.
+        # Materialized once: category_codes may be any iterable, and
+        # consuming it twice would leave the second pass empty and the
+        # count wrong.
+        configured_codes = tuple(category_codes)
+        codes = tuple(code for code in configured_codes if is_valid_category_code(code))
+        if len(codes) != len(configured_codes):
+            logger.warning("ignoring one or more malformed configured category codes")
         if not codes:
             try:
                 discovery = await open_reader(
@@ -150,6 +161,22 @@ async def poll_one_account(
             return "PORTAL_UNAVAILABLE"
 
         try:
+            # poll_run_categories.category_code is a foreign key into
+            # categories(code_alerte), and the categories table ships
+            # empty because no reviewed fixed list exists -- the codes are
+            # whatever this account's portal currently offers. Registering
+            # the discovered codes first is what keeps run_poll from
+            # failing on an IntegrityError after the reads already
+            # succeeded.
+            #
+            # The code is used as its own label: discovery deliberately
+            # returns codes and nothing else (a portal-supplied title is
+            # not something to store unreviewed), so there is no truthful
+            # label to record and a code is at least accurate.
+            categories = CategoriesRepository(conn)
+            for code in codes:
+                categories.ensure(code, code)
+
             version = AccountStateVersionRepository(conn).bump(account_id)
             await run_poll(conn, account_id, reader, codes, version)
             return "POLLED"
