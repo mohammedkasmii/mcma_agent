@@ -53,3 +53,36 @@ frontend/coverage/
 frontend/test-results/
 frontend/playwright-report/
 frontend/.playwright/
+
+# Runtime databases & SQLite sidecar files
+*.db
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+data/
+var/
+
+# Local TLS keys & certificates (dev-only, never commit)
+*.key
+*.crt
+*.pem
+
+# Ad-hoc root diagnostic/inspection scripts (not part of mcma/ source of truth)
+/check_real_dossiers.py
+/diagnose_real_dossiers.py
+/diagnose_remaining_financials.py
+/inspect_all_financial_shapes.py
+/inspect_labour_signals.py
+/inspect_real_actions.py
+/inspect_real_mapping_structure.py
+/inspect_real_semantics.py
+
+# Local Claude Code settings & backups (per-dev/machine, not shared)
+/.claude/settings.local.json
+/.claude/settings.local.json.backup-*
+
+# Serena tool state (bookkeeping/cache, not project source)
+/.serena/
+
+# Semgrep local auth/session state (guardian.yml holds a live OAuth token, not a rule file)
+/.semgrep/
