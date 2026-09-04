@@ -14,6 +14,9 @@ no body field that could select a mode.
 from __future__ import annotations
 
 import json
+import logging
+import os
+import traceback
 import uuid
 from datetime import datetime, timezone
 
@@ -68,6 +71,41 @@ from mcma.persistence.repositories.jobs import AutomationJobsRepository
 # dry-runs determines it server-side via detect_workflow() from the
 # parsed typed_input, never from the browser.
 _WORKFLOW_REGISTRY = default_registry()
+
+
+logger = logging.getLogger(__name__)
+
+
+def _log_refresh_failure(exc: BaseException) -> None:
+    """Names WHERE a manual refresh failed, without quoting anything the
+    portal said.
+
+    The response reports the exception TYPE and nothing else, which is
+    right -- a portal error page can carry a claimant's name -- but the
+    server log was left empty too, so an onsite "502
+    REFRESH_FAILED_ValueError" pointed at no line of code and could not
+    be diagnosed. Logged here: the chain of exception TYPES and the code
+    locations they were raised from. Exception MESSAGES, URLs, page text
+    and session material are never logged; a frame is a filename, a line
+    number and a function name in this repository."""
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    # __cause__ first: `raise X from Y` is the deliberate link, and the
+    # root cause is the frame an operator actually needs.
+    while current is not None and id(current) not in seen and len(chain) < 4:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    for depth, item in enumerate(chain):
+        frames = " <- ".join(
+            f"{os.path.basename(frame.filename)}:{frame.lineno}:{frame.name}"
+            for frame in traceback.extract_tb(item.__traceback__)[-10:]
+        )
+        logger.warning(
+            "notification refresh failed [%d]: %s raised at %s",
+            depth, type(item).__name__, frames or "-",
+        )
 
 
 def _require_mcma_account(conn, account_id: str) -> None:
@@ -343,6 +381,10 @@ def create_api_app(
                 outcome = await notification_refresher(account_id)
             except Exception as exc:
                 # No portal text: an error page can carry claimant data.
+                # The response still says only the TYPE; the server log
+                # gets the code locations, because a 502 whose only
+                # evidence was "ValueError" was undiagnosable onsite.
+                _log_refresh_failure(exc)
                 raise ApiError(
                     502, f"REFRESH_FAILED_{type(exc).__name__}",
                     "l'actualisation a échoué",
