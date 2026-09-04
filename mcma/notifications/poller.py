@@ -149,7 +149,7 @@ async def poll_one_account(
                 _log_unavailable("category discovery failed", exc=exc)
                 return "PORTAL_UNAVAILABLE"
             finally:
-                await discovery.close()
+                await _close_reader_safely(discovery, "discovery reader")
 
         if not codes:
             # An authenticated account with genuinely no open alerts.
@@ -196,7 +196,7 @@ async def poll_one_account(
             logger.warning("notification poll finished with status=%s", run_status)
             return "POLL_INCOMPLETE" if run_status == "PARTIAL" else "POLL_FAILED"
         finally:
-            await reader.close()
+            await _close_reader_safely(reader, "reader")
     finally:
         lease.release()
 
@@ -230,6 +230,29 @@ def _log_unavailable(stage: str, *, exc: BaseException | None = None, state: str
         logger.warning("notification poll unavailable at %s: %s", stage, type(exc).__name__)
     else:
         logger.warning("notification poll unavailable at %s: state=%s", stage, state)
+
+
+async def _close_reader_safely(reader, stage: str) -> None:
+    """Tears a read capability down without letting the teardown decide
+    the outcome of the poll.
+
+    A `finally: await reader.close()` runs BEFORE the `return` it is
+    unwinding completes, so a browser that fails to close replaces an
+    already-determined result with its own exception: a refresh that read
+    the notifications, persisted the claims and released the lease was
+    reported to the employee as HTTP 502 REFRESH_FAILED_ValueError. The
+    close is still attempted, and a failure is still visible to an
+    operator -- it just no longer overwrites work that succeeded.
+
+    Only the exception TYPE is logged, for the same reason as
+    _log_unavailable: a teardown failure can carry a URL, page content or
+    session material in its message, and the type is what an operator
+    needs. Exception, not BaseException, so cancellation still
+    propagates."""
+    try:
+        await reader.close()
+    except Exception as exc:
+        logger.warning("notification %s cleanup failed: %s", stage, type(exc).__name__)
 
 
 def _mark_reconnect_required(conn, account_id: str, vault_dir) -> str:
