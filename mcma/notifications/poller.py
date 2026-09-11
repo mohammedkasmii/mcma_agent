@@ -99,6 +99,7 @@ async def poll_one_account(
         codes = tuple(code for code in configured_codes if is_valid_category_code(code))
         if len(codes) != len(configured_codes):
             logger.warning("ignoring one or more malformed configured category codes")
+        discovered_labels = {}
         if not codes:
             try:
                 discovery = await open_reader(
@@ -128,7 +129,15 @@ async def poll_one_account(
                     _log_unavailable("session state before discovery", state=state)
                     return "PORTAL_UNAVAILABLE"
 
-                codes = await discovery.discover_notification_categories()
+                discovered = await discovery.discover_notification_categories()
+                codes = tuple(discovered)
+                # Production category-code strings carry a bounded display
+                # label. Plain strings from configured/fake readers remain a
+                # supported fallback and display as their exact code.
+                discovered_labels = {
+                    str(category): getattr(category, "label", str(category))
+                    for category in discovered
+                }
 
                 if not codes:
                     # Re-checked, because the session can expire between
@@ -177,13 +186,9 @@ async def poll_one_account(
             # failing on an IntegrityError after the reads already
             # succeeded.
             #
-            # The code is used as its own label: discovery deliberately
-            # returns codes and nothing else (a portal-supplied title is
-            # not something to store unreviewed), so there is no truthful
-            # label to record and a code is at least accurate.
             categories = CategoriesRepository(conn)
             for code in codes:
-                categories.ensure(code, code)
+                categories.ensure(code, discovered_labels.get(code, code))
 
             version = AccountStateVersionRepository(conn).bump(account_id)
             _poll_run_id, run_status = await run_poll(conn, account_id, reader, codes, version)

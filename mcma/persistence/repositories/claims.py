@@ -67,7 +67,10 @@ class CategoriesRepository:
 
     def ensure(self, code_alerte: str, label: str) -> None:
         self._conn.execute(
-            "INSERT OR IGNORE INTO categories (code_alerte, label) VALUES (?, ?)", (code_alerte, label)
+            "INSERT INTO categories (code_alerte, label) VALUES (?, ?) "
+            "ON CONFLICT(code_alerte) DO UPDATE SET label = "
+            "CASE WHEN excluded.label = excluded.code_alerte THEN categories.label ELSE excluded.label END",
+            (code_alerte, label),
         )
 
 

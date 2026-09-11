@@ -22,6 +22,7 @@ import pytest
 
 from mcma.notifications import poller as poller_module
 from mcma.persistence.db import open_database
+from mcma.portal.capabilities import DiscoveredNotificationCategory
 
 
 ACCOUNT = "acct-test-1"
@@ -37,7 +38,7 @@ class _FakeReader:
 
     async def discover_notification_categories(self):
         self._log.append("discover")
-        return (DISCOVERED,)
+        return (DiscoveredNotificationCategory(DISCOVERED, "Catégorie lisible"),)
 
     async def observe_session_state(self):
         return "AUTHENTICATED"
@@ -139,6 +140,7 @@ def test_polling_registers_the_discovered_category_and_records_the_run(conn, mon
     ).fetchone()
     assert category is not None
     assert category["code_alerte"] == DISCOVERED
+    assert category["label"] == "Catégorie lisible"
 
     # ...and the FK-dependent row was accepted by the database.
     poll_rows = conn.execute(

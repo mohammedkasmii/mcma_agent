@@ -55,7 +55,7 @@ describe("work queue states", () => {
     expect(screen.getByText("Assuré Test Un")).toBeInTheDocument();
     expect(screen.getByText("0000-A-0")).toBeInTheDocument();
     expect(screen.getByText("POL-0001")).toBeInTheDocument();
-    expect(screen.getByText("Catégorie test 1")).toBeInTheDocument();
+    expect(screen.getAllByText("Catégorie test 1").length).toBeGreaterThan(0);
     expect(screen.getByText("Note de suivi test")).toBeInTheDocument();
   });
 
@@ -180,6 +180,25 @@ describe("account scoping", () => {
 });
 
 describe("what the queue shows", () => {
+  it("groups notifications by type with counts and filters the queue", async () => {
+    const user = userEvent.setup();
+    const secondCategoryClaim = {
+      ...CLAIM_TRACKED_WIRE,
+      categories: ["Catégorie test 2"],
+    };
+    mockBackend({ [WRITABLE_ID]: [CLAIM_NEW_WIRE, secondCategoryClaim] });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    expect(await screen.findByRole("button", { name: /Toutes les alertes — 3 alertes/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Catégorie test 1 — 1 alerte/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Catégorie test 2 — 2 alertes/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Catégorie test 1 — 1 alerte/ }));
+    expect(screen.getByText("REF-0001")).toBeInTheDocument();
+    expect(screen.queryByText("REF-0002")).toBeNull();
+    expect(screen.getByText("1 sur 2 sinistres affichés")).toBeInTheDocument();
+  });
+
   it("never uses an internal identifier as visible identity", async () => {
     mockBackend({ [WRITABLE_ID]: WRITABLE_ACCOUNT_CLAIMS_WIRE });
     renderAppAt(WORK(WRITABLE_ID));

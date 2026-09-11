@@ -228,22 +228,30 @@ _CATEGORY_SURFACE_JS = """([url, prefixes]) => {""" + _CATEGORY_MATCH_JS + """
     }).then(r => r.ok ? r.text() : null).then(html => {
         if (html === null) return null;
         const parsed = new DOMParser().parseFromString(html, 'text/html');
-        const codes = [];
+        const categories = [];
         parsed.querySelectorAll('a[href]').forEach(a => {
             const code = matchCategoryHref(a.getAttribute('href') || '', prefixes);
-            if (code) codes.push(code);
+            if (!code) return;
+            const copy = a.cloneNode(true);
+            copy.querySelectorAll('.badge').forEach(badge => badge.remove());
+            const label = (copy.textContent || '').replace(/\\s+/g, ' ').trim();
+            categories.push({code, label});
         });
-        return codes;
+        return categories;
     }).catch(() => null);
 }"""
 
 _CATEGORY_LINKS_JS = """(prefixes) => {""" + _CATEGORY_MATCH_JS + """
-    const codes = [];
+    const categories = [];
     document.querySelectorAll('#listeAlertes a[href]').forEach(a => {
         const code = matchCategoryHref(a.getAttribute('href') || '', prefixes);
-        if (code) codes.push(code);
+        if (!code) return;
+        const copy = a.cloneNode(true);
+        copy.querySelectorAll('.badge').forEach(badge => badge.remove());
+        const label = (copy.textContent || '').replace(/\\s+/g, ' ').trim();
+        categories.push({code, label});
     });
-    return codes;
+    return categories;
 }"""
 
 _CATEGORY_CODE_PATTERN = re.compile(r"^[A-Za-z0-9-]+$")
@@ -265,6 +273,24 @@ def is_valid_category_code(value) -> bool:
     """
     return isinstance(value, str) and _CATEGORY_CODE_PATTERN.fullmatch(value) is not None
 _MAX_DISCOVERED_CATEGORIES = 50
+_MAX_CATEGORY_LABEL_LENGTH = 160
+
+
+class DiscoveredNotificationCategory(str):
+    """A category code carrying inert display metadata.
+
+    This remains a real ``str`` so the existing closed read-capability
+    operation continues to return category codes and every route validator
+    treats it exactly as before. The optional ``label`` never participates in
+    a request; it is bounded here, persisted as text and escaped by React.
+    """
+
+    label: str
+
+    def __new__(cls, code: str, label: str):
+        value = super().__new__(cls, code)
+        value.label = label
+        return value
 
 # Session state (recovered from browser/mission_navigator.py's
 # check_session_validity() at baseline 0290fe9). The logged-OUT evidence
@@ -884,17 +910,17 @@ class ReadCapability:
         self._ensure_open()
         return await _observe_identity(self._page)
 
-    async def discover_notification_categories(self) -> tuple[str, ...]:
+    async def discover_notification_categories(
+        self,
+    ) -> tuple[str, ...]:
         """The alert category codes this account's portal currently
-        offers, read from its own notification surface.
+        offers, together with their visible notification-bar labels.
 
-        Returns CODES ONLY. The DOM's hrefs never leave the page: nothing
-        portal-supplied becomes a URL this capability will fetch. Each
-        code must match the recovered [A-Za-z0-9-]+ pattern exactly --
-        anything else is dropped rather than sanitized, since a code that
-        does not look like a code is not something to guess at. The
-        result is capped, so a compromised or malformed page cannot turn
-        one poll into thousands of requests.
+        The DOM's hrefs never leave the page. Each code must match the
+        recovered [A-Za-z0-9-]+ pattern exactly. Labels are display-only,
+        whitespace-normalized and length-bounded; a missing or malformed
+        label falls back to the code. The result is capped, so a compromised
+        or malformed page cannot turn one poll into thousands of requests.
 
         Discovering a code does not authorize fetching it. The caller must
         still install a reviewed RouteContract for that exact category
@@ -921,16 +947,40 @@ class ReadCapability:
         if isinstance(in_page, list):
             collected.extend(in_page)
 
-        codes = []
+        categories: list[DiscoveredNotificationCategory] = []
         for value in collected:
-            if not isinstance(value, str):
+            if isinstance(value, str):
+                raw_code = value
+                raw_label = value
+            elif isinstance(value, dict):
+                raw_code = value.get("code")
+                raw_label = value.get("label")
+            else:
                 continue
-            candidate = value.strip()
-            if _CATEGORY_CODE_PATTERN.match(candidate) and candidate not in codes:
-                codes.append(candidate)
-            if len(codes) >= _MAX_DISCOVERED_CATEGORIES:
+
+            if not isinstance(raw_code, str):
+                continue
+            code = raw_code.strip()
+            if _CATEGORY_CODE_PATTERN.fullmatch(code) is None:
+                continue
+            if code in categories:
+                continue
+
+            if isinstance(raw_label, str):
+                label = " ".join(raw_label.split())
+            else:
+                label = ""
+            if (
+                not label
+                or len(label) > _MAX_CATEGORY_LABEL_LENGTH
+                or any(ord(character) < 32 or ord(character) == 127 for character in label)
+            ):
+                label = code
+
+            categories.append(DiscoveredNotificationCategory(code, label))
+            if len(categories) >= _MAX_DISCOVERED_CATEGORIES:
                 break
-        return tuple(codes)
+        return tuple(categories)
 
     async def observe_session_state(self) -> str:
         """AUTHENTICATED, LOGGED_OUT or INDETERMINATE.

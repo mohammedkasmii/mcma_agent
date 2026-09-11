@@ -593,7 +593,7 @@ def test_both_discovery_scripts_are_single_callable_functions():
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not available to run the script")
-def test_the_in_page_script_returns_only_reviewed_codes_when_actually_run():
+def test_the_in_page_script_returns_only_reviewed_codes_and_labels_when_actually_run():
     """The script is executed, not inspected, against a DOM carrying both
     real shapes plus a cross-origin, a wrong-base and a malformed href."""
     harness = """
@@ -603,7 +603,13 @@ const links = [
   'https://evil.example.com/SinAuto_MCMA/expertise/notification/alerte/CODE-3',
   '/SinAuto_MAMDA/expertise/notification/alerte/CODE-4',
   '/SinAuto_MCMA/expertise/notification/alerte/../evil',
-].map(h => ({ getAttribute: () => h }));
+].map((h, index) => ({
+  getAttribute: () => h,
+  cloneNode: () => ({
+    querySelectorAll: () => [],
+    textContent: index === 0 ? '  Missions   recues  ' : 'Relances expert',
+  }),
+}));
 global.document = { querySelectorAll: (sel) => sel.startsWith('#listeAlertes') ? links : [] };
 global.location = { href: 'https://portal.test/SinAuto_MCMA/expertise/frontexpert', origin: 'https://portal.test' };
 const r = (%s)(['/SinAuto_MCMA/expertise/notification/alerte','/SinAuto_MCMA/expertise/notification/notification/alerte']);
@@ -611,7 +617,10 @@ process.stdout.write(JSON.stringify(r));
 """ % _CATEGORY_LINKS_JS
     result = subprocess.run([_NODE, "-e", harness], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == ["CODE-1", "CODE-2"]
+    assert json.loads(result.stdout) == [
+        {"code": "CODE-1", "label": "Missions recues"},
+        {"code": "CODE-2", "label": "Relances expert"},
+    ]
 
 
 # --------------------------------------------------------------------- #

@@ -132,6 +132,28 @@ def test_categories_are_found_even_though_the_landing_page_has_none():
     assert page.denied_requests == []
 
 
+def test_visible_labels_are_bounded_display_metadata_on_the_codes():
+    class LabeledPage:
+        async def evaluate(self, script, arg=None):
+            if "DOMParser" in script:
+                return [
+                    {"code": "MISSIONS", "label": "  Missions (factures reçues)  "},
+                    {"code": "LONG-LABEL", "label": "x" * 161},
+                ]
+            return []
+
+    reader = ReadCapability(
+        object(), LabeledPage(), DEFAULT_SINAUTO_HOST, portal_base_for("MCMA")
+    )
+    categories = _run(reader.discover_notification_categories())
+
+    # They remain category-code strings for every existing caller and route
+    # validator; the label is display metadata only.
+    assert categories == ("MISSIONS", "LONG-LABEL")
+    assert categories[0].label == "Missions (factures reçues)"
+    assert categories[1].label == "LONG-LABEL"
+
+
 def test_the_pre_fix_contract_set_would_have_found_nothing():
     """Negative control. With ONLY the landing-page contract -- the Phase
     B state -- the guard denies the alert-list read and this realistic

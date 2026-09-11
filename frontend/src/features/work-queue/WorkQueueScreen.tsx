@@ -15,6 +15,7 @@ interface WorkQueueScreenProps {
 }
 
 type StatusFilter = ClaimStatus | "ALL";
+type CategoryFilter = string | "ALL";
 
 /** Local narrowing over rows already on screen. No backend search exists. */
 function matchesSearch(claim: Claim, needle: string): boolean {
@@ -41,6 +42,7 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
   const query = useClaimsQuery(account.accountId);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<StatusFilter>("ALL");
+  const [category, setCategory] = useState<CategoryFilter>("ALL");
 
   // Filters belong to the account being looked at. Carrying a search from one
   // account into another would silently hide rows in the new queue and read
@@ -48,17 +50,39 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
   useEffect(() => {
     setSearch("");
     setStatus("ALL");
+    setCategory("ALL");
   }, [account.accountId]);
 
   const claims = query.data;
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const claim of claims ?? []) {
+      // A malformed duplicate on one claim must not inflate the badge.
+      for (const label of new Set(claim.categories)) {
+        counts.set(label, (counts.get(label) ?? 0) + 1);
+      }
+    }
+    return [...counts.entries()].sort(([left], [right]) => left.localeCompare(right, "fr"));
+  }, [claims]);
+  const totalNotificationCount = categoryCounts.reduce((total, [, count]) => total + count, 0);
+
+  useEffect(() => {
+    if (category !== "ALL" && !categoryCounts.some(([label]) => label === category)) {
+      setCategory("ALL");
+    }
+  }, [category, categoryCounts]);
+
   const visible = useMemo(() => {
     if (claims === undefined) return [];
     return claims.filter(
-      (claim) => (status === "ALL" || claim.status === status) && matchesSearch(claim, search),
+      (claim) =>
+        (category === "ALL" || claim.categories.includes(category)) &&
+        (status === "ALL" || claim.status === status) &&
+        matchesSearch(claim, search),
     );
-  }, [claims, search, status]);
+  }, [category, claims, search, status]);
 
-  const isFiltered = search.length > 0 || status !== "ALL";
+  const isFiltered = search.length > 0 || status !== "ALL" || category !== "ALL";
 
   return (
     <div className="u-stack-5">
@@ -84,6 +108,26 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
 
         {query.isSuccess && claims !== undefined && claims.length > 0 ? (
           <div className="u-stack-4">
+            {categoryCounts.length > 0 ? (
+              <div className={styles.categoryFilters} aria-label="Types de notifications">
+                <CategoryButton
+                  active={category === "ALL"}
+                  count={totalNotificationCount}
+                  label="Toutes les alertes"
+                  onClick={() => setCategory("ALL")}
+                />
+                {categoryCounts.map(([label, count]) => (
+                  <CategoryButton
+                    active={category === label}
+                    count={count}
+                    key={label}
+                    label={label}
+                    onClick={() => setCategory(label)}
+                  />
+                ))}
+              </div>
+            ) : null}
+
             <div className={styles.filters}>
               <label className={styles.field}>
                 <span className={styles.fieldLabel}>Rechercher</span>
@@ -129,6 +173,38 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
         ) : null}
       </Panel>
     </div>
+  );
+}
+
+function CategoryButton({
+  active,
+  count,
+  label,
+  onClick,
+}: {
+  readonly active: boolean;
+  readonly count: number;
+  readonly label: string;
+  readonly onClick: () => void;
+}) {
+  return (
+    <button
+      aria-label={`${label} — ${count} ${count === 1 ? "alerte" : "alertes"}`}
+      aria-pressed={active}
+      className={`${styles.categoryButton} ${active ? styles.categoryButtonActive : ""}`}
+      onClick={onClick}
+      type="button"
+    >
+      <span className={styles.bell} aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" />
+        </svg>
+      </span>
+      <span className={styles.categoryLabel}>{label}</span>
+      <span className={styles.categoryCount} aria-hidden="true">
+        {count}
+      </span>
+    </button>
   );
 }
 
