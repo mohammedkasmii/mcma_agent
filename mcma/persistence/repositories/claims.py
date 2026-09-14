@@ -130,6 +130,65 @@ class CategoryPresenceRepository:
             ).fetchall()
         )
 
+    def start_appearance(
+        self,
+        account_id: str,
+        claim_pk: str,
+        category_code: str,
+        *,
+        poll_version: int,
+        unread: bool,
+        appeared_at: str,
+    ) -> None:
+        """Begins a new appearance of this membership (migration 0004). The
+        previous appearance's freshness, and when it was seen, no longer
+        apply -- the decision of WHEN an appearance starts is the lifecycle
+        rule's (mcma.notifications.presence), not this layer's."""
+        self._conn.execute(
+            "UPDATE category_presence SET unread=?, appeared_poll_version=?, appeared_at=?, seen_at=NULL "
+            "WHERE account_id=? AND claim_pk=? AND category_code=?",
+            (int(unread), poll_version, appeared_at, account_id, claim_pk, category_code),
+        )
+
+    def mark_seen_for_claim(self, account_id: str, claim_pk: str, seen_at: str) -> int:
+        """Marks every ACTIVE unread membership of this one claim seen, and
+        returns how many changed. Scoped by account_id as well as claim_pk,
+        so it cannot reach another account's row; touching only unread rows
+        is what makes a repeat a no-op that keeps the first seen_at."""
+        result = self._conn.execute(
+            "UPDATE category_presence SET unread=0, seen_at=? "
+            "WHERE account_id=? AND claim_pk=? AND present=1 AND unread=1",
+            (seen_at, account_id, claim_pk),
+        )
+        return result.rowcount
+
+
+class CategoryBaselinesRepository:
+    """The freshness baseline of one category for one account (migration
+    0004): the first COMPLETE, valid-session poll of it. Written once and
+    never moved -- `ensure` on an existing row leaves it untouched."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def ensure(self, account_id: str, category_code: str, poll_version: int, established_at: str) -> int:
+        """Records this poll as the baseline unless one exists, and returns
+        the baseline's poll version either way."""
+        self._conn.execute(
+            "INSERT OR IGNORE INTO category_baselines "
+            "(account_id, category_code, baseline_poll_version, established_at) VALUES (?, ?, ?, ?)",
+            (account_id, category_code, poll_version, established_at),
+        )
+        row = self.get(account_id, category_code)
+        assert row is not None  # just inserted, or already present
+        return row["baseline_poll_version"]
+
+    def get(self, account_id: str, category_code: str) -> Optional[sqlite3.Row]:
+        return self._conn.execute(
+            "SELECT * FROM category_baselines WHERE account_id = ? AND category_code = ?",
+            (account_id, category_code),
+        ).fetchone()
+
 
 class PollRunsRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:

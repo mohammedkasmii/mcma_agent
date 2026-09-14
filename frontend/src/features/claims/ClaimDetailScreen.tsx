@@ -7,7 +7,7 @@ import { claimStatusLabel, claimStatusTone } from "@shared/utils/claimStatus";
 import { formatTimestamp } from "@shared/utils/datetime";
 import { accountWorkPath } from "@shared/utils/routes";
 import { ClaimTrackingEditor } from "./ClaimTrackingEditor";
-import { useClaimResolution } from "./queries";
+import { useClaimResolution, useMarkSeenOnOpen } from "./queries";
 import styles from "./ClaimDetailScreen.module.css";
 
 interface ClaimDetailScreenProps {
@@ -37,6 +37,12 @@ function Value({ value }: { readonly value: string | null }) {
 export function ClaimDetailScreen({ account }: ClaimDetailScreenProps) {
   const { claimPk } = useParams();
   const resolution = useClaimResolution(account.accountId, claimPk);
+  // Opening the dossier is what "seen" means. Server-confirmed only: the
+  // list shows the notification as seen once the refetch says so.
+  const markSeen = useMarkSeenOnOpen(
+    account.accountId,
+    resolution.status === "resolved" ? resolution.claim : undefined,
+  );
 
   return (
     <div className="u-stack-5">
@@ -119,6 +125,12 @@ export function ClaimDetailScreen({ account }: ClaimDetailScreenProps) {
                   ))}
                 </ul>
               )}
+              {markSeen.failed ? (
+                <p className={styles.help} role="status">
+                  Les nouvelles notifications de ce dossier n'ont pas pu être marquées comme vues.
+                  Elles restent signalées comme nouvelles.
+                </p>
+              ) : null}
             </Section>
 
             {/* The note itself is not echoed here: the editor below is

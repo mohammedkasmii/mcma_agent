@@ -122,6 +122,10 @@ export const CLAIM_NEW_WIRE: ClaimWire = {
   note: null,
   updated_at: null,
   categories: ["Catégorie test 1", "Catégorie test 2"],
+  notifications: [
+    { category: "Catégorie test 1", unread: false, appeared_at: null, seen_at: null },
+    { category: "Catégorie test 2", unread: false, appeared_at: null, seen_at: null },
+  ],
 };
 
 export const CLAIM_TRACKED_WIRE: ClaimWire = {
@@ -140,6 +144,7 @@ export const CLAIM_TRACKED_WIRE: ClaimWire = {
   note: "Note de suivi test",
   updated_at: "2026-01-15T09:30:00Z",
   categories: [],
+  notifications: [],
 };
 
 export const READ_ONLY_CLAIM_WIRE: ClaimWire = {
@@ -158,6 +163,9 @@ export const READ_ONLY_CLAIM_WIRE: ClaimWire = {
   note: null,
   updated_at: null,
   categories: ["Catégorie test 3"],
+  notifications: [
+    { category: "Catégorie test 3", unread: false, appeared_at: null, seen_at: null },
+  ],
 };
 
 export const WRITABLE_ACCOUNT_CLAIMS_WIRE: readonly ClaimWire[] = [

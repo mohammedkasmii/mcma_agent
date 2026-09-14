@@ -29,7 +29,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Sequence
 
-from mcma.notifications.presence import apply_category_result
+from mcma.notifications.presence import apply_category_result, establish_category_baseline
 from mcma.notifications.rows import to_canonical_notification
 from mcma.notifications.staging import stage_or_upsert_claim
 from mcma.persistence.repositories.claims import (
@@ -131,6 +131,11 @@ async def run_poll(conn, account_id: str, reader, category_codes: Sequence[str],
 
         if status != "COMPLETE" or not session_valid:
             continue  # never touch presence for a partial/failed/invalid category
+
+        # The first complete poll of a category is its freshness baseline --
+        # recorded here even when it returned no rows, so what appears after
+        # an empty first sync is still new.
+        establish_category_baseline(conn, account_id, category_code, poll_run_id=poll_run_id)
 
         # Every claim previously observed under this account+category is
         # either re-affirmed present (seen this run) or counted absent.

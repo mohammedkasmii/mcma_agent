@@ -1,4 +1,4 @@
-import type { Claim, ClaimStatus } from "@shared/types";
+import type { Claim, ClaimNotification, ClaimStatus } from "@shared/types";
 import { CLAIM_STATUSES } from "@shared/types";
 import { ApiRequestError } from "../client";
 import { responseShapeError } from "../errors";
@@ -54,6 +54,29 @@ function requireCategories(value: unknown): string[] {
   return value.map((entry) => requireString(entry));
 }
 
+function requireBoolean(value: unknown): boolean {
+  if (typeof value !== "boolean") fail();
+  return value;
+}
+
+/**
+ * Freshness is validated like everything else: a notification whose unread
+ * flag is missing or not a boolean fails the read rather than defaulting to
+ * "seen", which would hide a new notification from the employee.
+ */
+function requireNotifications(value: unknown): ClaimNotification[] {
+  if (!Array.isArray(value)) fail();
+  return value.map((entry) => {
+    const wire = requireRecord(entry);
+    return {
+      category: requireString(wire["category"]),
+      unread: requireBoolean(wire["unread"]),
+      appearedAt: requireNullableString(wire["appeared_at"]),
+      seenAt: requireNullableString(wire["seen_at"]),
+    };
+  });
+}
+
 /** Maps one wire row. Exported for direct unit testing. */
 export function toClaim(row: unknown): Claim {
   const wire = requireRecord(row);
@@ -73,6 +96,7 @@ export function toClaim(row: unknown): Claim {
     note: requireNullableString(wire["note"]),
     updatedAt: requireNullableString(wire["updated_at"]),
     categories: requireCategories(wire["categories"]),
+    notifications: requireNotifications(wire["notifications"]),
   };
 }
 

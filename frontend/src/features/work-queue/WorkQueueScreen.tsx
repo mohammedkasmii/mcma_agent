@@ -5,6 +5,7 @@ import { AccountWorkspaceHeader } from "@features/accounts/AccountWorkspaceHeade
 import { EmptyState, Panel, Skeleton } from "@shared/ui";
 import { toApiError } from "@features/accounts/queries";
 import { claimStatusLabel } from "@shared/utils/claimStatus";
+import { unreadCategories } from "@shared/utils/notificationFreshness";
 import { ClaimList } from "./ClaimList";
 import { useClaimsQuery } from "./queries";
 import styles from "./WorkQueueScreen.module.css";
@@ -28,6 +29,16 @@ function matchesSearch(claim: Claim, needle: string): boolean {
 }
 
 /**
+ * "Nouvelles" keeps dossiers with a notification nobody has opened. Combined
+ * with a type, it keeps only those whose notification OF THAT TYPE is new.
+ */
+function matchesFreshness(claim: Claim, newOnly: boolean, category: CategoryFilter): boolean {
+  if (!newOnly) return true;
+  const unread = unreadCategories(claim);
+  return category === "ALL" ? unread.length > 0 : unread.includes(category);
+}
+
+/**
  * The claims an employee works through for one portal account.
  *
  * Available for every account, including read-only ones: "Lecture seule"
@@ -43,6 +54,7 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<StatusFilter>("ALL");
   const [category, setCategory] = useState<CategoryFilter>("ALL");
+  const [newOnly, setNewOnly] = useState(false);
 
   // Filters belong to the account being looked at. Carrying a search from one
   // account into another would silently hide rows in the new queue and read
@@ -51,23 +63,33 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
     setSearch("");
     setStatus("ALL");
     setCategory("ALL");
+    setNewOnly(false);
   }, [account.accountId]);
 
   const claims = query.data;
   const categoryCounts = useMemo(() => {
-    const counts = new Map<string, number>();
+    const counts = new Map<string, { count: number; newCount: number }>();
     for (const claim of claims ?? []) {
+      const unread = new Set(unreadCategories(claim));
       // A malformed duplicate on one claim must not inflate the badge.
       for (const label of new Set(claim.categories)) {
-        counts.set(label, (counts.get(label) ?? 0) + 1);
+        const tally = counts.get(label) ?? { count: 0, newCount: 0 };
+        tally.count += 1;
+        if (unread.has(label)) tally.newCount += 1;
+        counts.set(label, tally);
       }
     }
-    return [...counts.entries()].sort(([left], [right]) => left.localeCompare(right, "fr"));
+    return [...counts.entries()]
+      .map(([label, tally]) => ({ label, ...tally }))
+      .sort((left, right) => left.label.localeCompare(right.label, "fr"));
   }, [claims]);
-  const totalNotificationCount = categoryCounts.reduce((total, [, count]) => total + count, 0);
+  // Both totals count category memberships, like the portal's bell: one
+  // dossier in two categories is two notifications.
+  const totalNotificationCount = categoryCounts.reduce((total, tally) => total + tally.count, 0);
+  const totalNewCount = categoryCounts.reduce((total, tally) => total + tally.newCount, 0);
 
   useEffect(() => {
-    if (category !== "ALL" && !categoryCounts.some(([label]) => label === category)) {
+    if (category !== "ALL" && !categoryCounts.some((tally) => tally.label === category)) {
       setCategory("ALL");
     }
   }, [category, categoryCounts]);
@@ -77,12 +99,13 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
     return claims.filter(
       (claim) =>
         (category === "ALL" || claim.categories.includes(category)) &&
+        matchesFreshness(claim, newOnly, category) &&
         (status === "ALL" || claim.status === status) &&
         matchesSearch(claim, search),
     );
-  }, [category, claims, search, status]);
+  }, [category, claims, newOnly, search, status]);
 
-  const isFiltered = search.length > 0 || status !== "ALL" || category !== "ALL";
+  const isFiltered = search.length > 0 || status !== "ALL" || category !== "ALL" || newOnly;
 
   return (
     <div className="u-stack-5">
@@ -114,15 +137,17 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
                   active={category === "ALL"}
                   count={totalNotificationCount}
                   label="Toutes les alertes"
+                  newCount={totalNewCount}
                   onClick={() => setCategory("ALL")}
                 />
-                {categoryCounts.map(([label, count]) => (
+                {categoryCounts.map((tally) => (
                   <CategoryButton
-                    active={category === label}
-                    count={count}
-                    key={label}
-                    label={label}
-                    onClick={() => setCategory(label)}
+                    active={category === tally.label}
+                    count={tally.count}
+                    key={tally.label}
+                    label={tally.label}
+                    newCount={tally.newCount}
+                    onClick={() => setCategory(tally.label)}
                   />
                 ))}
               </div>
@@ -154,6 +179,18 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
                   ))}
                 </select>
               </label>
+              <button
+                aria-label={`Nouvelles (${totalNewCount}) — ${totalNewCount} ${
+                  totalNewCount === 1 ? "notification non vue" : "notifications non vues"
+                }`}
+                aria-pressed={newOnly}
+                className={`${styles.newToggle} ${newOnly ? styles.newToggleActive : ""}`}
+                onClick={() => setNewOnly((value) => !value)}
+                type="button"
+              >
+                <span className={styles.newDot} aria-hidden="true" />
+                Nouvelles ({totalNewCount})
+              </button>
             </div>
 
             {visible.length === 0 ? (
@@ -176,20 +213,28 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
   );
 }
 
+function newLabel(count: number): string {
+  return `${count} ${count === 1 ? "nouvelle" : "nouvelles"}`;
+}
+
 function CategoryButton({
   active,
   count,
   label,
+  newCount,
   onClick,
 }: {
   readonly active: boolean;
   readonly count: number;
   readonly label: string;
+  readonly newCount: number;
   readonly onClick: () => void;
 }) {
   return (
     <button
-      aria-label={`${label} — ${count} ${count === 1 ? "alerte" : "alertes"}`}
+      aria-label={`${label} — ${count} ${count === 1 ? "alerte" : "alertes"}${
+        newCount > 0 ? `, dont ${newLabel(newCount)}` : ""
+      }`}
       aria-pressed={active}
       className={`${styles.categoryButton} ${active ? styles.categoryButtonActive : ""}`}
       onClick={onClick}
@@ -201,6 +246,11 @@ function CategoryButton({
         </svg>
       </span>
       <span className={styles.categoryLabel}>{label}</span>
+      {newCount > 0 ? (
+        <span className={styles.categoryNewCount} aria-hidden="true">
+          {newLabel(newCount)}
+        </span>
+      ) : null}
       <span className={styles.categoryCount} aria-hidden="true">
         {count}
       </span>

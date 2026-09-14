@@ -41,4 +41,23 @@ export interface Claim {
   readonly updatedAt: string | null;
   /** Portal alert categories this claim is currently present in. */
   readonly categories: readonly string[];
+  /** The same active memberships as `categories`, each with its freshness. */
+  readonly notifications: readonly ClaimNotification[];
+}
+
+/**
+ * One active notification: the claim's membership in one alert category.
+ *
+ * Freshness ("Nouveau" / "Vu") is tracked per membership, so the same dossier
+ * in two categories is two notifications. It is shared state for the one
+ * employee who works the queue, and it is not the tracking `status` — seeing a
+ * notification never changes the status.
+ */
+export interface ClaimNotification {
+  /** The category label, as it appears in `categories`. */
+  readonly category: string;
+  /** True until the dossier is opened after this notification appeared. */
+  readonly unread: boolean;
+  readonly appearedAt: string | null;
+  readonly seenAt: string | null;
 }

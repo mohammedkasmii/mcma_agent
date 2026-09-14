@@ -1,5 +1,6 @@
 """
-INC-10 -- schema/integrity tests: WAL+FK on, all 20 tables present,
+INC-10 -- schema/integrity tests: WAL+FK on, all tables present (20 from
+INC-10, plus category_baselines from migration 0004),
 migration idempotency/recording, and the named constraint tests from
 docs/implementation/increments/30-persistence.md.
 """
@@ -11,7 +12,7 @@ import pytest
 from mcma.persistence.db import open_database, run_migrations
 from persistence_test_support import seed_account
 
-ALL_20_TABLES = {
+ALL_TABLES = {
     "accounts",
     "portal_sessions",
     "users",
@@ -20,6 +21,7 @@ ALL_20_TABLES = {
     "claims",
     "categories",
     "category_presence",
+    "category_baselines",  # migration 0004 -- notification freshness baseline
     "poll_runs",
     "poll_run_categories",
     "unmatched_notifications",
@@ -40,10 +42,10 @@ def test_wal_enabled_and_foreign_keys_on(conn):
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
 
 
-def test_all_twenty_tables_present(conn):
+def test_all_tables_present(conn):
     rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     names = {r["name"] for r in rows} - {"sqlite_sequence"}
-    assert names == ALL_20_TABLES
+    assert names == ALL_TABLES
 
 
 def test_migration_applies_forward_and_records_version(db_path):

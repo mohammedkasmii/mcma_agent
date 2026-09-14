@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
+import listStyles from "./ClaimList.module.css";
 import { renderAppAt } from "../../test/renderApp";
 import { mockApiError, mockNetworkFailure } from "../../test/apiMock";
 import {
@@ -279,5 +280,156 @@ describe("work queue cleanup", () => {
     expect(await screen.findByText("REF-0003")).toBeInTheDocument();
     expect(screen.getByLabelText("Rechercher")).toHaveValue("");
     expect(screen.getByLabelText("Suivi")).toHaveValue("ALL");
+  });
+});
+
+describe("notification freshness", () => {
+  const notification = (category: string, unread: boolean) => ({
+    category,
+    unread,
+    appeared_at: unread ? "2026-02-01T08:00:00Z" : null,
+    seen_at: null,
+  });
+  // Category 1 is new on REF-0001; category 2 is seen there.
+  const NEW_IN_FIRST = {
+    ...CLAIM_NEW_WIRE,
+    notifications: [notification("Catégorie test 1", true), notification("Catégorie test 2", false)],
+  };
+  // Category 2 is new on REF-0002.
+  const NEW_IN_SECOND = {
+    ...CLAIM_TRACKED_WIRE,
+    categories: ["Catégorie test 2"],
+    notifications: [notification("Catégorie test 2", true)],
+  };
+  const rowOf = async (reference: string) => {
+    const row = (await screen.findByRole("link", { name: reference })).closest("tr");
+    expect(row).not.toBeNull();
+    return row as HTMLTableRowElement;
+  };
+
+  it("badges and highlights only a dossier with an unread notification", async () => {
+    mockBackend({ [WRITABLE_ID]: [NEW_IN_FIRST, CLAIM_TRACKED_WIRE] });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    const fresh = await rowOf("REF-0001");
+    const seen = await rowOf("REF-0002");
+    const unreadRow = listStyles.unreadRow ?? "";
+    expect(unreadRow).not.toBe("");
+    expect(within(fresh).getByText("Nouveau")).toBeInTheDocument();
+    expect(fresh).toHaveClass(unreadRow);
+    expect(within(seen).queryByText("Nouveau")).toBeNull();
+    expect(seen).not.toHaveClass(unreadRow);
+    // Freshness is not the tracking status: Suivi still reads as recorded.
+    expect(within(fresh).getByText(claimStatusLabel("NEW"))).toBeInTheDocument();
+    // The reference link keeps its own name; the badge sits beside it.
+    expect(within(fresh).getByRole("link", { name: "REF-0001" })).toBeInTheDocument();
+  });
+
+  it("shows every type's total and its new count, totals staying membership sums", async () => {
+    mockBackend({ [WRITABLE_ID]: [NEW_IN_FIRST, NEW_IN_SECOND] });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    expect(
+      await screen.findByRole("button", { name: "Toutes les alertes — 3 alertes, dont 2 nouvelles" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Catégorie test 1 — 1 alerte, dont 1 nouvelle" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Catégorie test 2 — 2 alertes, dont 1 nouvelle" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("2 nouvelles")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Nouvelles \(2\)/ })).toBeInTheDocument();
+  });
+
+  it("shows no new count on a type with nothing new", async () => {
+    mockBackend({ [WRITABLE_ID]: WRITABLE_ACCOUNT_CLAIMS_WIRE });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    expect(
+      await screen.findByRole("button", { name: "Catégorie test 1 — 1 alerte" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/\d+ nouvelles?$/)).toBeNull();
+    expect(screen.queryByText("Nouveau")).toBeNull();
+    expect(screen.getByRole("button", { name: /^Nouvelles \(0\)/ })).toBeInTheDocument();
+  });
+
+  it("filters to new dossiers with Nouvelles (count)", async () => {
+    const user = userEvent.setup();
+    mockBackend({ [WRITABLE_ID]: [NEW_IN_FIRST, CLAIM_TRACKED_WIRE] });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    const toggle = await screen.findByRole("button", { name: /^Nouvelles \(1\)/ });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await user.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("REF-0001")).toBeInTheDocument();
+    expect(screen.queryByText("REF-0002")).toBeNull();
+    expect(screen.getByText("1 sur 2 sinistres affichés")).toBeInTheDocument();
+
+    await user.click(toggle);
+    expect(screen.getByText("REF-0002")).toBeInTheDocument();
+  });
+
+  it("combined with a type, keeps only dossiers new in THAT type", async () => {
+    const user = userEvent.setup();
+    mockBackend({ [WRITABLE_ID]: [NEW_IN_FIRST, NEW_IN_SECOND] });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    await user.click(await screen.findByRole("button", { name: /^Nouvelles \(2\)/ }));
+    await user.click(screen.getByRole("button", { name: /^Catégorie test 2 — / }));
+    // REF-0001 is in category 2 too, but seen there.
+    expect(screen.getByText("REF-0002")).toBeInTheDocument();
+    expect(screen.queryByText("REF-0001")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /^Catégorie test 1 — / }));
+    expect(screen.getByText("REF-0001")).toBeInTheDocument();
+    expect(screen.queryByText("REF-0002")).toBeNull();
+  });
+
+  it("works from the keyboard", async () => {
+    const user = userEvent.setup();
+    mockBackend({ [WRITABLE_ID]: [NEW_IN_FIRST, CLAIM_TRACKED_WIRE] });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    const toggle = await screen.findByRole("button", { name: /^Nouvelles \(1\)/ });
+    toggle.focus();
+    await user.keyboard("{Enter}");
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByText("REF-0002")).toBeNull();
+    await user.keyboard(" ");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText("REF-0002")).toBeInTheDocument();
+  });
+
+  it("keeps new counts and the filter scoped to the selected account", async () => {
+    const user = userEvent.setup();
+    mockBackend({
+      [WRITABLE_ID]: [NEW_IN_FIRST, NEW_IN_SECOND],
+      [READ_ONLY_ID]: [READ_ONLY_CLAIM_WIRE],
+    });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    await user.click(await screen.findByRole("button", { name: /^Nouvelles \(2\)/ }));
+    await user.click(screen.getByRole("link", { name: /MAMDA • ZONE-B/ }));
+
+    // The other account's queue: its own counts, and the filter does not
+    // carry over to hide its rows.
+    expect(await screen.findByText("REF-0003")).toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: /^Nouvelles \(0\)/ });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByText("Nouveau")).toBeNull();
+    expect(screen.getByRole("button", { name: "Catégorie test 3 — 1 alerte" })).toBeInTheDocument();
+  });
+
+  it("never marks anything seen from the list", async () => {
+    const stub = mockBackend({ [WRITABLE_ID]: [NEW_IN_FIRST, NEW_IN_SECOND] });
+    renderAppAt(WORK(WRITABLE_ID));
+    await screen.findByText("REF-0001");
+
+    for (const [, init] of stub.mock.calls as unknown as [string, RequestInit][]) {
+      expect(init.method).toBe("GET");
+    }
   });
 });

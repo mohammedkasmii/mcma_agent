@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderAppAt } from "../../test/renderApp";
 import { mockRoutes, setCsrfCookie } from "../../test/apiMock";
@@ -268,6 +268,100 @@ describe("draft state does not cross claims", () => {
       expect(body.note).not.toBe("note-a");
       expect(body.note).toBe("Note de suivi test");
     });
+  });
+});
+
+describe("opening a dossier marks its notifications seen", () => {
+  const UNREAD_CLAIM_WIRE = {
+    ...CLAIM_NEW_WIRE,
+    notifications: [
+      { category: "Catégorie test 1", unread: true, appeared_at: "2026-02-01T08:00:00Z", seen_at: null },
+      { category: "Catégorie test 2", unread: false, appeared_at: null, seen_at: null },
+    ],
+  };
+
+  /** Reports the notification unread until the mark-seen POST succeeds. */
+  function freshnessBackend(seenStatus = 200) {
+    let seen = false;
+    return mockRoutes([
+      { match: (url) => url.startsWith("/accounts"), body: { accounts: TEST_ACCOUNTS_WIRE } },
+      {
+        match: (url, init) => url.endsWith("/notifications/seen") && init.method === "POST",
+        status: seenStatus,
+        body: () => {
+          if (seenStatus !== 200) {
+            return { error: "FORBIDDEN", message: "insufficient permission", correlation_id: "0" };
+          }
+          seen = true;
+          return { claim_pk: CLAIM_NEW_WIRE.claim_pk, marked_seen: 1 };
+        },
+      },
+      {
+        match: (url) => url.startsWith("/claims"),
+        body: () => ({ claims: [seen ? CLAIM_NEW_WIRE : UNREAD_CLAIM_WIRE, CLAIM_TRACKED_WIRE] }),
+      },
+    ]);
+  }
+
+  const calls = (stub: ReturnType<typeof mockRoutes>) =>
+    stub.mock.calls as unknown as [string, RequestInit | undefined][];
+  const seenPosts = (stub: ReturnType<typeof mockRoutes>) =>
+    calls(stub).filter(([url, init]) => url.endsWith("/notifications/seen") && init?.method === "POST");
+
+  it("posts once, without an account id, then refetches the server-confirmed list", async () => {
+    setCsrfCookie();
+    const stub = freshnessBackend();
+    const user = userEvent.setup();
+    renderAppAt(claimPath(WRITABLE_ID, CLAIM_NEW_WIRE.claim_pk));
+
+    await screen.findByRole("heading", { name: "REF-0001" });
+    await waitFor(() => expect(seenPosts(stub)).toHaveLength(1));
+    const [path, init] = seenPosts(stub)[0] as [string, RequestInit];
+    expect(path).toBe(`/claims/${CLAIM_NEW_WIRE.claim_pk}/notifications/seen`);
+    expect(init.body).toBeUndefined();
+
+    // The list is refetched after the POST, not patched locally.
+    const postIndex = calls(stub).findIndex(([url]) => url.endsWith("/notifications/seen"));
+    await waitFor(() =>
+      expect(calls(stub).slice(postIndex + 1).some(([url]) => url.startsWith("/claims?"))).toBe(true),
+    );
+
+    // Back on the list, the dossier is no longer new -- because the backend said so.
+    await user.click(screen.getByRole("link", { name: /Revenir à la file de travail/ }));
+    const row = (await screen.findByRole("link", { name: "REF-0001" })).closest("tr") as HTMLElement;
+    await waitFor(() => expect(within(row).queryByText("Nouveau")).toBeNull());
+
+    // Once only, and the tracking status was never written.
+    expect(seenPosts(stub)).toHaveLength(1);
+    expect(calls(stub).some(([url]) => url.includes("/action"))).toBe(false);
+  });
+
+  it("sends nothing when no notification on the dossier is new", async () => {
+    setCsrfCookie();
+    const stub = backend({ [WRITABLE_ID]: WRITABLE_ACCOUNT_CLAIMS_WIRE });
+    renderAppAt(claimPath(WRITABLE_ID, CLAIM_NEW_WIRE.claim_pk));
+
+    await screen.findByRole("heading", { name: "REF-0001" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(calls(stub).some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
+  it("keeps the notification new when the backend refuses, and does not retry", async () => {
+    setCsrfCookie();
+    const stub = freshnessBackend(403);
+    const user = userEvent.setup();
+    renderAppAt(claimPath(WRITABLE_ID, CLAIM_NEW_WIRE.claim_pk));
+
+    await screen.findByRole("heading", { name: "REF-0001" });
+    expect(
+      await screen.findByText(/n'ont pas pu être marquées comme vues/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("insufficient permission")).toBeNull();
+
+    await user.click(screen.getByRole("link", { name: /Revenir à la file de travail/ }));
+    const row = (await screen.findByRole("link", { name: "REF-0001" })).closest("tr") as HTMLElement;
+    expect(within(row).getByText("Nouveau")).toBeInTheDocument();
+    expect(seenPosts(stub)).toHaveLength(1);
   });
 });
 

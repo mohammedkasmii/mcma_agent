@@ -1,6 +1,8 @@
+import { useEffect, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Claim, ClaimStatus } from "@shared/types";
-import { saveClaimAction } from "@shared/api/claims";
+import { markClaimNotificationsSeen, saveClaimAction } from "@shared/api/claims";
+import { unreadCategories } from "@shared/utils/notificationFreshness";
 import { claimsQueryKey, useClaimsQuery } from "@features/work-queue/queries";
 
 /**
@@ -50,4 +52,43 @@ export function useSaveTracking(accountId: string) {
       await queryClient.invalidateQueries({ queryKey: claimsQueryKey(accountId) });
     },
   });
+}
+
+/**
+ * Opening a dossier marks its new notifications seen, on the backend.
+ *
+ * Fires once for each distinct set of unread notifications on the claim shown:
+ * a refetch that returns the same unread set does not repeat it, and a failed
+ * attempt is not retried in a loop. Nothing is patched into the cache — the
+ * badge disappears only when the refetched list, which the backend confirmed,
+ * says so. On failure the notification simply stays new.
+ *
+ * Only a claim resolved from THIS account's list ever reaches here, and no
+ * account id is sent: the backend takes the account from the claim.
+ */
+export function useMarkSeenOnOpen(accountId: string, claim: Claim | undefined) {
+  const queryClient = useQueryClient();
+  const markSeen = useMutation({
+    mutationFn: (claimPk: string) => markClaimNotificationsSeen(claimPk),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: claimsQueryKey(accountId) });
+    },
+  });
+  const { mutate } = markSeen;
+  const attempted = useRef<string | null>(null);
+
+  const claimPk = claim?.claimPk;
+  const unread = claim === undefined ? [] : unreadCategories(claim).sort();
+  const signature = claimPk === undefined || unread.length === 0 ? null : JSON.stringify([claimPk, ...unread]);
+
+  useEffect(() => {
+    if (signature === null || claimPk === undefined || attempted.current === signature) return;
+    attempted.current = signature;
+    mutate(claimPk);
+  }, [claimPk, mutate, signature]);
+
+  return {
+    /** The attempt for the claim currently shown failed; it is still new. */
+    failed: markSeen.isError && markSeen.variables === claimPk,
+  };
 }

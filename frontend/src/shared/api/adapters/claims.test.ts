@@ -31,7 +31,61 @@ describe("toClaim", () => {
       note: null,
       updatedAt: null,
       categories: ["Catégorie test 1", "Catégorie test 2"],
+      notifications: [
+        { category: "Catégorie test 1", unread: false, appearedAt: null, seenAt: null },
+        { category: "Catégorie test 2", unread: false, appearedAt: null, seenAt: null },
+      ],
     });
+  });
+
+  it("maps notification freshness per category membership", () => {
+    const mapped = toClaim({
+      ...CLAIM_NEW_WIRE,
+      notifications: [
+        {
+          category: "Catégorie test 1",
+          unread: true,
+          appeared_at: "2026-02-01T08:00:00Z",
+          seen_at: null,
+        },
+        {
+          category: "Catégorie test 2",
+          unread: false,
+          appeared_at: "2026-01-20T08:00:00Z",
+          seen_at: "2026-01-21T08:00:00Z",
+        },
+      ],
+    });
+    expect(mapped.notifications).toEqual([
+      { category: "Catégorie test 1", unread: true, appearedAt: "2026-02-01T08:00:00Z", seenAt: null },
+      {
+        category: "Catégorie test 2",
+        unread: false,
+        appearedAt: "2026-01-20T08:00:00Z",
+        seenAt: "2026-01-21T08:00:00Z",
+      },
+    ]);
+    // Freshness never leaks into the tracking status.
+    expect(mapped.status).toBe("NEW");
+  });
+
+  it("fails closed on malformed notification freshness rather than assuming seen", () => {
+    const valid = { category: "Catégorie test 1", unread: true, appeared_at: null, seen_at: null };
+    const { notifications: _dropped, ...withoutNotifications } = CLAIM_NEW_WIRE;
+    expect(() => toClaim(withoutNotifications)).toThrow(ApiRequestError);
+    expect(() => toClaim({ ...CLAIM_NEW_WIRE, notifications: "none" })).toThrow(ApiRequestError);
+    expect(() => toClaim({ ...CLAIM_NEW_WIRE, notifications: [{ ...valid, unread: 1 }] })).toThrow(
+      ApiRequestError,
+    );
+    expect(() => toClaim({ ...CLAIM_NEW_WIRE, notifications: [{ ...valid, unread: undefined }] })).toThrow(
+      ApiRequestError,
+    );
+    expect(() => toClaim({ ...CLAIM_NEW_WIRE, notifications: [{ ...valid, category: "" }] })).toThrow(
+      ApiRequestError,
+    );
+    expect(() => toClaim({ ...CLAIM_NEW_WIRE, notifications: [{ ...valid, seen_at: 5 }] })).toThrow(
+      ApiRequestError,
+    );
   });
 
   it("leaves no snake_case key on the mapped record", () => {

@@ -56,6 +56,7 @@ from mcma.planning.plan import PlanBuildError, detect_workflow
 from mcma.planning.registry import default_registry, workflow_name_for
 from mcma.persistence.repositories.audit import EmployeeActionsRepository
 from mcma.persistence.repositories.accounts import AccountsRepository
+from mcma.persistence.repositories.claims import CategoryPresenceRepository
 from mcma.persistence.repositories.jobs import AutomationJobsRepository
 
 # Fable-review-2 correction (HIGH finding), extended by the pilot-
@@ -429,21 +430,35 @@ def create_api_app(
             latest[row["claim_pk"]] = dict(row)   # ordered by version, so last wins
         return latest
 
-    def _categories_by_claim(claim_pks):
+    def _active_notifications_by_claim(claim_pks):
         """Which alert categories each claim is currently present in -- the
-        portal's own reason for surfacing it."""
+        portal's own reason for surfacing it -- and whether each of those
+        memberships is still unread (migration 0004). One row per active
+        membership, so the same dossier in two categories is two
+        notifications, each with its own freshness."""
         if not claim_pks:
             return {}
         placeholders = ",".join("?" for _ in claim_pks)
         rows = conn.execute(
-            "SELECT p.claim_pk, p.category_code, c.label FROM category_presence p "
+            "SELECT p.claim_pk, p.category_code, p.unread, p.appeared_at, p.seen_at, c.label "
+            "FROM category_presence p "
             "LEFT JOIN categories c ON c.code_alerte = p.category_code "
             f"WHERE p.claim_pk IN ({placeholders}) AND p.present = 1",
             tuple(claim_pks),
         ).fetchall()
         by_claim = {}
         for row in rows:
-            by_claim.setdefault(row["claim_pk"], []).append(row["label"] or row["category_code"])
+            by_claim.setdefault(row["claim_pk"], []).append(
+                {
+                    # The label is what the employee reads and what
+                    # `categories` already carries; the category code is
+                    # a portal key and stays server-side.
+                    "category": row["label"] or row["category_code"],
+                    "unread": bool(row["unread"]),
+                    "appeared_at": row["appeared_at"],
+                    "seen_at": row["seen_at"],
+                }
+            )
         return by_claim
 
     @app.get("/claims")
@@ -466,7 +481,7 @@ def create_api_app(
         filtered = filter_rows_by_account_access(conn, principal, rows)
         claim_pks = [r["claim_pk"] for r in filtered]
         actions = _latest_actions_by_claim(claim_pks)
-        categories = _categories_by_claim(claim_pks)
+        notifications = _active_notifications_by_claim(claim_pks)
 
         claims = []
         for row in filtered:
@@ -475,7 +490,12 @@ def create_api_app(
             claim["status"] = action["status"] if action else "NEW"
             claim["note"] = action["note"] if action else None
             claim["updated_at"] = action["updated_at"] if action else None
-            claim["categories"] = categories.get(claim["claim_pk"], [])
+            active = notifications.get(claim["claim_pk"], [])
+            # `categories` is kept exactly as before for compatibility;
+            # `notifications` is the additive, structured form of the same
+            # memberships, carrying freshness.
+            claim["categories"] = [entry["category"] for entry in active]
+            claim["notifications"] = active
             claims.append(claim)
         return {"claims": claims}
 
@@ -514,6 +534,27 @@ def create_api_app(
             note=note,
         )
         return {"claim_pk": claim_pk, "status": status, "note": note, "version": version}
+
+    @app.post("/claims/{claim_pk}/notifications/seen")
+    def mark_claim_notifications_seen(
+        claim_pk: str, principal: Principal = Depends(get_principal), _csrf=Depends(require_csrf),
+    ):
+        """Marks the claim's currently active unread notifications seen --
+        the employee opened the dossier. Freshness only: the workflow status
+        in employee_actions is never read or written here. Idempotent: a
+        repeat changes nothing and keeps the first seen_at. Local state
+        only -- nothing is sent to the portal."""
+        require_permission(principal, Permission.NOTIFICATIONS_UPDATE)
+        row = conn.execute("SELECT account_id FROM claims WHERE claim_pk = ?", (claim_pk,)).fetchone()
+        if row is None:
+            raise ApiError(404, "CLAIM_NOT_FOUND", "no such claim")
+        # The claim's OWN account decides access and scopes the update --
+        # never a client-supplied one (no body is read at all).
+        require_account_access(conn, principal, row["account_id"])
+        marked = CategoryPresenceRepository(conn).mark_seen_for_claim(
+            row["account_id"], claim_pk, seen_at=datetime.now(timezone.utc).isoformat()
+        )
+        return {"claim_pk": claim_pk, "marked_seen": marked}
 
     # -- jobs --------------------------------------------------------------
 

@@ -55,3 +55,19 @@ export async function saveClaimAction(input: ClaimActionInput): Promise<void> {
     note: input.note,
   });
 }
+
+export function claimNotificationsSeenPath(claimPk: string): string {
+  return `${CLAIMS_PATH}/${encodeURIComponent(claimPk)}/notifications/seen`;
+}
+
+/**
+ * Marks the claim's active unread notifications seen — the dossier was opened.
+ *
+ * No body at all: the backend derives the account from the claim, and the only
+ * thing it changes is notification freshness, never the tracking status. Like
+ * the tracking action, the response is not adapted; the caller refetches the
+ * authoritative list instead.
+ */
+export async function markClaimNotificationsSeen(claimPk: string): Promise<void> {
+  await apiSend(claimNotificationsSeenPath(claimPk), "POST");
+}

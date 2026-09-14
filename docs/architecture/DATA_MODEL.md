@@ -76,6 +76,18 @@ CREATE TABLE category_presence (
   last_seen_poll_run_id TEXT,
   PRIMARY KEY (account_id, claim_pk, category_code),
   FOREIGN KEY (account_id, claim_pk) REFERENCES claims(account_id, claim_pk));  -- correction #4: one pair, one claim
+-- Migration 0004 (notification freshness, "Nouveau"/"Vu") adds to category_presence:
+--   unread INTEGER NOT NULL DEFAULT 0 CHECK (unread IN (0,1)), appeared_poll_version INTEGER,
+--   appeared_at TEXT, seen_at TEXT
+-- and a per-(account_id, category_code) baseline, the first COMPLETE valid-session poll of that category:
+CREATE TABLE category_baselines (
+  account_id TEXT NOT NULL REFERENCES accounts(account_id),
+  category_code TEXT NOT NULL REFERENCES categories(code_alerte),
+  baseline_poll_version INTEGER NOT NULL, established_at TEXT NOT NULL,
+  PRIMARY KEY (account_id, category_code));
+-- A membership is unread when a complete poll AFTER the baseline observes it for the first time, or when it returns
+-- after RESOLVED_ON_PORTAL. PARTIAL/FAILED/invalid polls never change freshness. Freshness is shared state for the
+-- one notifications employee (no per-user receipts) and never touches employee_actions (workflow status).
 
 CREATE TABLE poll_runs (
   poll_run_id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(account_id),

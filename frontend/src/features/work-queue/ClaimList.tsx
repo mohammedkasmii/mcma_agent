@@ -3,6 +3,7 @@ import type { Claim } from "@shared/types";
 import { StatusBadge } from "@shared/ui";
 import { claimStatusLabel, claimStatusTone } from "@shared/utils/claimStatus";
 import { formatTimestamp } from "@shared/utils/datetime";
+import { hasUnreadNotification } from "@shared/utils/notificationFreshness";
 import { accountClaimPath } from "@shared/utils/routes";
 import styles from "./ClaimList.module.css";
 
@@ -49,58 +50,64 @@ export function ClaimList({ accountId, claims }: ClaimListProps) {
         </tr>
       </thead>
       <tbody>
-        {claims.map((claim) => (
-          <tr key={claim.claimPk}>
-            <td className="t-data">
-              <Link className={styles.reference} to={accountClaimPath(accountId, claim.claimPk)}>
-                {claim.reference === null || claim.reference.length === 0 ? (
-                  <span className={styles.missing}>Référence absente</span>
-                ) : (
-                  claim.reference
-                )}
-              </Link>
-            </td>
-            <td>
-              <Field value={claim.insured} />
-            </td>
-            <td className="t-data">
-              <Field value={claim.matricule} />
-            </td>
-            <td className="t-data">
-              <Field value={claim.police} />
-            </td>
-            <td>
-              {claim.categories.length === 0 ? (
-                <Missing />
-              ) : (
-                <ul className={styles.categories}>
-                  {claim.categories.map((category) => (
-                    <li className={styles.category} key={category}>
-                      {category}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </td>
-            <td>
-              <StatusBadge tone={claimStatusTone(claim.status)}>
-                {claimStatusLabel(claim.status)}
-              </StatusBadge>
-            </td>
-            <td>
-              {claim.note === null ? (
-                <Missing />
-              ) : (
-                <>
-                  <span className={styles.note}>{claim.note}</span>
-                  {formatTimestamp(claim.updatedAt) === null ? null : (
-                    <span className={styles.noteMeta}>{formatTimestamp(claim.updatedAt)}</span>
+        {claims.map((claim) => {
+          // Freshness, not tracking: "Nouveau" means a notification arrived
+          // that nobody has opened yet, whatever the Suivi column says.
+          const unread = hasUnreadNotification(claim);
+          return (
+            <tr className={unread ? styles.unreadRow : undefined} key={claim.claimPk}>
+              <td className="t-data">
+                <Link className={styles.reference} to={accountClaimPath(accountId, claim.claimPk)}>
+                  {claim.reference === null || claim.reference.length === 0 ? (
+                    <span className={styles.missing}>Référence absente</span>
+                  ) : (
+                    claim.reference
                   )}
-                </>
-              )}
-            </td>
-          </tr>
-        ))}
+                </Link>
+                {unread ? <span className={styles.newBadge}>Nouveau</span> : null}
+              </td>
+              <td>
+                <Field value={claim.insured} />
+              </td>
+              <td className="t-data">
+                <Field value={claim.matricule} />
+              </td>
+              <td className="t-data">
+                <Field value={claim.police} />
+              </td>
+              <td>
+                {claim.categories.length === 0 ? (
+                  <Missing />
+                ) : (
+                  <ul className={styles.categories}>
+                    {claim.categories.map((category) => (
+                      <li className={styles.category} key={category}>
+                        {category}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </td>
+              <td>
+                <StatusBadge tone={claimStatusTone(claim.status)}>
+                  {claimStatusLabel(claim.status)}
+                </StatusBadge>
+              </td>
+              <td>
+                {claim.note === null ? (
+                  <Missing />
+                ) : (
+                  <>
+                    <span className={styles.note}>{claim.note}</span>
+                    {formatTimestamp(claim.updatedAt) === null ? null : (
+                      <span className={styles.noteMeta}>{formatTimestamp(claim.updatedAt)}</span>
+                    )}
+                  </>
+                )}
+              </td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );

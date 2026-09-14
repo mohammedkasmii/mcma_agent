@@ -44,8 +44,16 @@ export interface AccountsResponseWire {
  * `status` is never null — the endpoint substitutes "NEW" when a claim has no
  * employee action yet — while `note` and `updated_at` are null in exactly
  * that case. `categories` is always an array, empty when the claim is in no
- * alert category.
+ * alert category. `notifications` carries the same active memberships with
+ * their freshness (migration 0004); it is additive, and `categories` is kept.
  */
+export interface ClaimNotificationWire {
+  readonly category: string;
+  readonly unread: boolean;
+  readonly appeared_at: string | null;
+  readonly seen_at: string | null;
+}
+
 export interface ClaimWire {
   readonly claim_pk: string;
   readonly account_id: string;
@@ -62,6 +70,7 @@ export interface ClaimWire {
   readonly note: string | null;
   readonly updated_at: string | null;
   readonly categories: readonly string[];
+  readonly notifications: readonly ClaimNotificationWire[];
 }
 
 /** The GET /claims envelope: the rows arrive under a `claims` key. */
