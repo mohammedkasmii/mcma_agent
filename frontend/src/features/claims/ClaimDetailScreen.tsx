@@ -125,6 +125,11 @@ export function ClaimDetailScreen({ account }: ClaimDetailScreenProps) {
                   ))}
                 </ul>
               )}
+              {markSeen.confirmed ? (
+                <p className={styles.seenConfirmation} role="status">
+                  Notifications marquées comme vues.
+                </p>
+              ) : null}
               {markSeen.failed ? (
                 <p className={styles.help} role="status">
                   Les nouvelles notifications de ce dossier n'ont pas pu être marquées comme vues.

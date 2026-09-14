@@ -134,3 +134,22 @@
   font-weight: var(--weight-medium);
   box-shadow: inset var(--marker-width) 0 0 var(--accent-soft);
 }
+
+/* The unread badge. Shape and position carry it as much as colour: it is
+   the only pill on the right edge of an account item. */
+.unread {
+  margin-left: auto;
+}
+
+.unreadBadge {
+  display: inline-block;
+  min-width: 1.5rem;
+  padding: 0 var(--space-2);
+  color: #ffffff;
+  background: var(--status-review);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  line-height: 1.5;
+  text-align: center;
+}

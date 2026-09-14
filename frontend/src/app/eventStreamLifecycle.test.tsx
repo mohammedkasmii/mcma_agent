@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderAppAt } from "../test/renderApp";
 import { mockRoutes } from "../test/apiMock";
@@ -85,12 +85,14 @@ describe("application event stream lifecycle", () => {
     await screen.findByRole("heading", { name: "Vue d'ensemble" });
     expect(CountingEventSource.opened).toBe(1);
 
-    // Navigate through the rail into an account workspace...
-    await user.click(await screen.findByRole("link", { name: /MCMA • ZONE-A/ }));
+    // Navigate through the rail into an account workspace. Scoped to the
+    // rail: the overview screen offers its own link to the same queue.
+    const rail = screen.getByRole("navigation", { name: "Comptes portail" });
+    await user.click(await within(rail).findByRole("link", { name: /MCMA • ZONE-A/ }));
     await screen.findByRole("heading", { name: "File de travail" });
 
     // ...and on to a different account.
-    await user.click(screen.getByRole("link", { name: /MCMA • ZONE-C/ }));
+    await user.click(within(rail).getByRole("link", { name: /MCMA • ZONE-C/ }));
     await waitFor(() =>
       expect(screen.getAllByRole("heading", { name: "File de travail" }).length).toBeGreaterThan(0),
     );

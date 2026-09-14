@@ -4,6 +4,7 @@ import { ApiRequestError } from "../client";
 import {
   READ_ONLY_ACCOUNT,
   READ_ONLY_ACCOUNT_WIRE,
+  SECOND_WRITABLE_ACCOUNT_WIRE,
   TEST_ACCOUNTS,
   TEST_ACCOUNTS_WIRE,
   WRITABLE_ACCOUNT,
@@ -80,5 +81,75 @@ describe("toPortalAccounts", () => {
       expect((error as ApiRequestError).apiError.code).toBe("INVALID_RESPONSE");
       expect((error as ApiRequestError).message).not.toContain("account_id");
     }
+  });
+});
+
+describe("toPortalAccount notification summary", () => {
+  it("maps every summary field", () => {
+    const mapped = toPortalAccount(WRITABLE_ACCOUNT_WIRE);
+    expect(mapped.activeNotificationCount).toBe(3);
+    expect(mapped.unreadNotificationCount).toBe(2);
+    expect(mapped.unreadClaimCount).toBe(1);
+    expect(mapped.notificationLastAttemptAt).toBe("2026-02-01T08:05:00Z");
+    expect(mapped.notificationLastAttemptStatus).toBe("COMPLETE");
+    expect(mapped.notificationLastSuccessAt).toBe("2026-02-01T08:05:00Z");
+  });
+
+  it("accepts an account that has never been polled", () => {
+    const mapped = toPortalAccount(SECOND_WRITABLE_ACCOUNT_WIRE);
+    expect(mapped.notificationLastAttemptAt).toBeNull();
+    expect(mapped.notificationLastAttemptStatus).toBeNull();
+    expect(mapped.notificationLastSuccessAt).toBeNull();
+    expect(mapped.unreadNotificationCount).toBe(0);
+  });
+
+  it("maps a failed latest attempt alongside an older success", () => {
+    const mapped = toPortalAccount(READ_ONLY_ACCOUNT_WIRE);
+    expect(mapped.notificationLastAttemptStatus).toBe("FAILED");
+    expect(mapped.notificationLastSuccessAt).toBe("2026-01-31T07:00:00Z");
+  });
+
+  it("fails closed when a summary field is missing", () => {
+    for (const field of [
+      "active_notification_count",
+      "unread_notification_count",
+      "unread_claim_count",
+      "notification_last_attempt_at",
+      "notification_last_attempt_status",
+      "notification_last_success_at",
+    ]) {
+      const { [field]: _dropped, ...incomplete } = WRITABLE_ACCOUNT_WIRE as unknown as Record<
+        string,
+        unknown
+      >;
+      expect(() => toPortalAccount(incomplete)).toThrow(ApiRequestError);
+    }
+  });
+
+  it("fails closed on a count that is not a whole number of things", () => {
+    // A missing count must never be read as "nothing new": that is the one
+    // failure an employee cannot see.
+    for (const value of [-1, 1.5, "2", null, undefined, Number.NaN]) {
+      expect(() =>
+        toPortalAccount({ ...WRITABLE_ACCOUNT_WIRE, unread_notification_count: value }),
+      ).toThrow(ApiRequestError);
+    }
+  });
+
+  it("fails closed on an attempt status this frontend does not understand", () => {
+    for (const value of ["RUNNING", "", 3, "complete"]) {
+      expect(() =>
+        toPortalAccount({ ...WRITABLE_ACCOUNT_WIRE, notification_last_attempt_status: value }),
+      ).toThrow(ApiRequestError);
+    }
+  });
+
+  it("fails closed on a timestamp that is not a string", () => {
+    expect(() =>
+      toPortalAccount({ ...WRITABLE_ACCOUNT_WIRE, notification_last_success_at: 20260201 }),
+    ).toThrow(ApiRequestError);
+    expect(() =>
+      toPortalAccount({ ...WRITABLE_ACCOUNT_WIRE, notification_last_attempt_at: "" }),
+    ).toThrow(ApiRequestError);
   });
 });

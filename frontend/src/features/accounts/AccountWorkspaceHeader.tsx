@@ -1,5 +1,6 @@
 import { StatusBadge } from "@shared/ui";
 import { capabilityLabel, formatAccountIdentity } from "@shared/utils/accountIdentity";
+import { NotificationFreshness } from "./NotificationFreshness";
 import type { AccountResolution } from "./queries";
 import styles from "./AccountWorkspaceHeader.module.css";
 
@@ -41,6 +42,12 @@ export function AccountWorkspaceHeader({ title, resolution }: AccountWorkspaceHe
         ) : null}
       </div>
       <h1 className="t-screen-title">{title}</h1>
+      {/* How current this account's notifications are, next to the screen
+          it belongs to -- so "rien de nouveau" is never read as "rien
+          n'est arrive" when the last refresh actually failed. */}
+      {resolution.status === "resolved" ? (
+        <NotificationFreshness account={resolution.account} />
+      ) : null}
     </header>
   );
 }

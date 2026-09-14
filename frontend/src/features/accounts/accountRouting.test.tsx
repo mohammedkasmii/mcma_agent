@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { renderAppAt } from "../../test/renderApp";
 import { mockAccounts, mockApiError, mockNetworkFailure } from "../../test/apiMock";
 import {
@@ -23,13 +23,16 @@ describe("account rail against the real query", () => {
     mockAccounts(TEST_ACCOUNTS_WIRE);
     renderAppAt("/overview");
 
-    expect(await screen.findByText("MCMA • ZONE-A")).toBeInTheDocument();
-    expect(screen.getByText("MAMDA • ZONE-B")).toBeInTheDocument();
-    expect(screen.getByText("Compte de test A")).toBeInTheDocument();
+    // Scoped to the rail: the overview screen names the same accounts, and
+    // this case is about what the RAIL renders.
+    const rail = screen.getByRole("navigation", { name: "Comptes portail" });
+    expect(await within(rail).findByText("MCMA • ZONE-A")).toBeInTheDocument();
+    expect(within(rail).getByText("MAMDA • ZONE-B")).toBeInTheDocument();
+    expect(within(rail).getByText("Compte de test A")).toBeInTheDocument();
     // Two accounts are connected in the fixture set.
-    expect(screen.getAllByText("Connecté").length).toBeGreaterThan(0);
-    expect(screen.getByText("Reconnexion requise")).toBeInTheDocument();
-    expect(screen.getByText("Lecture seule")).toBeInTheDocument();
+    expect(within(rail).getAllByText("Connecté").length).toBeGreaterThan(0);
+    expect(within(rail).getByText("Reconnexion requise")).toBeInTheDocument();
+    expect(within(rail).getByText("Lecture seule")).toBeInTheDocument();
   });
 
   it("says plainly when the employee has no accounts", async () => {

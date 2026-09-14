@@ -39,6 +39,13 @@ export function useEventStream(factory?: Parameters<typeof openEventStream>[1]):
         // A job changed somewhere: refresh the collections and details that
         // could describe it. The GET that follows is what decides the state.
         onJobEvent: () => invalidate(["jobs", "job", "job-plan"]),
+        // A background notification poll ran for some account. Both the
+        // per-account summaries (rail badges, overview counts, last refresh)
+        // and the claim lists are derived from what it wrote, so both are
+        // asked again. Without this, a poll that arrived while the employee
+        // was looking at the screen stayed invisible until they navigated:
+        // the stream carried job events only, and no query polls on a timer.
+        onNotificationEvent: () => invalidate(["accounts", "claims"]),
         // The cursor was too stale to replay, so anything may have moved on.
         onResync: () => invalidate(EVERYTHING_STALEABLE),
         // Same treatment on connect and reconnect: whatever was emitted while

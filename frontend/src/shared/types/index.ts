@@ -1,6 +1,7 @@
 export type {
   AccountsLoadState,
   ConnectionState,
+  PollAttemptStatus,
   PortalAccount,
   PortalEntity,
   PortalScope,

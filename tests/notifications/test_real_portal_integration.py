@@ -25,6 +25,7 @@ from mcma.portal.capabilities import (
     ReadCapability,
 )
 from mcma.portal.vault import WindowsAclVerifier
+from notifications_test_support import OUJDA
 
 
 # --------------------------------------------------------------------- #
@@ -667,17 +668,77 @@ def test_the_fetch_script_reports_a_parse_failure_without_the_body():
     assert "raw: text" not in _NOTIFICATION_FETCH_JS
 
 
-def test_a_run_that_read_nothing_is_not_reported_as_refreshed():
+class _StubReader:
+    """Just enough reader for the poll to reach run_poll and close again."""
+
+    async def close(self):
+        return None
+
+
+def _poll_with_run_status(conn, monkeypatch, run_status):
+    """Drives the REAL poll path -- lease, session, reader, run_poll,
+    teardown -- with only the portal itself replaced, and returns the
+    outcome the employee would be shown."""
+    from mcma.notifications import poller as poller_module
+    from mcma.portal.sinauto_contracts import DEFAULT_SINAUTO_HOST
+
+    async def _open_reader(*_args, **_kwargs):
+        return _StubReader()
+
+    async def _run_poll(*_args, **_kwargs):
+        return "poll-run-1", run_status
+
+    monkeypatch.setattr(
+        poller_module, "load_and_verify_session",
+        lambda *a, **k: b'{"cookies": [], "origins": []}',
+    )
+    monkeypatch.setattr(poller_module, "open_reader", _open_reader)
+    monkeypatch.setattr(poller_module, "run_poll", _run_poll)
+
+    return asyncio.run(
+        poller_module.poll_one_account(
+            conn, object(), OUJDA, ("CODE-1",),
+            instance_id="instance-1", allowed_host=DEFAULT_SINAUTO_HOST,
+            vault_dir=None, crypto_backend=None, entity="MCMA",
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("run_status", "expected_outcome"),
+    [
+        ("COMPLETE", "POLLED"),
+        ("PARTIAL", "POLL_INCOMPLETE"),
+        ("FAILED", "POLL_FAILED"),
+        # An unrecognised status must fail towards "read nothing", never
+        # towards telling the employee the refresh worked.
+        ("SOMETHING_NEW", "POLL_FAILED"),
+    ],
+)
+def test_a_run_that_read_nothing_is_not_reported_as_refreshed(
+    conn, monkeypatch, run_status, expected_outcome
+):
     """POLLED after eight failed categories told the employee
-    'Notifications actualisées.' about a refresh that read nothing."""
-    import inspect
+    'Notifications actualisées.' about a refresh that read nothing.
 
-    from mcma.notifications import poller
+    Asserted as behaviour, through the real poll path: what the run
+    reported goes in, what the employee is told comes out. A constant or a
+    lookup table on its own cannot satisfy this -- the mapping has to be
+    the one the code actually applies.
+    """
+    assert _poll_with_run_status(conn, monkeypatch, run_status) == expected_outcome
 
-    source = inspect.getsource(poller.poll_one_account)
-    assert 'if run_status == "COMPLETE":' in source
-    assert '"POLL_FAILED"' in source
-    assert '"POLL_INCOMPLETE"' in source
+
+def test_only_a_complete_run_is_announced_as_refreshed(conn, monkeypatch):
+    """The three outcomes stay distinguishable from each other, so the
+    API's employee-facing sentences cannot collapse into one."""
+    outcomes = {
+        status: _poll_with_run_status(conn, monkeypatch, status)
+        for status in ("COMPLETE", "PARTIAL", "FAILED")
+    }
+    assert outcomes["COMPLETE"] == "POLLED"
+    assert len(set(outcomes.values())) == 3
+    assert "POLLED" not in (outcomes["PARTIAL"], outcomes["FAILED"])
 
 
 def test_both_new_outcomes_have_employee_facing_sentences():

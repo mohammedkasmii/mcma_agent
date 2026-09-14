@@ -25,6 +25,20 @@ export interface AccountWire {
   readonly session_active: boolean;
   readonly connection_state: string;
   readonly writable: boolean;
+  /**
+   * Derived notification summary (mcma/app/api/app.py,
+   * _notification_summary_by_account). Counts cover ACTIVE category
+   * memberships only; one dossier in two categories is two notifications
+   * and one dossier, which is why both numbers are sent.
+   */
+  readonly active_notification_count: number;
+  readonly unread_notification_count: number;
+  readonly unread_claim_count: number;
+  /** Latest poll attempt, whatever its outcome. Null when never polled. */
+  readonly notification_last_attempt_at: string | null;
+  readonly notification_last_attempt_status: string | null;
+  /** Latest COMPLETE poll on a valid session -- the only honest "as of". */
+  readonly notification_last_success_at: string | null;
 }
 
 /** The GET /accounts envelope: the rows arrive under an `accounts` key. */

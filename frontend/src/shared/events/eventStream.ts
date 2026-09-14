@@ -22,11 +22,23 @@
 
 /** Event types the backend's outbox actually emits, plus the SSE control event. */
 export const JOB_EVENT_TYPES = ["JOB_CREATED", "JOB_STATUS_CHANGED"] as const;
+/**
+ * A background notification poll landed for one account (mcma/notifications/
+ * poller.py). Emitted whether it read rows or failed before reaching the
+ * portal, because both change what the employee should be told.
+ */
+export const NOTIFICATION_EVENT_TYPES = ["NOTIFICATIONS_REFRESHED"] as const;
 export const RESYNC_EVENT_TYPE = "resync";
 
 export type EventStreamHandlers = {
   /** A job somewhere changed. Refresh job collections and job details. */
   readonly onJobEvent: () => void;
+  /**
+   * A notification refresh landed. Refresh the account summaries and the
+   * claim lists; the payload's outcome is not read, because the GET that
+   * follows is what decides what is true.
+   */
+  readonly onNotificationEvent: () => void;
   /** The cursor was too old to replay: everything may be stale. */
   readonly onResync: () => void;
   /**
@@ -78,6 +90,12 @@ export function openEventStream(
   for (const type of JOB_EVENT_TYPES) {
     source.addEventListener(type, () => {
       handlers.onJobEvent();
+    });
+  }
+
+  for (const type of NOTIFICATION_EVENT_TYPES) {
+    source.addEventListener(type, () => {
+      handlers.onNotificationEvent();
     });
   }
 

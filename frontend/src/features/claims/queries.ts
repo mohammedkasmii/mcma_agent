@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { Claim, ClaimStatus } from "@shared/types";
 import { markClaimNotificationsSeen, saveClaimAction } from "@shared/api/claims";
 import { unreadCategories } from "@shared/utils/notificationFreshness";
+import { ACCOUNTS_QUERY_KEY } from "@features/accounts/queries";
 import { claimsQueryKey, useClaimsQuery } from "@features/work-queue/queries";
 
 /**
@@ -71,7 +72,15 @@ export function useMarkSeenOnOpen(accountId: string, claim: Claim | undefined) {
   const markSeen = useMutation({
     mutationFn: (claimPk: string) => markClaimNotificationsSeen(claimPk),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: claimsQueryKey(accountId) });
+      // BOTH caches are derived from the same category_presence rows this
+      // just changed: the account's claims, and the per-account summary the
+      // rail badge and the overview counters read. Refreshing only the
+      // claims left "2 nouvelles notifications" in the sidebar for a dossier
+      // the employee had already opened.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: claimsQueryKey(accountId) }),
+        queryClient.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY }),
+      ]);
     },
   });
   const { mutate } = markSeen;
@@ -90,5 +99,11 @@ export function useMarkSeenOnOpen(accountId: string, claim: Claim | undefined) {
   return {
     /** The attempt for the claim currently shown failed; it is still new. */
     failed: markSeen.isError && markSeen.variables === claimPk,
+    /**
+     * The backend confirmed it. Reported only after the request succeeded --
+     * never on optimistic intent -- so the confirmation an employee reads is
+     * always a fact about stored state.
+     */
+    confirmed: markSeen.isSuccess && markSeen.variables === claimPk,
   };
 }

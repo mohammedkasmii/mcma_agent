@@ -1,4 +1,9 @@
-import type { ConnectionState, PortalAccount, PortalEntity } from "@shared/types";
+import type {
+  ConnectionState,
+  PollAttemptStatus,
+  PortalAccount,
+  PortalEntity,
+} from "@shared/types";
 import { ApiRequestError } from "../client";
 import { responseShapeError } from "../errors";
 
@@ -24,6 +29,8 @@ const CONNECTION_STATES: readonly string[] = [
   "NOT_CONNECTED",
 ];
 
+const POLL_ATTEMPT_STATUSES: readonly string[] = ["COMPLETE", "PARTIAL", "FAILED"];
+
 function fail(): never {
   throw new ApiRequestError(responseShapeError());
 }
@@ -36,6 +43,31 @@ function requireString(value: unknown): string {
 function requireBoolean(value: unknown): boolean {
   if (typeof value !== "boolean") fail();
   return value;
+}
+
+/**
+ * A count the employee is shown. A negative or fractional "number of new
+ * notifications" is not a count this frontend will render, and a missing one
+ * must not silently become 0 -- a badge that says nothing is new is exactly
+ * the failure an employee cannot detect.
+ */
+function requireCount(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) fail();
+  return value;
+}
+
+/** An optional timestamp. Null means "never happened", never "unknown". */
+function requireNullableString(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || value.length === 0) fail();
+  return value;
+}
+
+function requireNullableAttemptStatus(value: unknown): PollAttemptStatus | null {
+  if (value === null) return null;
+  const status = requireString(value);
+  if (!POLL_ATTEMPT_STATUSES.includes(status)) fail();
+  return status as PollAttemptStatus;
 }
 
 function requireRecord(value: unknown): Record<string, unknown> {
@@ -64,6 +96,17 @@ export function toPortalAccount(row: unknown): PortalAccount {
     // target of an automation; `entity === "MCMA"` is not an authorization
     // rule this frontend is allowed to reimplement.
     writable: requireBoolean(wire["writable"]),
+    // Counts and poll state are derived server-side from the same rows the
+    // work queue reads. The frontend re-derives none of them: a second
+    // definition of "new" is how two screens start disagreeing.
+    activeNotificationCount: requireCount(wire["active_notification_count"]),
+    unreadNotificationCount: requireCount(wire["unread_notification_count"]),
+    unreadClaimCount: requireCount(wire["unread_claim_count"]),
+    notificationLastAttemptAt: requireNullableString(wire["notification_last_attempt_at"]),
+    notificationLastAttemptStatus: requireNullableAttemptStatus(
+      wire["notification_last_attempt_status"],
+    ),
+    notificationLastSuccessAt: requireNullableString(wire["notification_last_success_at"]),
   };
 }
 

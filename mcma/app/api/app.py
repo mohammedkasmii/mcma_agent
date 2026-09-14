@@ -238,6 +238,78 @@ def create_api_app(
         filtered = filter_rows_by_account_access(conn, principal, rows)
         return {"notifications": [dict(r) for r in filtered]}
 
+    def _notification_summary_by_account(account_ids):
+        """Notification volume and poll freshness for SEVERAL accounts, in
+        three GROUPED queries -- never one per account.
+
+        Counts are derived from the same category_presence rows the work
+        queue reads, so the rail, the overview and the queue can never
+        disagree. present=1 only: a membership that resolved on the portal
+        is no longer a notification, whatever its unread flag still says.
+
+        Nothing claimant-facing is returned -- counts and poll timestamps
+        only. The caller passes exactly the accounts the principal may see,
+        so an account outside that set has no row here to expose.
+        """
+        if not account_ids:
+            return {}
+        placeholders = ",".join("?" for _ in account_ids)
+        params = tuple(account_ids)
+        summaries = {
+            account_id: {
+                "active_notification_count": 0,
+                "unread_notification_count": 0,
+                "unread_claim_count": 0,
+                "notification_last_attempt_at": None,
+                "notification_last_attempt_status": None,
+                "notification_last_success_at": None,
+            }
+            for account_id in account_ids
+        }
+
+        # One dossier in two categories is two notifications and ONE
+        # dossier: the employee needs both numbers, so both are counted
+        # here rather than divided out in the browser.
+        for row in conn.execute(
+            "SELECT account_id, COUNT(*) AS active_count, "
+            "SUM(CASE WHEN unread = 1 THEN 1 ELSE 0 END) AS unread_count, "
+            "COUNT(DISTINCT CASE WHEN unread = 1 THEN claim_pk END) AS unread_claims "
+            f"FROM category_presence WHERE present = 1 AND account_id IN ({placeholders}) "
+            "GROUP BY account_id",
+            params,
+        ).fetchall():
+            summary = summaries[row["account_id"]]
+            summary["active_notification_count"] = row["active_count"] or 0
+            summary["unread_notification_count"] = row["unread_count"] or 0
+            summary["unread_claim_count"] = row["unread_claims"] or 0
+
+        # The latest attempt, whatever its outcome. rowid is this single
+        # writer's insertion order, so MAX(rowid) is the poll that ran last
+        # -- including one that FAILED, which is exactly what the employee
+        # must be told about.
+        for row in conn.execute(
+            "SELECT account_id, completed_at, status FROM poll_runs WHERE rowid IN "
+            f"(SELECT MAX(rowid) FROM poll_runs WHERE account_id IN ({placeholders}) GROUP BY account_id)",
+            params,
+        ).fetchall():
+            summary = summaries[row["account_id"]]
+            summary["notification_last_attempt_at"] = row["completed_at"]
+            summary["notification_last_attempt_status"] = row["status"]
+
+        # The latest poll that actually read everything on a valid session.
+        # This is the only timestamp "les donnees datent de" may rest on: a
+        # later FAILED attempt must never overwrite it, or stale rows would
+        # be presented as current.
+        for row in conn.execute(
+            "SELECT account_id, MAX(completed_at) AS last_success FROM poll_runs "
+            f"WHERE status = 'COMPLETE' AND session_valid = 1 AND account_id IN ({placeholders}) "
+            "GROUP BY account_id",
+            params,
+        ).fetchall():
+            summaries[row["account_id"]]["notification_last_success_at"] = row["last_success"]
+
+        return summaries
+
     @app.get("/accounts")
     def list_accounts(principal: Principal = Depends(get_principal)):
         """Pilot-integration correction (section 2/6): the dashboard must
@@ -252,6 +324,7 @@ def create_api_app(
                 f"SELECT account_id, label, entity, scope FROM accounts WHERE account_id IN ({placeholders})",
                 tuple(visible),
             ).fetchall()
+        summaries = _notification_summary_by_account(tuple(visible))
         # session_active tells the dashboard which accounts have captured
         # portal session MATERIAL. It is not the same claim as "this
         # session works": nothing ages an ACTIVE row out, so reporting
@@ -289,6 +362,10 @@ def create_api_app(
             # form job. Stating it here means the dashboard never has to
             # re-derive the rule from the entity string.
             account["writable"] = account.get("entity") == "MCMA"
+            # Additive: every existing field keeps its meaning. The summary
+            # is what lets the rail and the overview show where the work is
+            # without fetching each account's claims.
+            account.update(summaries[account_id])
             accounts.append(account)
         return {"accounts": accounts}
 

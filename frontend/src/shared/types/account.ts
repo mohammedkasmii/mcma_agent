@@ -32,6 +32,12 @@ export type ConnectionState =
   | "RECONNECT_REQUIRED"
   | "NOT_CONNECTED";
 
+/**
+ * Outcome of one notification poll attempt, as the backend records it on
+ * poll_runs. PARTIAL means some categories were read and others were not.
+ */
+export type PollAttemptStatus = "COMPLETE" | "PARTIAL" | "FAILED";
+
 export interface PortalAccount {
   /** Opaque server identifier. Used in routes, never shown as primary copy. */
   readonly accountId: string;
@@ -46,6 +52,24 @@ export interface PortalAccount {
    * Decided by the backend. MAMDA accounts are never writable.
    */
   readonly writable: boolean;
+  /**
+   * Active category memberships for this account: what the portal is
+   * currently flagging. One dossier in two categories counts twice, which
+   * is what the portal's own notification bar shows.
+   */
+  readonly activeNotificationCount: number;
+  /** Active memberships nobody has opened yet. */
+  readonly unreadNotificationCount: number;
+  /** Distinct dossiers behind those unread memberships. */
+  readonly unreadClaimCount: number;
+  /** Latest poll attempt, whatever its outcome; null when never polled. */
+  readonly notificationLastAttemptAt: string | null;
+  readonly notificationLastAttemptStatus: PollAttemptStatus | null;
+  /**
+   * Latest COMPLETE poll on a valid session. A later failed attempt never
+   * overwrites it, so "les donnees datent de" stays true.
+   */
+  readonly notificationLastSuccessAt: string | null;
 }
 
 /** Loading lifecycle for any account-scoped surface. */

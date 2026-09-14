@@ -433,3 +433,142 @@ describe("notification freshness", () => {
     }
   });
 });
+
+describe("notifications counted, dossiers counted", () => {
+  const unreadNote = (category: string, appearedAt: string) => ({
+    category,
+    unread: true,
+    appeared_at: appearedAt,
+    seen_at: null,
+  });
+
+  it("states both meanings when one dossier carries two new notifications", async () => {
+    // The confusion this wording exists to remove: two notifications, one
+    // row to open.
+    const twoNew = {
+      ...CLAIM_NEW_WIRE,
+      notifications: [
+        unreadNote("Catégorie test 1", "2026-02-01T08:00:00Z"),
+        unreadNote("Catégorie test 2", "2026-02-01T08:00:00Z"),
+      ],
+    };
+    mockBackend({ [WRITABLE_ID]: [twoNew, CLAIM_TRACKED_WIRE] });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    expect(await screen.findByText("2 nouvelles notifications")).toBeInTheDocument();
+    expect(screen.getByText("1 dossier concerné")).toBeInTheDocument();
+    // The type tiles keep counting memberships, matching the portal's bar.
+    expect(
+      screen.getByRole("button", { name: "Catégorie test 1 — 1 alerte, dont 1 nouvelle" }),
+    ).toBeInTheDocument();
+    // ...and exactly one dossier row is badged new.
+    expect(screen.getAllByText("Nouveau")).toHaveLength(1);
+  });
+
+  it("uses the singular for a single new notification", async () => {
+    const oneNew = {
+      ...CLAIM_NEW_WIRE,
+      notifications: [
+        unreadNote("Catégorie test 1", "2026-02-01T08:00:00Z"),
+        { category: "Catégorie test 2", unread: false, appeared_at: null, seen_at: null },
+      ],
+    };
+    mockBackend({ [WRITABLE_ID]: [oneNew] });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    expect(await screen.findByText("1 nouvelle notification")).toBeInTheDocument();
+    expect(screen.getByText("1 dossier concerné")).toBeInTheDocument();
+  });
+
+  it("says zero in the singular, as French does", async () => {
+    mockBackend({ [WRITABLE_ID]: WRITABLE_ACCOUNT_CLAIMS_WIRE });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    expect(await screen.findByText("0 nouvelle notification")).toBeInTheDocument();
+    expect(screen.getByText("0 dossier concerné")).toBeInTheDocument();
+  });
+
+  it("explains Nouveau against À traiter next to the filters", async () => {
+    mockBackend({ [WRITABLE_ID]: WRITABLE_ACCOUNT_CLAIMS_WIRE });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    const legend = await screen.findByText(/« Nouveau » signale une notification/);
+    expect(legend).toHaveTextContent("pas encore ouverte");
+    expect(legend).toHaveTextContent("« À traiter » décrit le travail qu'il reste à faire");
+    // Opening is not completing: the workflow status is untouched.
+    expect(legend).toHaveTextContent("sans changer son suivi");
+  });
+});
+
+describe("queue order", () => {
+  const reference = (row: HTMLElement) => within(row).getByRole("link").textContent;
+  const queueReferences = () =>
+    screen.getAllByRole("row").slice(1).map((row) => reference(row));
+
+  const claimWith = (
+    claimPk: string,
+    ref: string,
+    notifications: readonly { unread: boolean; appeared_at: string | null }[],
+  ) => ({
+    ...CLAIM_NEW_WIRE,
+    claim_pk: claimPk,
+    reference: ref,
+    categories: ["Catégorie test 1"],
+    notifications: notifications.map((notification) => ({
+      category: "Catégorie test 1",
+      unread: notification.unread,
+      appeared_at: notification.appeared_at,
+      seen_at: null,
+    })),
+  });
+
+  it("shows new dossiers first, newest first, then the seen ones", async () => {
+    mockBackend({
+      [WRITABLE_ID]: [
+        claimWith("pk-seen", "REF-SEEN", [{ unread: false, appeared_at: null }]),
+        claimWith("pk-old", "REF-OLD", [{ unread: true, appeared_at: "2026-02-01T08:00:00Z" }]),
+        claimWith("pk-new", "REF-NEW", [{ unread: true, appeared_at: "2026-02-03T08:00:00Z" }]),
+      ],
+    });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    await screen.findByText("REF-NEW");
+    expect(queueReferences()).toEqual(["REF-NEW", "REF-OLD", "REF-SEEN"]);
+  });
+
+  it("keeps that order under a filter", async () => {
+    const user = userEvent.setup();
+    mockBackend({
+      [WRITABLE_ID]: [
+        claimWith("pk-old", "REF-OLD", [{ unread: true, appeared_at: "2026-02-01T08:00:00Z" }]),
+        claimWith("pk-seen", "REF-SEEN", [{ unread: false, appeared_at: null }]),
+        claimWith("pk-new", "REF-NEW", [{ unread: true, appeared_at: "2026-02-03T08:00:00Z" }]),
+      ],
+    });
+    renderAppAt(WORK(WRITABLE_ID));
+
+    await screen.findByText("REF-NEW");
+    await user.click(screen.getByRole("button", { name: /^Nouvelles \(2\)/ }));
+    expect(queueReferences()).toEqual(["REF-NEW", "REF-OLD"]);
+  });
+
+  it("orders identically on a refetch of the same rows in another order", async () => {
+    // Deterministic, not merely stable: the backend may return rows in any
+    // order and the employee must not see the queue reshuffle.
+    const rows = [
+      claimWith("pk-a", "REF-A", [{ unread: true, appeared_at: "2026-02-01T08:00:00Z" }]),
+      claimWith("pk-b", "REF-B", [{ unread: true, appeared_at: "2026-02-01T08:00:00Z" }]),
+      claimWith("pk-c", "REF-C", [{ unread: true, appeared_at: "2026-02-01T08:00:00Z" }]),
+    ];
+    mockBackend({ [WRITABLE_ID]: rows });
+    const first = renderAppAt(WORK(WRITABLE_ID));
+    await screen.findByText("REF-A");
+    const firstOrder = queueReferences();
+    first.unmount();
+
+    mockBackend({ [WRITABLE_ID]: [...rows].reverse() });
+    renderAppAt(WORK(WRITABLE_ID));
+    await screen.findByText("REF-A");
+    expect(queueReferences()).toEqual(firstOrder);
+  });
+});

@@ -28,12 +28,14 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
+from datetime import datetime, timezone
 
 from mcma.notifications.extract import run_poll
 from mcma.persistence.leases import LeaseNotHeld, acquire_lease
 from mcma.persistence.repositories.accounts import AccountsRepository
-from mcma.persistence.repositories.claims import CategoriesRepository
-from mcma.persistence.repositories.outbox import AccountStateVersionRepository
+from mcma.persistence.repositories.claims import CategoriesRepository, PollRunsRepository
+from mcma.persistence.repositories.outbox import AccountStateVersionRepository, EventOutboxRepository
 from mcma.portal.capabilities import is_valid_category_code, open_reader
 from mcma.portal.sinauto_contracts import (
     category_discovery_contracts,
@@ -45,7 +47,182 @@ from mcma.portal.vault import load_and_verify_session, revoke_session
 logger = logging.getLogger(__name__)
 
 
+#: Outcomes where the refresh was attempted and read NOTHING, having given
+#: up before run_poll -- so no poll_runs row would otherwise exist and the
+#: employee would keep reading yesterday's COMPLETE poll as the latest
+#: attempt while today's session is dead.
+FAILED_BEFORE_POLL_OUTCOMES = frozenset({"NO_SESSION", "RECONNECT_REQUIRED", "PORTAL_UNAVAILABLE"})
+
+#: Outcomes where run_poll ran and wrote its own poll_runs row. Their event
+#: is published INSIDE run_poll's transaction, not here.
+POLL_RUN_OUTCOMES = frozenset({"POLLED", "POLL_INCOMPLETE", "POLL_FAILED"})
+
+#: Announced without any poll_runs row. NO_CATEGORIES read nothing -- so it
+#: must not be recorded as a failed refresh -- but getting there PROVED the
+#: session is live, and _report_session_state has just moved the account
+#: from UNVERIFIED to CONNECTED. That is a change to what /accounts answers,
+#: so an open screen has to be told to ask again.
+ANNOUNCED_WITHOUT_RUN_OUTCOMES = frozenset({"NO_CATEGORIES"})
+
+#: run_poll's overall status -> the outcome an employee is shown. Reaching
+#: run_poll is not the same as reading anything: a run whose every category
+#: FAILED must never be reported as "Notifications actualisees."
+RUN_STATUS_OUTCOMES = {
+    "COMPLETE": "POLLED",
+    "PARTIAL": "POLL_INCOMPLETE",
+    "FAILED": "POLL_FAILED",
+}
+
+
+def outcome_for_run_status(run_status: str) -> str:
+    """An unrecognised status is treated as having read nothing, which is
+    the safe direction: it never tells the employee a refresh worked."""
+    return RUN_STATUS_OUTCOMES.get(run_status, "POLL_FAILED")
+
+#: The one notification event this application publishes. PII-free by
+#: construction: the payload carries the outcome enum and nothing else, and
+#: the account is the outbox row's own column.
+NOTIFICATIONS_REFRESHED = "NOTIFICATIONS_REFRESHED"
+
+#: LEASE_BUSY and NO_CATEGORIES are deliberately in NEITHER set.
+#: LEASE_BUSY means the refresh was deferred behind a dossier fill, not that
+#: it failed; NO_CATEGORIES means the session worked and the portal offered
+#: no alert category, which is not a failure to show a warning about.
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _insert_refresh_event(conn, account_id: str, version: int, outcome: str) -> None:
+    """The outbox row itself. Always called INSIDE a transaction that also
+    carries the state change it announces -- never on its own.
+
+    An invalidation signal, never state: it says "ask again about this
+    account", which is what lets a background poll reach an employee who is
+    already looking at the screen without any client-side polling interval.
+    The payload is the outcome enum only -- no claim, no reference, no
+    portal text -- and the account_id column keeps the SSE layer's existing
+    per-account filtering working unchanged.
+    """
+    EventOutboxRepository(conn).insert(
+        account_id,
+        version,
+        "notification",
+        NOTIFICATIONS_REFRESHED,
+        json.dumps({"outcome": outcome}),
+        _utcnow_iso(),
+    )
+
+
+def record_failed_refresh_attempt(conn, account_id: str, outcome: str) -> None:
+    """Records an attempt that never reached run_poll, as a FAILED poll_run,
+    and announces it -- in ONE transaction.
+
+    Transactional outbox: the row and the event that tells the interface
+    about it commit together. Written as two autocommit statements, a crash
+    between them would leave an account whose stored freshness said
+    "derniere tentative echouee" and no screen anywhere that ever heard.
+
+    Reuses the existing poll_runs table rather than inventing a second
+    history: a row there means "a refresh of this account was attempted",
+    and FAILED with session_valid=0 means it read nothing. The row has NO
+    poll_run_categories children, so no category presence advances and no
+    freshness baseline is established from it -- apply_category_result is
+    only ever reached from run_poll.
+
+    notification_last_success_at is unaffected for the same reason: only a
+    COMPLETE row on a valid session counts as a success, so an expiry today
+    can never overwrite yesterday's genuine refresh time.
+
+    The version is BUMPED, never read back: two failures in a row are two
+    distinct state changes, and publishing both under one version would
+    make the second indistinguishable from a replay of the first.
+    """
+    now = _utcnow_iso()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        version = AccountStateVersionRepository(conn).bump(account_id)
+        PollRunsRepository(conn).create(
+            uuid.uuid4().hex, account_id, now, "FAILED", session_valid=False, completed_at=now,
+        )
+        _insert_refresh_event(conn, account_id, version, outcome)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def publish_refresh_event(conn, account_id: str, outcome: str) -> None:
+    """Announces a refresh that changed what /accounts answers WITHOUT
+    writing a poll run -- today, NO_CATEGORIES.
+
+    Nothing was read, so there is no poll to record and no failure to warn
+    about; what did change is the session state this poll proved live. The
+    version bump is that state change, and it commits with its own event.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        version = AccountStateVersionRepository(conn).bump(account_id)
+        _insert_refresh_event(conn, account_id, version, outcome)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
 async def poll_one_account(
+    conn, browser, account_id: str, category_codes, *,
+    instance_id: str, allowed_host: str, vault_dir, crypto_backend,
+    entity: str = "MCMA",
+    session_observer=None,
+) -> str:
+    """Polls one account, then records what the attempt was worth.
+
+    The poll itself is _attempt_poll below; this wrapper is where an
+    attempt becomes visible to the employee. Two things happen here and
+    nowhere else, so every caller -- the background loop and the manual
+    "Actualiser" alike -- gets them:
+
+      1. an attempt that gave up BEFORE run_poll is written to poll_runs as
+         FAILED, so the account's "last attempt" stops being a COMPLETE run
+         from yesterday (see record_failed_refresh_attempt),
+      2. an attempt that changed what /accounts answers without writing a
+         poll run -- NO_CATEGORIES, which proves the session is live -- is
+         announced (see publish_refresh_event).
+
+    A poll that reached run_poll needs neither: its event was written
+    inside the same transaction as the rows it describes.
+
+    Neither can change the outcome the caller sees: a failure to record is
+    logged and swallowed, because a poll that worked must not be reported
+    as broken by its own bookkeeping.
+    """
+    outcome = await _attempt_poll(
+        conn, browser, account_id, category_codes,
+        instance_id=instance_id, allowed_host=allowed_host, vault_dir=vault_dir,
+        crypto_backend=crypto_backend, entity=entity, session_observer=session_observer,
+    )
+
+    try:
+        if outcome in FAILED_BEFORE_POLL_OUTCOMES:
+            # Records the attempt AND announces it, atomically.
+            record_failed_refresh_attempt(conn, account_id, outcome)
+        elif outcome in ANNOUNCED_WITHOUT_RUN_OUTCOMES:
+            publish_refresh_event(conn, account_id, outcome)
+        # POLL_RUN_OUTCOMES are already announced from inside run_poll's own
+        # transaction, alongside the rows they describe. Publishing again
+        # here would be a second, non-atomic write of the same fact.
+    except Exception:
+        logger.warning(
+            "could not record the notification refresh attempt; the poll itself is unaffected",
+            exc_info=True,
+        )
+
+    return outcome
+
+
+async def _attempt_poll(
     conn, browser, account_id: str, category_codes, *,
     instance_id: str, allowed_host: str, vault_dir, crypto_backend,
     entity: str = "MCMA",
@@ -190,16 +367,27 @@ async def poll_one_account(
             for code in codes:
                 categories.ensure(code, discovered_labels.get(code, code))
 
-            version = AccountStateVersionRepository(conn).bump(account_id)
-            _poll_run_id, run_status = await run_poll(conn, account_id, reader, codes, version)
-            if run_status == "COMPLETE":
-                return "POLLED"
-            # Reaching run_poll is not the same as reading anything. A run
-            # whose every category FAILED was still reported as POLLED,
-            # and the employee was told "Notifications actualisées." after
-            # a refresh that read nothing at all.
-            logger.warning("notification poll finished with status=%s", run_status)
-            return "POLL_INCOMPLETE" if run_status == "PARTIAL" else "POLL_FAILED"
+            def publish(txn_conn, state_version, run_status):
+                """Runs inside run_poll's transaction, so the rows it wrote
+                and this event commit together or not at all."""
+                _insert_refresh_event(
+                    txn_conn, account_id, state_version, outcome_for_run_status(run_status)
+                )
+
+            # No version is passed: run_poll allocates the account's next
+            # state version inside the same transaction as the writes, so a
+            # poll that rolls back consumes no version either.
+            _poll_run_id, run_status = await run_poll(
+                conn, account_id, reader, codes, publish=publish
+            )
+            outcome = outcome_for_run_status(run_status)
+            if outcome != "POLLED":
+                # Reaching run_poll is not the same as reading anything. A
+                # run whose every category FAILED was still reported as
+                # POLLED, and the employee was told "Notifications
+                # actualisées." after a refresh that read nothing at all.
+                logger.warning("notification poll finished with status=%s", run_status)
+            return outcome
         finally:
             await _close_reader_safely(reader, "reader")
     finally:

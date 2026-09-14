@@ -381,3 +381,202 @@ describe("privacy", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 });
+
+describe("feedback after marking notifications seen", () => {
+  const UNREAD_WIRE = {
+    ...CLAIM_NEW_WIRE,
+    notifications: [
+      { category: "Catégorie test 1", unread: true, appeared_at: "2026-02-01T08:00:00Z", seen_at: null },
+    ],
+  };
+
+  const jsonResponse = (body: unknown, status = 200) =>
+    ({
+      ok: status < 400,
+      status,
+      text: () => Promise.resolve(JSON.stringify(body)),
+    }) as unknown as Response;
+
+  /**
+   * A backend whose mark-seen response is held open until released, so the
+   * window between "request sent" and "backend confirmed" can be asserted on.
+   */
+  function heldBackend(seenStatus = 200) {
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let seen = false;
+
+    const stub = vi.fn(async (url: string, init: RequestInit = {}) => {
+      if (url.startsWith("/accounts")) return jsonResponse({ accounts: TEST_ACCOUNTS_WIRE });
+      if (url.endsWith("/notifications/seen") && init.method === "POST") {
+        await held;
+        if (seenStatus >= 400) {
+          return jsonResponse(
+            { error: "FORBIDDEN", message: "insufficient permission", correlation_id: "0" },
+            seenStatus,
+          );
+        }
+        seen = true;
+        return jsonResponse({ claim_pk: CLAIM_NEW_WIRE.claim_pk, marked_seen: 1 });
+      }
+      return jsonResponse({ claims: [seen ? CLAIM_NEW_WIRE : UNREAD_WIRE] });
+    });
+    vi.stubGlobal("fetch", stub);
+    return { stub, release: () => release() };
+  }
+
+  const seenPosts = (stub: ReturnType<typeof vi.fn>) =>
+    (stub.mock.calls as unknown as [string, RequestInit | undefined][]).filter(
+      ([url, init]) => url.endsWith("/notifications/seen") && init?.method === "POST",
+    );
+
+  it("confirms only once the backend has confirmed", async () => {
+    setCsrfCookie();
+    const { stub, release } = heldBackend();
+    renderAppAt(claimPath(WRITABLE_ID, CLAIM_NEW_WIRE.claim_pk));
+
+    await screen.findByRole("heading", { name: "REF-0001" });
+    // The request is in flight and unanswered: nothing may claim success yet.
+    await waitFor(() => expect(seenPosts(stub)).toHaveLength(1));
+    expect(screen.queryByText("Notifications marquées comme vues.")).toBeNull();
+
+    release();
+
+    expect(await screen.findByText("Notifications marquées comme vues.")).toBeInTheDocument();
+  });
+
+  it("shows no confirmation when the backend refuses, and says so instead", async () => {
+    setCsrfCookie();
+    const { stub, release } = heldBackend(403);
+    renderAppAt(claimPath(WRITABLE_ID, CLAIM_NEW_WIRE.claim_pk));
+
+    await screen.findByRole("heading", { name: "REF-0001" });
+    await waitFor(() => expect(seenPosts(stub)).toHaveLength(1));
+    release();
+
+    expect(
+      await screen.findByText(/n'ont pas pu être marquées comme vues/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Notifications marquées comme vues.")).toBeNull();
+    // The raw backend wording never reaches the employee.
+    expect(screen.queryByText(/insufficient permission/)).toBeNull();
+  });
+
+  it("stays quiet when the dossier had nothing new to mark", async () => {
+    setCsrfCookie();
+    backend({ [WRITABLE_ID]: WRITABLE_ACCOUNT_CLAIMS_WIRE });
+    renderAppAt(claimPath(WRITABLE_ID, CLAIM_NEW_WIRE.claim_pk));
+
+    await screen.findByRole("heading", { name: "REF-0001" });
+    expect(screen.queryByText("Notifications marquées comme vues.")).toBeNull();
+  });
+});
+
+describe("marking seen refreshes the account summaries", () => {
+  const UNREAD_WIRE = {
+    ...CLAIM_NEW_WIRE,
+    notifications: [
+      { category: "Catégorie test 1", unread: true, appeared_at: "2026-02-01T08:00:00Z", seen_at: null },
+      { category: "Catégorie test 2", unread: true, appeared_at: "2026-02-01T08:00:00Z", seen_at: null },
+    ],
+  };
+
+  const json = (body: unknown) =>
+    ({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(body)) }) as unknown as Response;
+
+  /**
+   * One backend for the whole shell, whose /accounts answer changes once the
+   * dossier's notifications have been marked seen -- exactly as the real one
+   * does, since both the summary and the claim list are derived from the same
+   * category_presence rows.
+   */
+  function backendWhereSeenClearsTheBadge() {
+    let seen = false;
+    const stub = vi.fn(async (url: string, init: RequestInit = {}) => {
+      if (url.startsWith("/accounts")) {
+        return json({
+          accounts: TEST_ACCOUNTS_WIRE.map((account) =>
+            account.account_id === WRITABLE_ID
+              ? {
+                  ...account,
+                  unread_notification_count: seen ? 0 : 2,
+                  unread_claim_count: seen ? 0 : 1,
+                }
+              : account,
+          ),
+        });
+      }
+      if (url.endsWith("/notifications/seen") && init.method === "POST") {
+        seen = true;
+        return json({ claim_pk: CLAIM_NEW_WIRE.claim_pk, marked_seen: 2 });
+      }
+      if (url.startsWith("/jobs")) return json({ jobs: [] });
+      return json({ claims: [seen ? CLAIM_NEW_WIRE : UNREAD_WIRE] });
+    });
+    vi.stubGlobal("fetch", stub);
+    return stub;
+  }
+
+  const accountReads = (stub: ReturnType<typeof vi.fn>) =>
+    (stub.mock.calls as unknown as [string, RequestInit | undefined][]).filter(([url]) =>
+      url.startsWith("/accounts"),
+    ).length;
+
+  it("clears the sidebar unread badge after the backend confirms", async () => {
+    setCsrfCookie();
+    const stub = backendWhereSeenClearsTheBadge();
+    renderAppAt(claimPath(WRITABLE_ID, CLAIM_NEW_WIRE.claim_pk));
+
+    const rail = screen.getByRole("navigation", { name: "Comptes portail" });
+    // Before: the rail carries this account's two new notifications.
+    expect(
+      await within(rail).findByRole("link", {
+        name: /2 nouvelles notifications, 1 dossier concerné/,
+      }),
+    ).toBeInTheDocument();
+    const readsBefore = accountReads(stub);
+
+    // After: the badge is gone because /accounts was asked again and said so,
+    // not because the browser assumed it.
+    await waitFor(() =>
+      expect(within(rail).queryByRole("link", { name: /nouvelles? notifications?/ })).toBeNull(),
+    );
+    expect(accountReads(stub)).toBeGreaterThan(readsBefore);
+  });
+
+  it("leaves the other accounts' badges alone", async () => {
+    setCsrfCookie();
+    backendWhereSeenClearsTheBadge();
+    renderAppAt(claimPath(WRITABLE_ID, CLAIM_NEW_WIRE.claim_pk));
+
+    const rail = screen.getByRole("navigation", { name: "Comptes portail" });
+    await within(rail).findByRole("link", { name: /2 nouvelles notifications/ });
+    await waitFor(() =>
+      expect(within(rail).queryByRole("link", { name: /nouvelles? notifications?/ })).toBeNull(),
+    );
+
+    // The read-only and second writable accounts never had a badge and still
+    // render normally -- one account's mark-seen is not a global reset.
+    expect(within(rail).getByText("MAMDA • ZONE-B")).toBeInTheDocument();
+    expect(within(rail).getByText("MCMA • ZONE-C")).toBeInTheDocument();
+  });
+
+  it("does not re-read the account list when there was nothing to mark", async () => {
+    setCsrfCookie();
+    const stub = vi.fn(async (url: string) => {
+      if (url.startsWith("/accounts")) return json({ accounts: TEST_ACCOUNTS_WIRE });
+      if (url.startsWith("/jobs")) return json({ jobs: [] });
+      return json({ claims: [CLAIM_NEW_WIRE] });
+    });
+    vi.stubGlobal("fetch", stub);
+
+    renderAppAt(claimPath(WRITABLE_ID, CLAIM_NEW_WIRE.claim_pk));
+    await screen.findByRole("heading", { name: "REF-0001" });
+    const reads = accountReads(stub);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(accountReads(stub)).toBe(reads);
+  });
+});

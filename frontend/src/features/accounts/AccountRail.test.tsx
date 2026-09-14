@@ -116,3 +116,62 @@ describe("AccountRail", () => {
     expect(container.querySelector("img")).toBeNull();
   });
 });
+
+describe("AccountRail unread notifications", () => {
+  it("badges an account that has new notifications", () => {
+    // Fixture account A: 2 new notifications on 1 dossier.
+    renderWithRouter(
+      <AccountRail state="ready" accounts={[WRITABLE_ACCOUNT]} activeAccountId={null} />,
+    );
+    expect(screen.getByText("2")).toBeInTheDocument();
+  });
+
+  it("says what the number counts, for a screen reader", () => {
+    // The badge alone is a bare digit. Both meanings -- notifications and
+    // dossiers -- travel in the link name.
+    renderWithRouter(
+      <AccountRail state="ready" accounts={[WRITABLE_ACCOUNT]} activeAccountId={null} />,
+    );
+    expect(
+      screen.getByRole("link", { name: /2 nouvelles notifications, 1 dossier concerné/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("uses the singular for one notification on one dossier", () => {
+    const single = {
+      ...WRITABLE_ACCOUNT,
+      unreadNotificationCount: 1,
+      unreadClaimCount: 1,
+    };
+    renderWithRouter(<AccountRail state="ready" accounts={[single]} activeAccountId={null} />);
+    expect(
+      screen.getByRole("link", { name: /1 nouvelle notification, 1 dossier concerné/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no badge at all when nothing is new", () => {
+    // A rail full of grey zeros is noise an employee learns to ignore.
+    renderWithRouter(
+      <AccountRail state="ready" accounts={[READ_ONLY_ACCOUNT]} activeAccountId={null} />,
+    );
+    expect(screen.queryByText("0")).toBeNull();
+    expect(screen.queryByText(/nouvelle notification/)).toBeNull();
+  });
+
+  it("badges only the accounts that have something new", () => {
+    renderWithRouter(
+      <AccountRail state="ready" accounts={TEST_ACCOUNTS} activeAccountId={null} />,
+    );
+    const badged = screen.getAllByRole("link", { name: /nouvelles? notifications?/ });
+    expect(badged).toHaveLength(1);
+    expect(badged[0]).toHaveTextContent("MCMA • ZONE-A");
+  });
+
+  it("keeps the connection and capability indicators next to the badge", () => {
+    renderWithRouter(
+      <AccountRail state="ready" accounts={[WRITABLE_ACCOUNT]} activeAccountId={null} />,
+    );
+    expect(screen.getByText("Connecté")).toBeInTheDocument();
+    expect(screen.getByText("Automatisation autorisée")).toBeInTheDocument();
+  });
+});

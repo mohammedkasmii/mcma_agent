@@ -1,3 +1,4 @@
+import type { StatusTone } from "@shared/ui";
 import type { ConnectionState, PortalAccount } from "@shared/types";
 
 /**
@@ -22,6 +23,22 @@ const CONNECTION_LABELS: Record<ConnectionState, string> = {
 
 export function connectionLabel(state: ConnectionState): string {
   return CONNECTION_LABELS[state];
+}
+
+/**
+ * Badge tone per connection state, for surfaces that show the state as a
+ * labelled badge rather than as a marker. The words carry the meaning; the
+ * tone only reinforces them.
+ */
+const CONNECTION_TONES: Record<ConnectionState, StatusTone> = {
+  CONNECTED: "connected",
+  UNVERIFIED: "review",
+  RECONNECT_REQUIRED: "reconnect",
+  NOT_CONNECTED: "idle",
+};
+
+export function connectionTone(state: ConnectionState): StatusTone {
+  return CONNECTION_TONES[state];
 }
 
 /** Four distinguishable shapes, so colour is never the only signal. */

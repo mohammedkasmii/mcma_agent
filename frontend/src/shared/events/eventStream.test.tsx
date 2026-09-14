@@ -44,7 +44,12 @@ function reset() {
 }
 
 function noopHandlers() {
-  return { onJobEvent: () => {}, onResync: () => {}, onConnected: () => {} };
+  return {
+    onJobEvent: () => {},
+    onNotificationEvent: () => {},
+    onResync: () => {},
+    onConnected: () => {},
+  };
 }
 
 describe("openEventStream", () => {
@@ -257,5 +262,81 @@ describe("useEventStream", () => {
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
     expect(window.location.href).not.toContain("cursor");
+  });
+});
+
+describe("background notification refreshes", () => {
+  it("routes a notification event to its own handler, not the job one", () => {
+    reset();
+    const onNotificationEvent = vi.fn();
+    const onJobEvent = vi.fn();
+    openEventStream({ ...noopHandlers(), onNotificationEvent, onJobEvent }, stubFactory);
+
+    StubEventSource.instances[0]?.emit(
+      "NOTIFICATIONS_REFRESHED",
+      JSON.stringify({ outcome: "POLLED" }),
+    );
+
+    expect(onNotificationEvent).toHaveBeenCalledTimes(1);
+    expect(onJobEvent).not.toHaveBeenCalled();
+  });
+
+  it("acts on a notification event whose payload cannot be read", () => {
+    reset();
+    const onNotificationEvent = vi.fn();
+    openEventStream({ ...noopHandlers(), onNotificationEvent }, stubFactory);
+
+    StubEventSource.instances[0]?.emit("NOTIFICATIONS_REFRESHED", "{not json");
+
+    // "Something happened, details unclear" means ask the server.
+    expect(onNotificationEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes accounts and claims on a stream that is already connected", async () => {
+    // The case the feature exists for: the employee has the screen open,
+    // nothing reconnects, and a background poll lands. No query polls on an
+    // interval, so this event is the only thing that can move the counters.
+    reset();
+    const client = new QueryClient();
+    render(wrap(client, <Harness />));
+
+    const source = StubEventSource.instances[0];
+    source?.emit("open");
+    // Spy AFTER the connect-time catch-up, so what is asserted below is the
+    // event's own effect on an established session.
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    const setData = vi.spyOn(client, "setQueryData");
+
+    source?.emit("NOTIFICATIONS_REFRESHED", JSON.stringify({ outcome: "POLLED" }));
+
+    await waitFor(() => expect(invalidate).toHaveBeenCalled());
+    const keys = invalidate.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(["accounts"]));
+    expect(keys).toContain(JSON.stringify(["claims"]));
+    // An event is an invalidation signal: no count is written from a payload.
+    expect(setData).not.toHaveBeenCalled();
+    expect(StubEventSource.instances).toHaveLength(1);
+  });
+
+  it("refreshes the same caches when the background attempt failed", async () => {
+    // A failed attempt changes the freshness warning, which the account
+    // summaries carry -- so it is worth exactly the same refresh.
+    reset();
+    const client = new QueryClient();
+    render(wrap(client, <Harness />));
+
+    const source = StubEventSource.instances[0];
+    source?.emit("open");
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+
+    source?.emit(
+      "NOTIFICATIONS_REFRESHED",
+      JSON.stringify({ outcome: "RECONNECT_REQUIRED" }),
+    );
+
+    await waitFor(() => expect(invalidate).toHaveBeenCalled());
+    const keys = invalidate.mock.calls.map((call) => JSON.stringify(call[0]?.queryKey));
+    expect(keys).toContain(JSON.stringify(["accounts"]));
+    expect(keys).toContain(JSON.stringify(["claims"]));
   });
 });

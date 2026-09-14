@@ -199,7 +199,7 @@ def test_categories_found_still_proceeds_to_the_fetch_phase(conn, monkeypatch):
 
     ran = []
 
-    async def _run_poll(conn_, account_id, rdr, codes, version):
+    async def _run_poll(conn_, account_id, rdr, codes, version=None, *, publish=None):
         ran.append((account_id, tuple(codes)))
         # run_poll reports (poll_run_id, overall_status): reaching it is
         # not the same as having read anything.

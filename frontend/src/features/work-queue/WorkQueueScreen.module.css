@@ -128,6 +128,31 @@
   border-radius: 999px;
 }
 
+.countSummary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+
+.countNew {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--ink-strong);
+}
+
+.countDossiers {
+  font-size: var(--text-sm);
+  color: var(--ink-muted);
+}
+
+/* Says what the two vocabularies mean, next to the controls that use them. */
+.legend {
+  max-width: var(--measure);
+  font-size: var(--text-xs);
+  color: var(--ink-muted);
+}
+
 .filters {
   display: flex;
   flex-wrap: wrap;

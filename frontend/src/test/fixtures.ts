@@ -21,6 +21,12 @@ export const WRITABLE_ACCOUNT_WIRE: AccountWire = {
   session_active: true,
   connection_state: "CONNECTED",
   writable: true,
+  active_notification_count: 3,
+  unread_notification_count: 2,
+  unread_claim_count: 1,
+  notification_last_attempt_at: "2026-02-01T08:05:00Z",
+  notification_last_attempt_status: "COMPLETE",
+  notification_last_success_at: "2026-02-01T08:05:00Z",
 };
 
 export const WRITABLE_ACCOUNT: PortalAccount = {
@@ -31,6 +37,12 @@ export const WRITABLE_ACCOUNT: PortalAccount = {
   connectionState: "CONNECTED",
   sessionActive: true,
   writable: true,
+  activeNotificationCount: 3,
+  unreadNotificationCount: 2,
+  unreadClaimCount: 1,
+  notificationLastAttemptAt: "2026-02-01T08:05:00Z",
+  notificationLastAttemptStatus: "COMPLETE",
+  notificationLastSuccessAt: "2026-02-01T08:05:00Z",
 };
 
 export const READ_ONLY_ACCOUNT_WIRE: AccountWire = {
@@ -41,6 +53,12 @@ export const READ_ONLY_ACCOUNT_WIRE: AccountWire = {
   session_active: false,
   connection_state: "RECONNECT_REQUIRED",
   writable: false,
+  active_notification_count: 1,
+  unread_notification_count: 0,
+  unread_claim_count: 0,
+  notification_last_attempt_at: "2026-02-01T07:30:00Z",
+  notification_last_attempt_status: "FAILED",
+  notification_last_success_at: "2026-01-31T07:00:00Z",
 };
 
 export const READ_ONLY_ACCOUNT: PortalAccount = {
@@ -51,6 +69,12 @@ export const READ_ONLY_ACCOUNT: PortalAccount = {
   connectionState: "RECONNECT_REQUIRED",
   sessionActive: false,
   writable: false,
+  activeNotificationCount: 1,
+  unreadNotificationCount: 0,
+  unreadClaimCount: 0,
+  notificationLastAttemptAt: "2026-02-01T07:30:00Z",
+  notificationLastAttemptStatus: "FAILED",
+  notificationLastSuccessAt: "2026-01-31T07:00:00Z",
 };
 
 /** A second writable account, for tests that switch between two of them. */
@@ -62,6 +86,12 @@ export const SECOND_WRITABLE_ACCOUNT_WIRE: AccountWire = {
   session_active: true,
   connection_state: "CONNECTED",
   writable: true,
+  active_notification_count: 0,
+  unread_notification_count: 0,
+  unread_claim_count: 0,
+  notification_last_attempt_at: null,
+  notification_last_attempt_status: null,
+  notification_last_success_at: null,
 };
 
 export const TEST_ACCOUNTS_WIRE: readonly AccountWire[] = [
@@ -78,6 +108,12 @@ export const SECOND_WRITABLE_ACCOUNT: PortalAccount = {
   connectionState: "CONNECTED",
   sessionActive: true,
   writable: true,
+  activeNotificationCount: 0,
+  unreadNotificationCount: 0,
+  unreadClaimCount: 0,
+  notificationLastAttemptAt: null,
+  notificationLastAttemptStatus: null,
+  notificationLastSuccessAt: null,
 };
 
 export const TEST_ACCOUNTS: readonly PortalAccount[] = [
@@ -95,6 +131,12 @@ export const UNVERIFIED_ACCOUNT_WIRE: AccountWire = {
   session_active: true,
   connection_state: "UNVERIFIED",
   writable: true,
+  active_notification_count: 0,
+  unread_notification_count: 0,
+  unread_claim_count: 0,
+  notification_last_attempt_at: null,
+  notification_last_attempt_status: null,
+  notification_last_success_at: null,
 };
 
 /** An id no fixture account carries, for fail-closed route tests. */

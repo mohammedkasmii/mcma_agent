@@ -5,8 +5,13 @@ import { AccountWorkspaceHeader } from "@features/accounts/AccountWorkspaceHeade
 import { EmptyState, Panel, Skeleton } from "@shared/ui";
 import { toApiError } from "@features/accounts/queries";
 import { claimStatusLabel } from "@shared/utils/claimStatus";
-import { unreadCategories } from "@shared/utils/notificationFreshness";
+import { hasUnreadNotification, unreadCategories } from "@shared/utils/notificationFreshness";
+import {
+  concernedDossiersLabel,
+  newNotificationsLabel,
+} from "@shared/utils/notificationWording";
 import { ClaimList } from "./ClaimList";
+import { orderedQueue } from "./ordering";
 import { useClaimsQuery } from "./queries";
 import styles from "./WorkQueueScreen.module.css";
 
@@ -87,6 +92,13 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
   // dossier in two categories is two notifications.
   const totalNotificationCount = categoryCounts.reduce((total, tally) => total + tally.count, 0);
   const totalNewCount = categoryCounts.reduce((total, tally) => total + tally.newCount, 0);
+  // Dossiers, not memberships. One dossier flagged in two categories is two
+  // notifications above and ONE row below -- stating both is what stops an
+  // employee hunting for a second file that does not exist.
+  const unreadDossierCount = useMemo(
+    () => (claims ?? []).filter(hasUnreadNotification).length,
+    [claims],
+  );
 
   useEffect(() => {
     if (category !== "ALL" && !categoryCounts.some((tally) => tally.label === category)) {
@@ -104,6 +116,10 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
         matchesSearch(claim, search),
     );
   }, [category, claims, newOnly, search, status]);
+
+  // Sorted on a COPY: `visible` is already a new array, and the cached list
+  // it came from is never reordered in place.
+  const ordered = useMemo(() => orderedQueue(visible), [visible]);
 
   const isFiltered = search.length > 0 || status !== "ALL" || category !== "ALL" || newOnly;
 
@@ -153,6 +169,19 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
               </div>
             ) : null}
 
+            <div className={styles.countSummary}>
+              <span className={styles.countNew}>{newNotificationsLabel(totalNewCount)}</span>
+              <span className={styles.countDossiers}>
+                {concernedDossiersLabel(unreadDossierCount)}
+              </span>
+            </div>
+
+            <p className={styles.legend}>
+              « Nouveau » signale une notification pas encore ouverte. « À traiter » décrit le
+              travail qu'il reste à faire. Ouvrir un dossier marque ses notifications comme vues,
+              sans changer son suivi.
+            </p>
+
             <div className={styles.filters}>
               <label className={styles.field}>
                 <span className={styles.fieldLabel}>Rechercher</span>
@@ -180,9 +209,9 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
                 </select>
               </label>
               <button
-                aria-label={`Nouvelles (${totalNewCount}) — ${totalNewCount} ${
-                  totalNewCount === 1 ? "notification non vue" : "notifications non vues"
-                }`}
+                aria-label={`Nouvelles (${totalNewCount}) — ${newNotificationsLabel(
+                  totalNewCount,
+                )}, ${concernedDossiersLabel(unreadDossierCount)}`}
                 aria-pressed={newOnly}
                 className={`${styles.newToggle} ${newOnly ? styles.newToggleActive : ""}`}
                 onClick={() => setNewOnly((value) => !value)}
@@ -198,7 +227,7 @@ export function WorkQueueScreen({ account }: WorkQueueScreenProps) {
                 Élargissez la recherche ou revenez à tous les suivis.
               </EmptyState>
             ) : (
-              <ClaimList accountId={account.accountId} claims={visible} />
+              <ClaimList accountId={account.accountId} claims={ordered} />
             )}
 
             {isFiltered ? (

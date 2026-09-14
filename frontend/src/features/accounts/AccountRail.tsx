@@ -7,6 +7,7 @@ import {
   connectionMarker,
   formatAccountIdentity,
 } from "@shared/utils/accountIdentity";
+import { unreadSummarySentence } from "@shared/utils/notificationWording";
 import { accountAgentPath, accountWorkPath } from "@shared/utils/routes";
 import { AccountConnectionControl } from "./AccountConnectionControl";
 import { cx } from "@shared/utils/classNames";
@@ -77,6 +78,7 @@ interface AccountItemProps {
 function AccountItem({ account, isActive }: AccountItemProps) {
   const marker = connectionMarker(account.connectionState);
   const identity = formatAccountIdentity(account);
+  const unread = account.unreadNotificationCount;
 
   return (
     // aria-current="true" on the container marks the open account as the
@@ -90,6 +92,21 @@ function AccountItem({ account, isActive }: AccountItemProps) {
         <span className={styles.state}>
           <span className={cx(styles.marker, styles[marker])} aria-hidden="true" />
           {connectionLabel(account.connectionState)}
+          {/* Nothing new means no badge at all: a rail of grey zeros is
+              noise an employee learns to ignore, and then misses the one
+              account that does have work. */}
+          {unread > 0 ? (
+            <span className={styles.unread}>
+              <span className={styles.unreadBadge} aria-hidden="true">
+                {unread}
+              </span>
+              {/* The number alone cannot say what it counts. Both meanings
+                  reach a screen reader through the link name. */}
+              <span className="u-visually-hidden">
+                {unreadSummarySentence(unread, account.unreadClaimCount)}
+              </span>
+            </span>
+          ) : null}
         </span>
       </Link>
       <p className={styles.capability}>

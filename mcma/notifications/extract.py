@@ -27,7 +27,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import Optional, Sequence
 
 from mcma.notifications.presence import apply_category_result, establish_category_baseline
 from mcma.notifications.rows import to_canonical_notification
@@ -37,6 +37,7 @@ from mcma.persistence.repositories.claims import (
     PollRunsRepository,
     UnmatchedNotificationsRepository,
 )
+from mcma.persistence.repositories.outbox import AccountStateVersionRepository
 
 
 def _utcnow_iso() -> str:
@@ -46,7 +47,10 @@ def _utcnow_iso() -> str:
 logger = logging.getLogger(__name__)
 
 
-async def run_poll(conn, account_id: str, reader, category_codes: Sequence[str], version: int) -> str:
+async def run_poll(
+    conn, account_id: str, reader, category_codes: Sequence[str],
+    version: Optional[int] = None, *, publish=None,
+) -> str:
     """Polls every given category CODE for this ONE account's reader,
     records a poll_runs row plus one poll_run_categories row per
     category, stages/upserts every notification seen, and applies the
@@ -55,7 +59,25 @@ async def run_poll(conn, account_id: str, reader, category_codes: Sequence[str],
     A category whose fetch raises is recorded FAILED for that category
     only -- it never aborts the other categories in the same run, and
     never raises out of run_poll() itself (a poll's own infrastructure
-    failure is data, not an exception the caller must catch)."""
+    failure is data, not an exception the caller must catch).
+
+    TWO PHASES, and the split is deliberate. Every portal read happens
+    first, in the loop below; NOTHING is written until the last one has
+    returned. Only then does one BEGIN IMMEDIATE transaction write the
+    poll run, the claims, the presence lifecycle and -- through `publish`
+    -- the outbox event. So a SQLite write transaction is never held open
+    across a network call, and the state and the event announcing it can
+    still not come apart: they commit together or not at all.
+
+    `version` stamps the claims that were seen. Omit it (production) and
+    the account's next state version is allocated INSIDE that same
+    transaction, so a rolled-back poll consumes no version either; pass
+    one explicitly to stamp a known value.
+
+    `publish(conn, version, overall_status)` is called inside the
+    transaction, immediately before COMMIT. It exists so the caller can
+    add its own row -- the transactional outbox event -- without this
+    module needing to know what an event is."""
     poll_run_id = uuid.uuid4().hex
     started_at = _utcnow_iso()
     per_category_results = []
@@ -91,6 +113,31 @@ async def run_poll(conn, account_id: str, reader, category_codes: Sequence[str],
         else ("PARTIAL" if any(status == "COMPLETE" for _, status, _, _ in per_category_results) else "FAILED")
     )
 
+    # Every read is done. From here to COMMIT there is no await, so the
+    # write lock is held for the writes only.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        stamp = version if version is not None else AccountStateVersionRepository(conn).bump(account_id)
+        _persist_poll(
+            conn, account_id, poll_run_id, started_at, overall_status,
+            overall_session_valid, per_category_results, stamp,
+        )
+        if publish is not None:
+            publish(conn, stamp, overall_status)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    return poll_run_id, overall_status
+
+
+def _persist_poll(
+    conn, account_id, poll_run_id, started_at, overall_status,
+    overall_session_valid, per_category_results, version,
+) -> None:
+    """The write half of run_poll. Pure persistence, no I/O of any kind --
+    the caller has already opened the transaction this runs inside."""
     PollRunsRepository(conn).create(
         poll_run_id, account_id, started_at, overall_status, session_valid=overall_session_valid,
         completed_at=_utcnow_iso(),
@@ -150,5 +197,3 @@ async def run_poll(conn, account_id: str, reader, category_codes: Sequence[str],
                 poll_run_id=poll_run_id, category_status=status, session_valid=session_valid,
                 observed_present=claim_pk in seen_claim_pks,
             )
-
-    return poll_run_id, overall_status
