@@ -18,6 +18,8 @@ from fastapi.testclient import TestClient
 from mcma.app.frontend import SPA_ROUTES, FrontendBuildMissing, mount_frontend
 from mcma.app.security_headers import CONTENT_SECURITY_POLICY
 
+FAVICON_BYTES = b"\x00\x00\x01\x00\x01\x00\x20\x20" + b"\x89PNG\r\n\x1a\n" + b"synthetic"
+
 
 @pytest.fixture()
 def dist(tmp_path):
@@ -32,6 +34,9 @@ def dist(tmp_path):
     )
     (root / "assets" / "index-abc123.js").write_text("export {};", encoding="utf-8")
     (root / "assets" / "style-abc123.css").write_text(":root{}", encoding="utf-8")
+    # Shaped like a real .ico (header + a PNG payload), which is what the
+    # build emits; the bytes are only checked for being served verbatim.
+    (root / "favicon.ico").write_bytes(FAVICON_BYTES)
     return root
 
 
@@ -136,6 +141,39 @@ def test_only_hashed_assets_are_served(dist):
     assert client.get("/index.html").status_code == 404
     assert client.get("/assets/../index.html").status_code in (404, 400)
     assert client.get("/assets/%2e%2e/index.html").status_code in (404, 400)
+
+
+def test_the_favicon_is_served_as_an_icon(dist):
+    """The browser asks for /favicon.ico unprompted on every visit. Without
+    this route each session left a 404 in the operator's console."""
+    client = TestClient(_app(dist))
+    response = client.get("/favicon.ico")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/x-icon"
+    assert response.content == FAVICON_BYTES
+
+
+def test_the_favicon_is_the_only_root_file_reachable(dist):
+    """Serving it must not have turned dist/ into a static directory: a
+    sibling file left in the build root stays unreachable."""
+    (dist / "secret-notes.txt").write_text("not for the web", encoding="utf-8")
+    client = TestClient(_app(dist))
+    assert client.get("/secret-notes.txt").status_code == 404
+    assert client.get("/index.html").status_code == 404
+    # Near-misses are not the favicon route either.
+    for address in ("/favicon.png", "/favicon.ico.txt", "/favicon", "/robots.txt"):
+        assert client.get(address).status_code in (404, 405), address
+    # Read-only: the route answers GET, never a state-changing method.
+    assert client.post("/favicon.ico").status_code == 405
+
+
+def test_a_build_without_a_favicon_refuses_to_mount(dist):
+    """Fail at startup, like a missing index: a half-built dist that would
+    404 on every browser's favicon request is a build problem, and the
+    message names the fix."""
+    (dist / "favicon.ico").unlink()
+    with pytest.raises(FrontendBuildMissing):
+        mount_frontend(FastAPI(), dist_dir=dist)
 
 
 def test_a_missing_build_refuses_to_mount(tmp_path):

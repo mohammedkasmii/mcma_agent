@@ -88,13 +88,21 @@ for (const file of files) {
   }
 }
 
-// Nothing but the index and hashed assets belongs in a served directory.
-for (const file of files) {
-  const relative = file.slice(distDir.length + 1).replaceAll("\\", "/");
-  const allowed = relative === "index.html" || relative.startsWith("assets/");
+// Nothing but the index, the favicon and hashed assets belongs in a served
+// directory. The favicon is the one root file the browser asks for on its
+// own; the server serves it as a single named route, not as static dir.
+const relativePaths = files.map((file) => file.slice(distDir.length + 1).replaceAll("\\", "/"));
+for (const relative of relativePaths) {
+  const allowed =
+    relative === "index.html" || relative === "favicon.ico" || relative.startsWith("assets/");
   if (!allowed) {
     fail(`unexpected file in build output: ${relative}`);
   }
+}
+
+// Without it, every browser session logs a 404 for /favicon.ico.
+if (!relativePaths.includes("favicon.ico")) {
+  fail("build output has no favicon.ico (expected frontend/public/favicon.ico to be copied)");
 }
 
 if (failures.length > 0) {

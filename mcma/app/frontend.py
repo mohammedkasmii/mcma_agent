@@ -40,6 +40,13 @@ _DIST_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 # One entry per path in frontend/src/shared/utils/routes.ts. A route added
 # there without being added here deep-links to a 404, which is a visible
 # failure rather than a silent one.
+#: The one file served from the root of dist besides index.html. Browsers
+#: request /favicon.ico on their own, unprompted, so without it every
+#: session leaves 404s in the operator's console. It is declared here, as
+#: one explicit route, rather than by serving dist/ as static -- which is
+#: exactly what this module refuses to do.
+FAVICON_FILENAME = "favicon.ico"
+
 SPA_ROUTES: tuple[str, ...] = (
     "/",
     "/overview",
@@ -72,8 +79,8 @@ def _index_response(index_path: Path) -> FileResponse:
 
 def mount_frontend(app: FastAPI, *, dist_dir: Path = _DIST_DIR) -> None:
     """Serves frontend/dist/index.html at every declared SPA route (each
-    with the CSP and framing headers) and ONLY frontend/dist/assets/ at
-    /assets/*.
+    with the CSP and framing headers), the built favicon at /favicon.ico,
+    and ONLY frontend/dist/assets/ at /assets/*.
 
     /assets is mounted rather than the whole dist directory: dist contains
     index.html, and serving it as static would expose a second copy of the
@@ -89,7 +96,8 @@ def mount_frontend(app: FastAPI, *, dist_dir: Path = _DIST_DIR) -> None:
     """
     index_path = dist_dir / "index.html"
     assets_dir = dist_dir / "assets"
-    if not index_path.is_file() or not assets_dir.is_dir():
+    favicon_path = dist_dir / FAVICON_FILENAME
+    if not index_path.is_file() or not assets_dir.is_dir() or not favicon_path.is_file():
         raise FrontendBuildMissing(
             f"no built frontend at {dist_dir} -- run `npm ci && npm run build` in frontend/ "
             "before starting the application"
@@ -107,6 +115,16 @@ def mount_frontend(app: FastAPI, *, dist_dir: Path = _DIST_DIR) -> None:
             include_in_schema=False,
         )
 
+    # One named file, not a directory: /favicon.ico and nothing else at the
+    # root. A sibling file that a build happens to leave in dist stays
+    # unreachable, exactly as before.
+    app.add_api_route(
+        "/favicon.ico",
+        _make_favicon_endpoint(favicon_path),
+        methods=["GET"],
+        include_in_schema=False,
+    )
+
     app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="frontend-assets")
 
 
@@ -115,3 +133,12 @@ def _make_index_endpoint(index_path: Path):
         return _index_response(index_path)
 
     return serve_index
+
+
+def _make_favicon_endpoint(favicon_path: Path):
+    def serve_favicon() -> FileResponse:
+        # The path is this module's own constant -- never built from the
+        # request -- so there is no traversal surface here either.
+        return FileResponse(favicon_path, media_type="image/x-icon")
+
+    return serve_favicon

@@ -64,6 +64,7 @@ from mcma.app.onboarding import create_onboarding_app
 from mcma.app.provisioning import ensure_canonical_accounts, ensure_local_employee
 from mcma.app.local_tls import ensure_local_certificate
 from mcma.app.serve import TlsConfig, serve
+from mcma.app.windows_socket_noise import quiet_benign_connection_resets
 from mcma.core.config import Settings, load_settings, require_dev_mode_is_safe
 from mcma.core.mutex import create_single_instance_mutex
 from mcma.execution.browser_handoff import ActiveReviewRegistry
@@ -472,34 +473,40 @@ def main(settings: Optional[Settings] = None) -> None:  # pragma: no cover - rea
 
     @contextlib.asynccontextmanager
     async def _lifespan(app):
-        task = asyncio.create_task(
-            run_job_poll_loop(
-                runner_conn, cfg, encryptor, settings, supervisor,
-                session_observer=_make_session_observer(connection_tracker),
+        # Removes ONE piece of Windows console noise for the life of the
+        # application -- asyncio's proactor cleanup reset (WinError 10054)
+        # after a browser drops a keep-alive or the /events stream. Every
+        # other loop exception still reaches the previous/default handler,
+        # and the previous handler is restored on shutdown.
+        async with quiet_benign_connection_resets():
+            task = asyncio.create_task(
+                run_job_poll_loop(
+                    runner_conn, cfg, encryptor, settings, supervisor,
+                    session_observer=_make_session_observer(connection_tracker),
+                )
             )
-        )
-        # Observed even if nothing ever awaits it, so a browser that dies
-        # later cannot leave a healthy-looking dashboard behind.
-        supervisor.watch(task)
-        # The application does not accept traffic until the browser is up.
-        # Serving first is what let a login click race startup and be
-        # reported as a failed portal sign-in.
-        try:
-            await supervisor.wait_until_ready(settings.browser_startup_timeout_seconds)
-        except BrowserUnavailable:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
-            raise
-        try:
-            yield
-        finally:
-            # Declared BEFORE cancelling: from here on, a browser that
-            # fails to close is an expected part of stopping, not a fault.
-            supervisor.begin_shutdown()
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+            # Observed even if nothing ever awaits it, so a browser that dies
+            # later cannot leave a healthy-looking dashboard behind.
+            supervisor.watch(task)
+            # The application does not accept traffic until the browser is up.
+            # Serving first is what let a login click race startup and be
+            # reported as a failed portal sign-in.
+            try:
+                await supervisor.wait_until_ready(settings.browser_startup_timeout_seconds)
+            except BrowserUnavailable:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+                raise
+            try:
+                yield
+            finally:
+                # Declared BEFORE cancelling: from here on, a browser that
+                # fails to close is an expected part of stopping, not a fault.
+                supervisor.begin_shutdown()
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
 
     app = build_app(api_conn, settings, encryptor, lifespan=_lifespan, supervisor=supervisor, connection_tracker=connection_tracker)
     try:

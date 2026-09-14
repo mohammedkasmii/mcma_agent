@@ -117,9 +117,18 @@ def wrap_with_subnet_allowlist(app, subnet_allowlist: Sequence[str]):
     return SubnetAllowlistMiddleware(app, subnet_allowlist)
 
 
-def serve(app, config: TlsConfig) -> None:  # pragma: no cover - real server loop, not unit-testable
+def serve(app, config: TlsConfig) -> None:
     import uvicorn
 
     wrapped = wrap_with_subnet_allowlist(app, config.subnet_allowlist)
     ssl_kwargs = build_uvicorn_ssl_kwargs(config)
-    uvicorn.run(wrapped, host=config.host, port=config.port, **ssl_kwargs)
+    # use_colors=False, explicitly. Left unset, uvicorn autodetects whether
+    # the console understands ANSI colour -- and on the agency PC (legacy
+    # Windows PowerShell, conhost without virtual-terminal processing) it
+    # guesses wrong, so every startup line arrives as literal escape codes:
+    #   ←[32mINFO←[0m:     Started server process [11184]
+    # The log is for one employee on one Windows console; plain text always
+    # reads correctly there, and nothing about colour is worth a garbled
+    # startup banner. This changes formatting only -- no log line, level or
+    # destination is affected.
+    uvicorn.run(wrapped, host=config.host, port=config.port, use_colors=False, **ssl_kwargs)
