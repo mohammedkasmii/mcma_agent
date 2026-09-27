@@ -615,10 +615,12 @@ $D up
 # Workstation runner registry (Phase 1A)
 
 Central-side registry only: pairing, identity, heartbeat, readiness, revocation.
-**Not built yet:** job claiming/dispatch, dossier locks, the Windows runner
-program, local browsers, portal login, form filling. Agent creation is still
-HTTP 503 `RUNNER_CONTROL_PLANE_UNAVAILABLE`, even with an online runner. The
-registry runs only in the central composition (no browser, no background
+**Not built yet:** job claiming/dispatch, dossier locks, browsers, portal
+login, form filling. Agent creation is still HTTP 503
+`RUNNER_CONTROL_PLANE_UNAVAILABLE`, even with an online runner. The Windows
+runner *program* now exists as a pairing + heartbeat client only (Phase 1B-A,
+below) — it reports every account as `NOT_CONFIGURED` and executes nothing.
+The registry runs only in the central composition (no browser, no background
 thread: online/offline is derived when read); the local Windows install does not
 register these routes.
 
@@ -683,3 +685,68 @@ purpose) lists runners and readiness, generates a code (shown once, with a copy
 button, only in page memory, removed on leaving the page) and revokes with an
 explicit confirmation; it polls only the runner list (10 s). The Agent screen
 shows a status-only "Poste agent" panel (15 s); it does not enable job creation.
+
+# Windows workstation runner — client foundation (Phase 1B-A)
+
+`mcma/app/workstation_runner/` is the actual Windows program an employee
+runs: a French Tkinter GUI that pairs against the Phase 1A registry above
+and then heartbeats. **Still not built:** browsers, MCMA/SinAuto login, OTP,
+portal sessions, job dispatch, dossier downloads, form filling, installer,
+Windows service, scheduled task, autostart. It reports both allowed accounts
+as `NOT_CONFIGURED` and never claims `READY`.
+
+## Trust boundary
+
+- One interactive process per signed-in Windows user (an OS-level named
+  mutex enforces this — a second launch shows a fixed message and exits).
+  It is **not** a Windows service; a future visible Playwright browser runs
+  in the same employee desktop session as this process, never a service
+  session.
+- The pairing code and runner secret are the only credentials this process
+  ever holds; it never uses a platform employee session cookie or an admin
+  credential, and the two are never mixed with each other.
+- The identity envelope (`format_version`, `server_origin`, `runner_id`,
+  `runner_secret`, `allowed_account_ids`) is encrypted at rest with Windows
+  DPAPI, scope `CURRENT_USER` (`mcma.core.dpapi`) — only the same Windows
+  account that paired can decrypt it. This is deliberately a **separate**
+  store from the portal-session vault (`mcma.portal.vault`): runner identity
+  and browser session cookies are different secrets with different
+  lifetimes and different owners.
+- A missing, corrupted, tampered, or wrong-account identity file fails
+  closed: the app falls back to the pairing view, never to a weaker crypto
+  scope, base64, or plaintext.
+
+## Where things live
+
+- Encrypted identity: `%LOCALAPPDATA%\MCMA Runner\identity.bin`
+- Non-secret pairing-form defaults (server origin, CA cert path,
+  workstation label — never a secret): `%LOCALAPPDATA%\MCMA Runner\config.json`
+- Bounded rotating logs (fixed event names and safe fields only — never a
+  secret, a response body, or raw exception text): `%LOCALAPPDATA%\MCMA Runner\logs\workstation_runner.log`
+
+## Running it from source
+
+```
+python -m mcma.app.workstation_runner        # with a console, for development
+pythonw -m mcma.app.workstation_runner       # no console — how an employee actually launches it
+```
+
+## Pairing against the VM (manual, by a human)
+
+1. An administrator creates a pairing code for the target employee via
+   `POST /admin/runner-enrollments` (or the `/administration/runners` page).
+2. Launch the workstation runner; in the pairing form, enter the central
+   server's `https://` origin, optionally a CA certificate file, a
+   workstation label, and the one-time pairing code; click **"Associer ce
+   poste"**.
+3. On success the app switches to the paired-status view and starts
+   heartbeating every `heartbeat_interval_seconds` (server-provided, default
+   10 s in Phase 1A).
+
+## What to expect
+
+- Both `acct-mcma-oujda` and `acct-mcma-nador` show `NOT_CONFIGURED` for the
+  lifetime of this phase — that is expected, not a bug, until the
+  browser-session phase lands.
+- No job is ever created, claimed, or executed by this process in this
+  phase.
