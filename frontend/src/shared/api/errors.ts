@@ -52,6 +52,12 @@ const MESSAGES: Record<string, string> = {
   USER_NOT_FOUND: "Cet utilisateur est introuvable.",
   LAST_ADMIN: "Impossible : il doit rester au moins un administrateur actif.",
   SELF_LOCKOUT: "Vous ne pouvez pas désactiver ou rétrograder votre propre compte.",
+  TARGET_NOT_ELIGIBLE:
+    "Cet employé ne peut pas recevoir de poste agent (compte inactif ou rôle non éligible).",
+  RUNNER_ALREADY_ACTIVE: "Cet employé a déjà un poste agent actif. Révoquez-le avant d'en associer un autre.",
+  RUNNER_NOT_FOUND: "Ce poste agent est introuvable.",
+  RUNNER_LABEL_INVALID:
+    "Libellé invalide : 1 à 40 caractères (lettres, chiffres, espace, point, tiret, tiret bas).",
   NETWORK: "Le serveur est injoignable. Vérifiez que MCMA est démarré.",
   INVALID_RESPONSE: "Réponse inattendue du serveur. Rechargez la page.",
   CSRF_UNAVAILABLE: "Jeton de sécurité indisponible. Rechargez la page.",

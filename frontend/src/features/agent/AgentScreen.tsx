@@ -7,6 +7,8 @@ import { toApiError } from "@features/accounts/queries";
 import { formatAccountIdentity } from "@shared/utils/accountIdentity";
 import { accountAgentJobPath } from "@shared/utils/routes";
 import { newIdempotencyKey } from "@shared/utils/idempotency";
+import { useAuth } from "@features/auth/AuthProvider";
+import { RunnerStatusPanel } from "@features/runners/RunnerStatusPanel";
 import { RunStepper } from "./RunStepper";
 import { useStartDryRun } from "./queries";
 import styles from "./AgentScreen.module.css";
@@ -49,6 +51,8 @@ export function AgentScreen({ account }: AgentScreenProps) {
   const [file, setFile] = useState<FileState>({ kind: "none" });
   const startDryRun = useStartDryRun();
   const navigate = useNavigate();
+  const { state: authState } = useAuth();
+  const showRunnerPanel = authState.status === "authenticated" && authState.session.localSingleUser === false;
 
   async function onFileChosen(chosen: File | undefined) {
     startDryRun.reset();
@@ -90,6 +94,9 @@ export function AgentScreen({ account }: AgentScreenProps) {
     <div className="u-stack-5">
       <AccountWorkspaceHeader title="Agent dossier" resolution={{ status: "resolved", account }} />
       <RunStepper current="new-run" />
+      {/* Central server only. The local Windows install has no /runner-status
+          endpoint, so there the panel is not rendered and nothing polls. */}
+      {showRunnerPanel ? <RunnerStatusPanel accountId={account.accountId} /> : null}
 
       <Panel
         title="Nouveau run"

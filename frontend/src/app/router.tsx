@@ -11,6 +11,7 @@ import { AgentRunScreen } from "@features/agent/AgentRunScreen";
 import { LoginScreen } from "@features/auth/LoginScreen";
 import { RequireAdmin, RequireAuth } from "@features/auth/RequireAuth";
 import { AdminUsersScreen } from "@features/admin/AdminUsersScreen";
+import { AdminRunnersScreen } from "@features/runners/AdminRunnersScreen";
 import { ROUTES } from "@shared/utils/routes";
 
 /**
@@ -70,6 +71,14 @@ const shellRoute: RouteObject = {
         element: (
           <RequireAdmin>
             <AdminUsersScreen />
+          </RequireAdmin>
+        ),
+      },
+      {
+        path: ROUTES.adminRunners,
+        element: (
+          <RequireAdmin>
+            <AdminRunnersScreen />
           </RequireAdmin>
         ),
       },

@@ -44,6 +44,7 @@ class Permission(Enum):
     SESSIONS_MANAGE = "sessions:manage"
     ACCOUNTS_MANAGE = "accounts:manage"
     USERS_MANAGE = "users:manage"
+    RUNNERS_MANAGE = "runners:manage"
 
 
 @unique

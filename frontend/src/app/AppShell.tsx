@@ -48,6 +48,9 @@ export function AppShell() {
           <nav aria-label="Administration">
             <NavLink to={ROUTES.adminUsers} className={cx(styles.navLink)}>
               Utilisateurs
+            </NavLink>{" "}
+            <NavLink to={ROUTES.adminRunners} className={cx(styles.navLink)}>
+              Postes agents
             </NavLink>
           </nav>
         ) : null}

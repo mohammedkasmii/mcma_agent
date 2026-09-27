@@ -608,3 +608,78 @@ $D up
 * No self-service password change; an administrator resets passwords.
 * Notification-session onboarding and the workstation runner control plane are still
   not built (see the Docker section).
+
+
+---
+
+# Workstation runner registry (Phase 1A)
+
+Central-side registry only: pairing, identity, heartbeat, readiness, revocation.
+**Not built yet:** job claiming/dispatch, dossier locks, the Windows runner
+program, local browsers, portal login, form filling. Agent creation is still
+HTTP 503 `RUNNER_CONTROL_PLANE_UNAVAILABLE`, even with an online runner. The
+registry runs only in the central composition (no browser, no background
+thread: online/offline is derived when read); the local Windows install does not
+register these routes.
+
+## Three separate credentials, never mixed
+| World | Credential | Where it is accepted |
+|---|---|---|
+| Employee / admin | platform session cookie (+ CSRF for changes) | `/admin/...`, `/runner-status`, the rest of the API |
+| Pairing | one-time code in the JSON body of `/runner/enroll` | only `/runner/enroll` |
+| Runner | `Authorization: Bearer <runner secret>` | only `/runner/heartbeat` |
+
+A session cookie never authenticates a runner endpoint; a runner secret never
+authenticates an employee endpoint; neither is ever read from a query string, a
+cookie (runner) or a body field (runner secret). Machine endpoints use no CSRF
+(CSRF is a browser defence, not machine authentication).
+
+## Endpoints
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `POST /admin/runner-enrollments` | admin (`runners:manage`) + CSRF | create a pairing code for one employee (`target_user_id`, optional `runner_label`); the code is in this response **only** |
+| `GET /admin/runners` | admin | runners with derived status, pending enrollments (no codes), eligible employees |
+| `POST /admin/runners/{id}/revoke` | admin + CSRF | revoke; idempotent (`already_revoked`), audited once |
+| `GET /runner-status` | any signed-in employee | that employee's own runner only: `UNPAIRED`/`OFFLINE`/`ONLINE`/`REVOKED`, label, last seen, per-account readiness |
+| `POST /runner/enroll` | pairing code (body) | consume the code, create the runner, return `runner_id` + `runner_secret` **once** |
+| `POST /runner/heartbeat` | bearer | protocol/app version + readiness of Oujda/Nador; server sets `last_seen_at` |
+
+All responses are `Cache-Control: no-store`; bodies are strict (unknown fields
+refused, 4 KB cap, nothing echoed).
+
+## Lifecycle and rules
+* **Pairing code:** 256 random bits (`mcma_pc_` + URL-safe token), 10-minute
+  expiry, single use, stored only as SHA-256. Bound to the creating admin and one
+  target employee. Expired, used, revoked and unknown codes all return the same
+  `PAIRING_CODE_INVALID`. A new code revokes that employee's older unused ones.
+* **Eligible target:** active, holds `jobs:execute` (a viewer cannot be paired),
+  has access to MCMA Oujda and/or Nador, and has no active runner (revoke first).
+* **Runner secret:** 256 random bits (`mcma_rs_`…), returned once, stored only as
+  SHA-256, compared in constant time. Missing, malformed, unknown and revoked
+  credentials are one generic 401.
+* **Readiness** per account: `NOT_CONFIGURED`, `LOGIN_REQUIRED`, `READY`, `ERROR`.
+  Only `acct-mcma-oujda` and `acct-mcma-nador` (MAMDA is notification-only) —
+  refused by the service **and** by a database CHECK.
+* **Online/offline:** derived, never stored. Runners are told to heartbeat every
+  **10 s**; a runner is **offline** when server time − `last_seen_at` > **30 s**
+  (or it never reported). Constants live in `mcma.app.runners.registry`.
+* **Fail-closed rule:** if the assigned employee is deactivated, loses
+  `jobs:execute` or loses access to every MCMA account, the runner is **revoked
+  durably (and audited) the next time it is looked at** (heartbeat, status, list).
+  Restoring the employee does not revive it: pair a new runner.
+* **Stored / not stored:** only digests of the two secrets, ids, UTC server
+  timestamps, a bounded label, protocol/app version and readiness enums. Never
+  portal credentials, cookies, storage state, OTP values, employee passwords, raw
+  codes/secrets, Windows usernames or host inventory.
+
+## Database
+Forward-only migration `0005_workstation_runners.sql`: `runner_enrollments`,
+`runners` (partial unique index → at most one ACTIVE runner per employee; revoked
+rows retained), `runner_account_capabilities`. No existing table changed.
+
+## Administrator page and employee panel
+`/administration/runners` (admin only; the API is `/admin/runners`, distinct on
+purpose) lists runners and readiness, generates a code (shown once, with a copy
+button, only in page memory, removed on leaving the page) and revokes with an
+explicit confirmation; it polls only the runner list (10 s). The Agent screen
+shows a status-only "Poste agent" panel (15 s); it does not enable job creation.

@@ -22,6 +22,9 @@ ALL_TABLES = {
     "categories",
     "category_presence",
     "category_baselines",  # migration 0004 -- notification freshness baseline
+    "runner_enrollments",  # migration 0005 -- workstation runner registry
+    "runners",
+    "runner_account_capabilities",
     "poll_runs",
     "poll_run_categories",
     "unmatched_notifications",

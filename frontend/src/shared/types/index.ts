@@ -11,4 +11,15 @@ export { CLAIM_STATUSES } from "./claim";
 export type { Claim, ClaimNotification, ClaimStatus } from "./claim";
 export { JOB_MODES, JOB_STATUSES } from "./job";
 export type { Job, JobMode, JobPlan, JobStatus, PlanFieldIntent, PlanReviewItem, PlanStep } from "./job";
+export type {
+  EligibleEmployee,
+  OwnRunnerStatus,
+  OwnRunnerStatusInfo,
+  PendingEnrollment,
+  Runner,
+  RunnerOverview,
+  RunnerSession,
+  RunnerStatus,
+  SessionState,
+} from "./runner";
 export type { AuthSession, PlatformUser, UserRole } from "./auth";

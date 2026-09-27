@@ -57,14 +57,14 @@ def test_csrf_required_on_state_changing_requests():
 def test_permission_enum_values():
     assert {p.value for p in Permission} == {
         "notifications:read", "notifications:update", "jobs:plan", "jobs:execute",
-        "jobs:view", "sessions:manage", "accounts:manage", "users:manage",
+        "jobs:view", "sessions:manage", "accounts:manage", "users:manage", "runners:manage",
     }
 
 
 def test_viewer_role_has_no_mutation_permission():
     mutation_permissions = {
         Permission.NOTIFICATIONS_UPDATE, Permission.JOBS_PLAN, Permission.JOBS_EXECUTE,
-        Permission.SESSIONS_MANAGE, Permission.ACCOUNTS_MANAGE, Permission.USERS_MANAGE,
+        Permission.SESSIONS_MANAGE, Permission.ACCOUNTS_MANAGE, Permission.USERS_MANAGE, Permission.RUNNERS_MANAGE,
     }
     viewer_permissions = permissions_for_role("viewer")
     assert viewer_permissions.isdisjoint(mutation_permissions)

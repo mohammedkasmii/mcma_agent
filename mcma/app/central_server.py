@@ -223,6 +223,10 @@ def create_central_server(
             # is stored. Phase 2 enables it once runner registration and
             # dispatch exist.
             agent_execution_available=False,
+            # Runner registry (enrollment, identity, heartbeat, readiness,
+            # revocation): DB rows and HTTP only. No browser, no background
+            # thread -- online/offline is derived from server time on read.
+            runner_registry_enabled=True,
             server_state_provider=lambda: {
                 "notifications": service.state.value,
                 "shutting_down": lifecycle.shutting_down,

@@ -94,6 +94,7 @@ def build_app(
     server_state_provider=None,
     crypto_backend: "CryptoBackend | None" = None,
     agent_execution_available: bool = True,
+    runner_registry_enabled: bool = False,
 ):
     """Assembles the one ASGI app: authenticated API + the built employee
     UI + the two loopback-only sub-apps. The sub-apps enforce their own loopback checks
@@ -196,6 +197,7 @@ def build_app(
         connection_state_tracker=connection_tracker,
         server_state_provider=server_state_provider,
         agent_execution_available=agent_execution_available,
+        runner_registry=runner_registry_enabled,
     )
     if lifespan is not None:
         app.router.lifespan_context = lifespan

@@ -71,6 +71,7 @@ def test_every_declared_spa_route_serves_the_built_index(dist):
         "/",
         "/login",
         "/administration/users",
+        "/administration/runners",
         "/overview",
         "/accounts/acct-1/work",
         "/accounts/acct-1/work/claim-1",

@@ -301,3 +301,32 @@ def test_a_stream_that_starts_dead_ends_immediately():
         return [e async for e in stream_events(connection, object(), Authorizer(), is_session_live=lambda: False)]
 
     assert asyncio.run(run()) == [{"event": SESSION_ENDED_EVENT, "data": "{}"}]
+
+
+# ------------------- runner admin page vs runner API (collision regression) ------------------- #
+
+
+def test_the_runner_admin_page_and_the_runner_api_do_not_collide_on_the_real_app(conn, dist):
+    create_user(conn, "boss", PASSWORD, "admin")
+    app = create_api_app(conn, auth_provider=LocalUserAuthProvider(conn), session_store=SessionStore(),
+                         encryptor=TestOnlyPlaintextEncryptor(), secure_cookies=True, runner_registry=True)
+    mount_frontend(app, dist_dir=dist)
+    client = _client(app)
+    assert "/administration/runners" in SPA_ROUTES and "/admin/runners" not in SPA_ROUTES
+    page = client.get("/administration/runners")                          # a browser refresh of the page
+    assert page.status_code == 200 and 'id="root"' in page.text
+    assert client.get("/admin/runners").status_code == 401                # the API stays the API
+    login_client(client, "boss", PASSWORD)
+    api = client.get("/admin/runners")
+    assert api.status_code == 200 and api.headers["content-type"].startswith("application/json")
+    assert client.get("/administration/runners").text.count('id="root"') == 1
+    api_get = {r.path for r in app.routes if hasattr(r, "methods") and "GET" in r.methods
+               and getattr(r, "endpoint", None) and r.endpoint.__module__.startswith("mcma.app.api")}
+    assert not api_get & set(SPA_ROUTES)
+
+
+def test_the_frontend_runner_page_route_differs_from_its_api_paths():
+    routes_ts = (REPO / "frontend/src/shared/utils/routes.ts").read_text(encoding="utf-8")
+    api_ts = (REPO / "frontend/src/shared/api/runners.ts").read_text(encoding="utf-8")
+    assert 'adminRunners: "/administration/runners"' in routes_ts
+    assert '"/admin/runners' in api_ts and '"/runner-status' in api_ts and "/administration" not in api_ts

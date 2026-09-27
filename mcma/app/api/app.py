@@ -157,6 +157,7 @@ def create_api_app(
     connection_state_tracker=None,
     server_state_provider=None,
     agent_execution_available: bool = True,
+    runner_registry: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="MCMA API")
     install_error_handlers(app)
@@ -258,6 +259,12 @@ def create_api_app(
         )
 
     register_admin_user_routes(app, conn, get_principal, session_store)
+    if runner_registry:
+        # Central server only: the workstation-runner registry (Phase 1A).
+        # The local Windows composition never registers these routes.
+        from mcma.app.api.runners import register_runner_routes
+
+        register_runner_routes(app, conn, get_principal)
 
     # -- notifications (row-filtered list surfaces, review AR-H1) --------
 
