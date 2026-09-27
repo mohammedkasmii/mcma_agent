@@ -1,0 +1,112 @@
+# MCMA central server -- isolated Compose project.
+#
+# Always driven through deploy/central/mcma-deploy.sh, which passes the env
+# file and the fixed project name. There is deliberately NO build: section --
+# images are built on the VM, verified, exported and loaded (immutable delivery). Nothing here touches any other Compose
+# project, container, network or volume on the host: every resource is named
+# mcma-central*, storage is bind mounts under MCMA_DATA_ROOT (no named
+# volumes), and the network is a private bridge created for this project only.
+#
+# Deliberately absent: host networking, privileged mode, the Docker socket,
+# published SQLite/control ports, a mock portal, any other service.
+
+name: mcma-central
+
+services:
+  mcma-central:
+    # Fixed repository: this project only ever runs the dedicated mcma-central image.
+    image: mcma-central:${MCMA_IMAGE_TAG:?set MCMA_IMAGE_TAG in the env file}
+    container_name: mcma-central
+    restart: unless-stopped
+    init: true
+    user: "${MCMA_UID:-10001}:${MCMA_GID:-10001}"
+
+    # -- hardening ------------------------------------------------------------
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    privileged: false
+    ipc: private
+    shm_size: ${MCMA_SHM_SIZE:-512m}          # headless Chromium needs a real /dev/shm
+    tmpfs:
+      # HOME=/tmp: Chromium/Playwright scratch. Not persisted, not shared.
+      - /tmp:rw,nosuid,nodev,size=${MCMA_TMP_SIZE:-512m}
+
+    # -- resources / logging ---------------------------------------------------
+    mem_limit: ${MCMA_MEM_LIMIT:-2g}
+    cpus: ${MCMA_CPUS:-2.0}
+    pids_limit: ${MCMA_PIDS_LIMIT:-512}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    # -- network: private bridge, one published HTTPS port ---------------------
+    # The app refuses wildcard binds, so it binds the container's own STATIC
+    # address on the private network; Docker publishes that to the one
+    # configured host address/port. No other port is published.
+    networks:
+      mcma-net:
+        ipv4_address: ${MCMA_CONTAINER_IP:?set MCMA_CONTAINER_IP}
+    ports:
+      - "${MCMA_BIND_ADDRESS:?set MCMA_BIND_ADDRESS}:${MCMA_HTTPS_PORT:?set MCMA_HTTPS_PORT}:8443"
+
+    # -- configuration (central settings; loader is fail-closed) ---------------
+    environment:
+      MCMA_CONFIG_FILE: /etc/mcma/config/mcma.toml
+      MCMA_INSTANCE_ID: ${MCMA_INSTANCE_ID:-mcma-central-1}
+      MCMA_API_HOST: ${MCMA_CONTAINER_IP}
+      MCMA_API_PORT: "8443"
+      MCMA_DB_PATH: /var/lib/mcma/data/mcma.sqlite3
+      MCMA_INSTANCE_LOCK_PATH: /var/lib/mcma/data/mcma.lock
+      MCMA_VAULT_DIR: /var/lib/mcma/vault
+      MCMA_TLS_CERT_PATH: /etc/mcma/tls/server.crt
+      MCMA_TLS_KEY_PATH: /etc/mcma/tls/server.key
+      MCMA_SESSION_VAULT_KEY_PATH: /etc/mcma/keys/session-vault.key
+      MCMA_JOB_INPUT_KEY_PATH: /etc/mcma/keys/job-input.key
+      # healthcheck only (see healthcheck.py): the name/IP present in the certificate
+      MCMA_HEALTHCHECK_SERVER_NAME: ${MCMA_TLS_SERVER_NAME:?set MCMA_TLS_SERVER_NAME}
+      MCMA_HEALTHCHECK_CA_FILE: ${MCMA_HEALTHCHECK_CA_FILE:-/etc/mcma/tls/server.crt}
+
+    # -- persistent state: explicit host paths only ------------------------------
+    volumes:
+      - type: bind
+        source: ${MCMA_DATA_ROOT:?set MCMA_DATA_ROOT}/db
+        target: /var/lib/mcma/data              # SQLite database (+WAL) and lock file
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${MCMA_DATA_ROOT}/vault
+        target: /var/lib/mcma/vault             # encrypted portal-session blobs
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${MCMA_DATA_ROOT}/keys
+        target: /etc/mcma/keys
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${MCMA_DATA_ROOT}/tls
+        target: /etc/mcma/tls
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${MCMA_DATA_ROOT}/config
+        target: /etc/mcma/config
+        read_only: true
+        bind: {create_host_path: false}
+
+    healthcheck:
+      test: ["CMD", "python", "/opt/mcma/healthcheck.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+networks:
+  mcma-net:
+    name: mcma-central-net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${MCMA_NET_SUBNET:?set MCMA_NET_SUBNET}

@@ -80,6 +80,12 @@ class BrowserSupervisor:
         """
         self._notification_browser = browser
 
+    def mark_notification_lost(self) -> None:
+        """The notification browser disconnected. Forgotten rather than
+        kept: get_notification() must never hand out a known-dead browser.
+        A relaunch publishes a replacement via mark_notification_ready()."""
+        self._notification_browser = None
+
     def get_notification(self):
         """The headless browser, or a typed failure.
 
@@ -92,7 +98,12 @@ class BrowserSupervisor:
         asked to do.
         """
         if self._notification_browser is not None:
-            return self._notification_browser
+            # Checked at hand-out time too, so a browser that died since the
+            # service last looked is still refused.
+            is_connected = getattr(self._notification_browser, "is_connected", None)
+            if is_connected is None or is_connected():
+                return self._notification_browser
+            self._notification_browser = None
         if self._failure is not None:
             raise BrowserUnavailable(
                 f"the shared browser is not available ({type(self._failure).__name__})"

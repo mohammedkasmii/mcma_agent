@@ -1,0 +1,20 @@
+# Allow-list build context: only what the central image needs.
+*
+!pyproject.toml
+!uv.lock
+!mcma
+!frontend
+!deploy/central/healthcheck.py
+
+# ...minus generated / local-only content inside the allowed trees.
+**/__pycache__
+**/*.pyc
+frontend/node_modules
+frontend/dist
+frontend/test-results
+frontend/e2e
+frontend/playwright-report
+**/.env
+**/*.key
+**/*.pem
+**/*.sqlite3*

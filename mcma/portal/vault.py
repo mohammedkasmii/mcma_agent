@@ -26,6 +26,7 @@ import os
 import sys
 
 from mcma.core import dpapi
+from mcma.core.aead import AeadEnvelope, load_key_file
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +63,67 @@ class DpapiLocalMachineBackend:
         return dpapi.unprotect(ciphertext, dpapi.DpapiScope.LOCAL_MACHINE)
 
 
+class AccountBoundCryptoBackend:
+    """A session-vault backend bound to ONE account id by an AES-256-GCM
+    envelope: the account id is authenticated additional data, so a blob
+    copied to another account's row fails to decrypt instead of quietly
+    becoming that account's session. Obtained only through
+    AesGcmSessionVaultBackend.for_account()."""
+
+    def __init__(self, envelope: AeadEnvelope, account_id: str) -> None:
+        self._envelope = envelope
+        self._account_id = account_id
+
+    def encrypt(self, plaintext: bytes) -> bytes:
+        return self._envelope.seal(plaintext, context=self._account_id)
+
+    def decrypt(self, ciphertext: bytes) -> bytes:
+        return self._envelope.open(ciphertext, context=self._account_id)
+
+
+class AesGcmSessionVaultBackend:
+    """Linux-compatible production backend (central server): AES-256-GCM
+    via mcma.core.aead with a versioned envelope, a fresh nonce per
+    encryption and the account id bound as AAD.
+
+    The key comes from an explicit key file (exactly 32 raw bytes, 0600 on
+    POSIX); it is never generated here, so a missing key stops startup
+    instead of silently minting one that cannot decrypt yesterday's
+    sessions. There is no plaintext fallback, and encrypt()/decrypt()
+    called without an account refuse: an unbound blob is exactly what the
+    account binding exists to prevent. store_session/load_and_verify_session
+    call for_account() themselves."""
+
+    def __init__(self, key: bytes) -> None:
+        self._envelope = AeadEnvelope(key, purpose="portal-session-vault")
+
+    @classmethod
+    def from_key_file(cls, key_path: Path) -> "AesGcmSessionVaultBackend":
+        return cls(load_key_file(key_path))
+
+    def for_account(self, account_id: str) -> CryptoBackend:
+        if not account_id:
+            raise ValueError("account_id is required to bind a session blob")
+        return AccountBoundCryptoBackend(self._envelope, account_id)
+
+    def encrypt(self, plaintext: bytes) -> bytes:
+        raise ProductionCryptoBackendUnavailable(
+            "the AES-GCM session backend requires an account binding; use for_account()"
+        )
+
+    def decrypt(self, ciphertext: bytes) -> bytes:
+        raise ProductionCryptoBackendUnavailable(
+            "the AES-GCM session backend requires an account binding; use for_account()"
+        )
+
+
+def _backend_for_account(backend: CryptoBackend, account_id: str) -> CryptoBackend:
+    """Backends that bind an account (AES-GCM) hand back a bound view;
+    DPAPI and the test-only backend have no per-account binding."""
+    bind = getattr(backend, "for_account", None)
+    return bind(account_id) if bind is not None else backend
+
+
 class TestOnlyInMemoryCryptoBackend:
     """TEST-ONLY reversible transform (not real encryption). Never
     selectable in production -- see get_crypto_backend()."""
@@ -77,7 +139,9 @@ class TestOnlyInMemoryCryptoBackend:
         return ciphertext[len(self._MARKER):]
 
 
-def get_crypto_backend(*, _test_only_in_memory_backend: bool = False) -> CryptoBackend:
+def get_crypto_backend(
+    *, _test_only_in_memory_backend: bool = False, key_path: Optional[Path] = None
+) -> CryptoBackend:
     """Pilot-integration correction (section 2/4): DpapiLocalMachineBackend
     has existed since INC-13, but this factory never actually returned it
     -- it unconditionally raised, meaning production session storage was
@@ -87,10 +151,16 @@ def get_crypto_backend(*, _test_only_in_memory_backend: bool = False) -> CryptoB
     weaker fallback, on any platform."""
     if _test_only_in_memory_backend:
         return TestOnlyInMemoryCryptoBackend()
+    if key_path is not None:
+        # An explicit key file selects the portable AES-GCM backend on any
+        # platform. Never chosen implicitly: existing Windows installs
+        # keep DPAPI unless a key path is configured.
+        return AesGcmSessionVaultBackend.from_key_file(key_path)
     if sys.platform != "win32":
         raise ProductionCryptoBackendUnavailable(
-            "no production DPAPI LocalMachine backend is available on this platform; "
-            "the vault refuses rather than falling back to a weaker backend"
+            "no production DPAPI LocalMachine backend is available on this platform and no "
+            "session vault key file is configured; the vault refuses rather than falling back "
+            "to a weaker backend"
         )
     return DpapiLocalMachineBackend()
 
@@ -151,6 +221,39 @@ class WindowsAclVerifier:
         return not any(sid in sids_granted for sid in self._DISALLOWED_SIDS)
 
 
+class PosixVaultDirectoryVerifier:
+    """POSIX equivalent of the ACL precondition: the vault directory must
+    be a REAL directory (a symlink is refused), owned by the running user
+    and inaccessible to group and others (mode 0700 or stricter).
+
+    Checked on an open file descriptor -- O_NOFOLLOW | O_DIRECTORY, then
+    fstat -- so the answer describes the object actually opened and cannot
+    be raced by swapping the path between check and use. Anything that
+    cannot be verified fails closed."""
+
+    def verify_restrictive(self, path: Path) -> bool:
+        if os.name != "posix":
+            return False
+        import stat as _stat
+
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(path, flags)
+        except OSError:
+            return False
+        try:
+            info = os.fstat(fd)
+        except OSError:
+            return False
+        finally:
+            os.close(fd)
+        return (
+            _stat.S_ISDIR(info.st_mode)
+            and not (info.st_mode & 0o077)
+            and info.st_uid == os.geteuid()
+        )
+
+
 class TestOnlyAclVerifier:
     """TEST-ONLY: a fixed, injected result -- never selectable in
     production."""
@@ -165,6 +268,8 @@ class TestOnlyAclVerifier:
 def get_acl_verifier(*, _test_only_result: Optional[bool] = None) -> AclVerifier:
     if _test_only_result is not None:
         return TestOnlyAclVerifier(_test_only_result)
+    if os.name == "posix":
+        return PosixVaultDirectoryVerifier()
     return WindowsAclVerifier()
 
 
@@ -223,7 +328,7 @@ def store_session(
             f"service-account-only NTFS ACL could not be verified on {vault_dir}; refusing to store"
         )
 
-    ciphertext = backend.encrypt(storage_state)
+    ciphertext = _backend_for_account(backend, account_id).encrypt(storage_state)
     storage_ref = uuid.uuid4().hex
     final_path = vault_dir / f"{storage_ref}.session"
     tmp_path = vault_dir / f".{storage_ref}.session.tmp"
@@ -292,7 +397,7 @@ def load_and_verify_session(
         raise SessionDecryptionFailed(f"session file unreadable for account {account_id!r}") from exc
 
     try:
-        plaintext = backend.decrypt(ciphertext)
+        plaintext = _backend_for_account(backend, account_id).decrypt(ciphertext)
     except Exception as exc:
         raise SessionDecryptionFailed(f"decryption failed for account {account_id!r}") from exc
 

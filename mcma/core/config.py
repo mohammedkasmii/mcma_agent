@@ -4,9 +4,25 @@ baseline constants, F28). Stub established at INC-03; later increments extend
 it. Fail-closed defaults only; no secrets ever live here.
 """
 
+import enum
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
+
+
+class RuntimeMode(str, enum.Enum):
+    """Which composition the process is running as.
+
+    LOCAL_WINDOWS is the existing single-office pilot (mcma.app.main):
+    visible browser, job processing, notification polling, DPAPI storage.
+
+    CENTRAL_SERVER is the Ubuntu agency server (mcma.app.central_server):
+    API + frontend + database + headless notification polling ONLY. It is
+    validated by mcma.core.central_config.validate_central_settings, which
+    fails closed. Nothing selects this mode implicitly."""
+
+    LOCAL_WINDOWS = "local_windows"
+    CENTRAL_SERVER = "central_server"
 
 
 @dataclass(frozen=True)
@@ -120,6 +136,23 @@ class Settings:
     # interval: notifications change on a human timescale, and each pass
     # takes an account's lease briefly.
     notification_poll_interval_seconds: float = 300.0
+
+    # -- central server (Phase 1) -------------------------------------------
+    # None of these has a usable default: the central loader requires each
+    # one explicitly and the validator refuses relative paths, so a central
+    # server can never inherit a repo-relative "var/" location by accident.
+    runtime_mode: RuntimeMode = RuntimeMode.LOCAL_WINDOWS
+    # Key FILES (exactly 32 raw bytes, 0600). The keys themselves are never
+    # settings -- no secret lives in configuration or source control.
+    session_vault_key_path: Optional[Path] = None
+    job_input_key_path: Optional[Path] = None
+    # POSIX single-instance lock file (flock); the Windows mutex has no
+    # equivalent off Windows.
+    instance_lock_path: Optional[Path] = None
+    # Directories the application serves to browsers, in ADDITION to the
+    # repository's own (frontend/dist, static, mcma/web). The database,
+    # vault and key paths may not resolve inside any of them.
+    public_static_dirs: Tuple[Path, ...] = ()
 
 
 class UnsafeDevModeConfiguration(Exception):

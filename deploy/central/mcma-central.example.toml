@@ -1,0 +1,25 @@
+# Example configuration for a NATIVE (non-Docker) central Ubuntu server install. For the Docker deployment see deploy/central/compose.yaml and env.*.example.
+# Copy to /etc/mcma/mcma.toml and point MCMA_CONFIG_FILE at it.
+# Every key below is REQUIRED; there are no defaults. This file holds PATHS
+# to secrets, never secrets. See docs/architecture/CENTRAL_SERVER_DEPLOYMENT.md.
+# Any key can be overridden by an MCMA_<KEY> environment variable.
+
+api_host = "10.0.0.5"            # a specific interface; wildcard binds are refused
+api_port = 8443
+
+db_path = "/var/lib/mcma/mcma.sqlite3"
+vault_dir = "/var/lib/mcma/vault"
+instance_lock_path = "/var/lib/mcma/mcma.lock"
+
+tls_cert_path = "/etc/mcma/tls/server.crt"
+tls_key_path = "/etc/mcma/tls/server.key"
+
+# Two DISTINCT files, each exactly 32 raw bytes, mode 0600, owned by the service user.
+session_vault_key_path = "/etc/mcma/keys/session-vault.key"
+job_input_key_path = "/etc/mcma/keys/job-input.key"
+
+# Optional
+# notification_poll_interval_seconds = 300
+# notification_category_codes = []
+# subnet_allowlist = ["10.0.0.0/24"]   # defence in depth only
+# public_static_dirs = []               # extra served dirs the data paths must avoid

@@ -78,6 +78,47 @@ class WindowsSingleInstanceMutex:
         self.release()
 
 
+class PosixFlockMutex:
+    """Production single-instance guarantee on Linux: an exclusive,
+    non-blocking flock(2) on a lock file. The kernel releases it when the
+    process exits -- including a crash -- so a stale lock never outlives
+    its holder. The file itself is left in place (its existence means
+    nothing; only the held lock does)."""
+
+    def __init__(self, lock_path) -> None:
+        self._lock_path = lock_path
+        self._fd = None
+
+    def acquire(self) -> None:
+        import fcntl  # POSIX only; imported lazily so Windows can import this module
+        import os
+
+        try:
+            fd = os.open(self._lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError as exc:
+            raise MutexAcquisitionError(f"cannot open lock file {self._lock_path}") from exc
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            raise MutexAcquisitionError(f"another instance already holds {self._lock_path}") from None
+        self._fd = fd
+
+    def release(self) -> None:
+        if self._fd is not None:
+            import os
+
+            os.close(self._fd)  # closing the descriptor drops the flock
+            self._fd = None
+
+    def __enter__(self) -> "PosixFlockMutex":
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.release()
+
+
 class PortableTestOnlyMutex:
     """TEST-ONLY in-process single-instance guard for platforms without the
     Windows API. Never selectable in production -- see
@@ -114,7 +155,9 @@ class PortableTestOnlyMutex:
         self.release()
 
 
-def create_single_instance_mutex(name: str, *, _test_only_portable_backend: bool = False):
+def create_single_instance_mutex(
+    name: str, *, _test_only_portable_backend: bool = False, lock_path=None
+):
     """The one factory production code calls. On Windows, always returns
     the real OS mutex. Off Windows, refuses by default -- a caller must
     explicitly pass `_test_only_portable_backend=True` (a name deliberately
@@ -122,6 +165,10 @@ def create_single_instance_mutex(name: str, *, _test_only_portable_backend: bool
     receive the portable, non-authoritative test backend."""
     if sys.platform == "win32":
         return WindowsSingleInstanceMutex(name)
+    if lock_path is not None and not _test_only_portable_backend:
+        # Linux server: a real cross-process lock, selected by configuring
+        # a lock file -- never by omission.
+        return PosixFlockMutex(lock_path)
     if not _test_only_portable_backend:
         raise RuntimeError(
             "no OS single-instance mutex is available on this platform; "

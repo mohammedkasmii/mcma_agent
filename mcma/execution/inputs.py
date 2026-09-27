@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timedelta, timezone
-from typing import Protocol
+from pathlib import Path
+from typing import Optional, Protocol
 
 from mcma.core import dpapi
+from mcma.core.aead import AeadEnvelope, load_key_file
 
 
 class InputEncryptor(Protocol):
@@ -76,13 +78,41 @@ class DpapiCurrentUserEncryptor:
         return dpapi.unprotect(ciphertext, dpapi.DpapiScope.CURRENT_USER)
 
 
-def get_input_encryptor(*, _test_only_plaintext_backend: bool = False) -> InputEncryptor:
+class AesGcmInputEncryptor:
+    """Linux-compatible production encryptor for job inputs (central
+    server): AES-256-GCM through mcma.core.aead, versioned envelope, fresh
+    nonce per call, key loaded from an explicit key file that is DISTINCT
+    from the session-vault key (a leak of one does not open the other).
+
+    Selected only when a key path is configured; there is no path from a
+    missing key to a weaker encryptor. Decryption failure carries a fixed
+    message -- never plaintext, ciphertext or key material."""
+
+    def __init__(self, key: bytes) -> None:
+        self._envelope = AeadEnvelope(key, purpose="job-input")
+
+    @classmethod
+    def from_key_file(cls, key_path: Path) -> "AesGcmInputEncryptor":
+        return cls(load_key_file(key_path))
+
+    def encrypt(self, plaintext: bytes) -> bytes:
+        return self._envelope.seal(plaintext)
+
+    def decrypt(self, ciphertext: bytes) -> bytes:
+        return self._envelope.open(ciphertext)
+
+
+def get_input_encryptor(
+    *, _test_only_plaintext_backend: bool = False, key_path: Optional[Path] = None
+) -> InputEncryptor:
     """Fail-closed selection. There is no path from "production" or "DPAPI
     unavailable" to a weaker encryptor -- the test backend is reachable
     only by passing the deliberately ugly keyword, which no production
     call site does."""
     if _test_only_plaintext_backend:
         return TestOnlyPlaintextEncryptor()
+    if key_path is not None:
+        return AesGcmInputEncryptor.from_key_file(key_path)
     if not dpapi.is_available():
         raise ProductionEncryptorUnavailable(
             "Windows DPAPI is not available on this platform; job input storage "

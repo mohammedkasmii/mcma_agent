@@ -55,21 +55,24 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-from mcma.app.api.app import create_api_app
 from mcma.app.browser_supervisor import BrowserSupervisor, BrowserUnavailable
-from mcma.app.auth.bootstrap import create_bootstrap_app
-from mcma.app.auth.provider import LocalUserAuthProvider
-from mcma.app.frontend import mount_frontend
-from mcma.app.onboarding import create_onboarding_app
-from mcma.app.provisioning import ensure_canonical_accounts, ensure_local_employee
+# Shared with the central server; re-exported so existing callers of
+# mcma.app.main.build_app etc. are unchanged.
+from mcma.app.composition import (  # noqa: F401
+    build_app,
+    build_encryptor,
+    build_session_backend,
+    build_tls_config,
+    make_session_observer,
+)
+from mcma.app.provisioning import ensure_canonical_accounts
 from mcma.app.local_tls import ensure_local_certificate
-from mcma.app.serve import TlsConfig, serve
+from mcma.app.serve import serve
 from mcma.app.windows_socket_noise import quiet_benign_connection_resets
 from mcma.core.config import Settings, load_settings, require_dev_mode_is_safe
 from mcma.core.mutex import create_single_instance_mutex
 from mcma.execution.browser_handoff import ActiveReviewRegistry
-from mcma.execution.inputs import InputEncryptor, get_input_encryptor
-from mcma.execution.lease import acquire_account_lease
+from mcma.execution.inputs import InputEncryptor
 from mcma.execution.reconcile import reconcile_on_restart
 from mcma.execution.runner import (
     RunnerConfig,
@@ -77,174 +80,12 @@ from mcma.execution.runner import (
     process_queued_planned_execute_jobs,
 )
 from mcma.app.connection_state import ConnectionStateTracker
-from mcma.app.portal_login import capture_session_for_account
-from mcma.notifications.poller import poll_all_accounts, poll_one_account
+from mcma.notifications.service import NotificationService
 from mcma.persistence.db import open_database
-from mcma.persistence.repositories.accounts import AccountsRepository
 from mcma.portal.browser import launch_browser
-from mcma.portal.vault import WindowsAclVerifier, get_crypto_backend
-
-
-def _is_loopback(host: str) -> bool:
-    from ipaddress import ip_address
-
-    try:
-        return ip_address(host).is_loopback
-    except ValueError:
-        return False
-
+from mcma.portal.vault import CryptoBackend
 
 _DEV_TLS_DIR = Path("var") / "tls"
-
-
-def build_encryptor(settings: Settings) -> InputEncryptor:
-    """Real DPAPI encryption unless a test explicitly asks otherwise.
-
-    Selection is driven by allow_test_plaintext_job_inputs, NOT by
-    dev_mode. Tying it to dev_mode meant the normal employee application
-    -- which runs in the local/dev composition -- stored every dossier's
-    JSON verbatim. Pointing at the mock portal and storing PII in the
-    clear are unrelated decisions and are now unrelated settings."""
-    return get_input_encryptor(
-        _test_only_plaintext_backend=settings.allow_test_plaintext_job_inputs
-    )
-
-
-def _make_session_observer(tracker: ConnectionStateTracker):
-    """Turns an observed session state into a tracker update.
-
-    Shared by the API's manual refresh and the background loop so both
-    report the same way, and defined here rather than in the poller
-    because mcma.notifications must not know about mcma.app.
-    """
-
-    def observe(account_id: str, state: str) -> None:
-        if state == "AUTHENTICATED":
-            tracker.mark_authenticated(account_id)
-        elif state == "LOGGED_OUT":
-            tracker.mark_logged_out(account_id)
-        else:
-            tracker.mark_unverified(account_id)
-
-    return observe
-
-
-def build_app(
-    conn, settings: Settings, encryptor: InputEncryptor, *,
-    lifespan=None, supervisor=None, connection_tracker=None,
-):
-    """Assembles the one ASGI app: authenticated API + the built employee
-    UI + the two loopback-only sub-apps. The sub-apps enforce their own loopback checks
-    internally (mcma.app.auth.bootstrap._require_loopback,
-    mcma.app.onboarding._require_loopback), so mounting them on the same
-    LAN-served app does not expose them to the LAN."""
-    # What THIS process has observed about each portal session. Stored
-    # ACTIVE material starts unverified: a fresh process has seen nothing,
-    # and claiming CONNECTED from a database row is what left an account
-    # signed in yesterday still offering "Actualiser" this morning.
-    # Injected so the background poll loop -- which runs on its own
-    # connection -- reports into the SAME tracker the API reads. Two
-    # trackers would mean the loop's observations never reached /accounts.
-    connection_tracker = connection_tracker or ConnectionStateTracker()
-
-    # The narrow observer handed to the poller: an account and an observed
-    # state, nothing else -- no reader, no page, no session material.
-    _observe_session_state = _make_session_observer(connection_tracker)
-
-    async def _open_portal_login(account_id: str) -> str:
-        """Runs the login capture on the process's ONE browser -- the same
-        one the runner uses -- so the window the employee signs into is a
-        real, visible browser on their own machine."""
-        # Raises BrowserNotReady / BrowserUnavailable, which the API
-        # reports as themselves -- never as a failed portal login.
-        browser = supervisor.get()
-        session_id = await capture_session_for_account(
-            conn, browser, account_id,
-            instance_id=settings.instance_id,
-            allowed_host=settings.portal_host,
-            vault_dir=settings.vault_dir,
-            crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.allow_test_only_session_vault),
-            acl_verifier=WindowsAclVerifier(),
-        )
-        # A completed login is positive evidence, not an assumption:
-        # capture_session_for_account returns only after
-        # perform_manual_login() has observed the logged-in markers; every
-        # other outcome raises. So the employee sees "Connecté"
-        # immediately rather than being told to verify what they just did.
-        connection_tracker.mark_authenticated(account_id)
-        return session_id
-
-    local_user_id = None
-    if settings.local_single_user_mode:
-        if not _is_loopback(settings.api_host):
-            # Refused at startup rather than per request: a LAN-bound
-            # install with this enabled would serve an authenticated
-            # session to anyone who could reach the port.
-            raise ValueError(
-                "local_single_user_mode requires a loopback api_host; "
-                f"refusing to start bound to {settings.api_host!r}"
-            )
-        local_user_id = ensure_local_employee(conn)
-
-    async def _refresh_notifications(account_id: str) -> str:
-        """The manual "Actualiser" path. Deliberately the SAME service the
-        background loop uses -- a second scraper would be a second set of
-        contracts, a second set of session-expiry rules, and two answers
-        to the same question."""
-        account = AccountsRepository(conn).get(account_id)
-        if account is None:
-            return "NO_SESSION"
-        return await poll_one_account(
-            # The headless browser: a manual refresh must not make a
-            # window appear and vanish on the employee's screen.
-            conn, supervisor.get_notification(), account_id, settings.notification_category_codes,
-            instance_id=settings.instance_id,
-            allowed_host=settings.portal_host,
-            vault_dir=settings.vault_dir,
-            crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.allow_test_only_session_vault),
-            entity=account.entity,
-            session_observer=_observe_session_state,
-        )
-
-    app = create_api_app(
-        conn,
-        auth_provider=LocalUserAuthProvider(conn),
-        encryptor=encryptor,
-        secure_cookies=True,
-        portal_login_opener=_open_portal_login if supervisor is not None else None,
-        local_user_id=local_user_id,
-        notification_refresher=_refresh_notifications if supervisor is not None else None,
-        connection_state_tracker=connection_tracker,
-    )
-    if lifespan is not None:
-        app.router.lifespan_context = lifespan
-    # Frontend V2, served from the same authenticated origin as the API.
-    # Mounted AFTER create_api_app so every backend route is already
-    # registered and keeps winning; the SPA routes are explicit, so a
-    # mistyped API path stays a backend 404 rather than becoming HTML.
-    mount_frontend(app)
-
-    app.mount("/bootstrap-app", create_bootstrap_app(conn))
-
-    def _lease_provider(account_id: str):
-        # The onboarding endpoint never acquires a lease itself; it only
-        # asserts the one it is handed is valid immediately before
-        # replacing a session.
-        return acquire_account_lease(conn, account_id, settings.instance_id)
-
-    app.mount(
-        "/onboarding-app",
-        create_onboarding_app(
-            conn=conn,
-            vault_dir=settings.vault_dir,
-            backend=get_crypto_backend(_test_only_in_memory_backend=settings.allow_test_only_session_vault),
-            acl_verifier=WindowsAclVerifier(),
-            lease_provider=_lease_provider,
-        ),
-    )
-    # Reachable by the composition root so the runner can report into it.
-    app.state.connection_tracker = connection_tracker
-    return app
 
 
 async def run_job_poll_loop(
@@ -275,37 +116,25 @@ async def run_job_poll_loop(
             supervisor.mark_failed(exc)
         raise
 
-    # A SECOND browser, headless and long-lived, for notification polling
-    # only. One per process, not one per refresh or per category: starting
-    # Chromium on every Actualiser would be slow and would still show in
-    # the task list. Session isolation is unaffected -- each poll still
-    # opens its own guarded context from that account's own storage_state.
-    #
-    # Its failure is not fatal to the application, but it IS fatal to
-    # notification refresh: there is no fallback to the visible browser,
-    # because a silent fallback reintroduces the flashing windows this
-    # exists to remove. Refreshes then fail visibly instead.
-    notification_context = None
-    notification_browser = None
-    try:
-        notification_context = launch_browser(headless=True)
-        notification_browser = await notification_context.__aenter__()
-        if supervisor is not None:
-            supervisor.mark_notification_ready(notification_browser)
-    except Exception:
-        notification_context = None
-        logger.warning(
-            "the headless notification browser could not start; "
-            "notification polling is unavailable until it does",
-            exc_info=True,
-        )
+    # Notification polling is the shared NotificationService (also used by
+    # the central server): a SECOND, headless, long-lived browser owned by
+    # the service, never a fallback to the visible one above. Its failure
+    # is not fatal to the application, but it IS fatal to notification
+    # refresh: refreshes then fail visibly instead of flashing a window.
+    notification_service = NotificationService(
+        conn, settings,
+        crypto_backend=cfg.crypto_backend,
+        session_observer=session_observer,
+        on_browser_ready=supervisor.mark_notification_ready if supervisor is not None else None,
+        on_browser_lost=supervisor.mark_notification_lost if supervisor is not None else None,
+    )
+    await notification_service.start()
 
     try:
         # Published here, once, so login, notification reads, the dossier
         # runner and the human handoff all share ONE browser.
         if supervisor is not None:
             supervisor.mark_ready(browser)
-        since_notification_poll = settings.notification_poll_interval_seconds
         while True:
             try:
                 await process_queued_dry_run_jobs(conn, browser=browser, cfg=cfg, encryptor=encryptor)
@@ -315,29 +144,7 @@ async def run_job_poll_loop(
                 # Jobs come first every pass: a notification refresh takes
                 # an account's lease briefly, and a dossier someone is
                 # waiting on must never queue behind one.
-                since_notification_poll += settings.poll_interval_seconds
-                if (settings.notifications_enabled
-                        and since_notification_poll >= settings.notification_poll_interval_seconds):
-                    since_notification_poll = 0
-                    if notification_browser is None:
-                        # No fallback to the visible browser. `continue`
-                        # is deliberately NOT used here: it would skip the
-                        # sleep below and spin this loop.
-                        logger.warning(
-                            "skipping the notification poll pass: the headless "
-                            "notification browser is not available"
-                        )
-                    else:
-                        await poll_all_accounts(
-                            conn,
-                            notification_browser,
-                            settings.notification_category_codes,
-                            instance_id=settings.instance_id,
-                            allowed_host=settings.portal_host,
-                            vault_dir=settings.vault_dir,
-                            crypto_backend=cfg.crypto_backend,
-                            session_observer=session_observer,
-                        )
+                await notification_service.poll_if_due(settings.poll_interval_seconds)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -354,13 +161,7 @@ async def run_job_poll_loop(
         # looking at, so nothing is lost by closing it early, and leaking
         # a headless Chromium keeps a driver process alive after the app
         # exits on Windows.
-        if notification_context is not None:
-            try:
-                await notification_context.__aexit__(None, None, None)
-            except Exception:
-                logger.info(
-                    "the notification browser was already gone at shutdown", exc_info=True
-                )
+        await notification_service.stop()
         try:
             await browser_context.__aexit__(None, None, None)
         except Exception:
@@ -376,31 +177,15 @@ async def run_job_poll_loop(
             logger.info("shared browser was already gone at shutdown", exc_info=True)
 
 
-def build_runner_config(settings: Settings) -> RunnerConfig:
+def build_runner_config(
+    settings: Settings, crypto_backend: Optional[CryptoBackend] = None
+) -> RunnerConfig:
     return RunnerConfig(
         instance_id=settings.instance_id,
         allowed_host=settings.allowed_host,
         vault_dir=settings.vault_dir,
-        crypto_backend=get_crypto_backend(_test_only_in_memory_backend=settings.allow_test_only_session_vault),
+        crypto_backend=crypto_backend if crypto_backend is not None else build_session_backend(settings),
         active_review_registry=ActiveReviewRegistry(),
-    )
-
-
-def build_tls_config(settings: Settings) -> TlsConfig:
-    if settings.tls_cert_path is None or settings.tls_key_path is None:
-        # serve() would refuse anyway; saying so here names the missing
-        # setting instead of failing inside the TLS loader.
-        raise ValueError(
-            "tls_cert_path and tls_key_path must both be configured -- there is no "
-            "plaintext HTTP fallback (deploy/serve.md, ADR-0008). For a local run see "
-            "tools/dev_certificate.py."
-        )
-    return TlsConfig(
-        cert_path=settings.tls_cert_path,
-        key_path=settings.tls_key_path,
-        host=settings.api_host,
-        port=settings.api_port,
-        subnet_allowlist=settings.subnet_allowlist,
     )
 
 
@@ -463,7 +248,10 @@ def main(settings: Optional[Settings] = None) -> None:  # pragma: no cover - rea
         # have to make.
         ensure_local_certificate(Path(settings.tls_cert_path), Path(settings.tls_key_path))
     mutex, api_conn, runner_conn, encryptor = startup(settings)
-    cfg = build_runner_config(settings)
+    # One session backend for the whole process, shared by the runner,
+    # the poller, manual refresh, login and onboarding.
+    crypto_backend = build_session_backend(settings)
+    cfg = build_runner_config(settings, crypto_backend)
     tls_config = build_tls_config(settings)
 
     supervisor = BrowserSupervisor()
@@ -482,7 +270,7 @@ def main(settings: Optional[Settings] = None) -> None:  # pragma: no cover - rea
             task = asyncio.create_task(
                 run_job_poll_loop(
                     runner_conn, cfg, encryptor, settings, supervisor,
-                    session_observer=_make_session_observer(connection_tracker),
+                    session_observer=make_session_observer(connection_tracker),
                 )
             )
             # Observed even if nothing ever awaits it, so a browser that dies
@@ -508,7 +296,7 @@ def main(settings: Optional[Settings] = None) -> None:  # pragma: no cover - rea
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
 
-    app = build_app(api_conn, settings, encryptor, lifespan=_lifespan, supervisor=supervisor, connection_tracker=connection_tracker)
+    app = build_app(api_conn, settings, encryptor, lifespan=_lifespan, supervisor=supervisor, connection_tracker=connection_tracker, crypto_backend=crypto_backend)
     try:
         serve(app, tls_config)
     finally:

@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from mcma.app.browser_supervisor import BrowserNotReady, BrowserUnavailable
 from mcma.app.api.authz import (
@@ -39,6 +40,7 @@ from mcma.app.connection_state import resolve_connection_state
 from mcma.app.auth.csrf import CSRF_COOKIE_NAME, generate_csrf_token
 from mcma.app.auth.provider import AuthProvider
 from mcma.app.auth.sessions import SESSION_COOKIE_NAME, SessionStore, clear_session_cookie, set_session_cookie
+from mcma.app.server_status import is_ready, overall_status
 from mcma.app.sse import Authorizer, create_sse_endpoint
 from mcma.domain.enums import Permission
 from mcma.domain.portal_accounts import PortalAccountProfile
@@ -149,10 +151,24 @@ def create_api_app(
     local_user_id: str | None = None,
     notification_refresher=None,
     connection_state_tracker=None,
+    server_state_provider=None,
+    agent_execution_available: bool = True,
 ) -> FastAPI:
     app = FastAPI(title="MCMA API")
     install_error_handlers(app)
     session_store = session_store or SessionStore()
+
+    def _require_agent_execution() -> None:
+        """Central Phase 1 has no workstation runner to hand work to, so a
+        request that would create or authorize Agent work is refused BEFORE
+        anything is read, stored or queued -- accepting it would park a job
+        (and encrypted dossier input) that nothing will ever run."""
+        if not agent_execution_available:
+            raise ApiError(
+                503, "RUNNER_CONTROL_PLANE_UNAVAILABLE",
+                "Le traitement automatique n'est pas disponible sur ce serveur : "
+                "aucun poste de travail n'est enregistré pour exécuter les dossiers.",
+            )
     get_principal = get_principal_dependency(conn, session_store, local_user_id)
 
     if local_user_id is not None:
@@ -457,6 +473,13 @@ def create_api_app(
             require_account_access(conn, principal, account_id)
             try:
                 outcome = await notification_refresher(account_id)
+            except (BrowserNotReady, BrowserUnavailable) as exc:
+                # The notification browser is starting, gone, or being
+                # relaunched. Typed and retryable; never a portal failure.
+                raise ApiError(
+                    503, "NOTIFICATION_BROWSER_UNAVAILABLE",
+                    "Le navigateur de notifications n'est pas disponible — réessayez dans un instant.",
+                ) from exc
             except Exception as exc:
                 # No portal text: an error page can carry claimant data.
                 # The response still says only the TYPE; the server log
@@ -748,6 +771,7 @@ def create_api_app(
         request: Request, principal: Principal = Depends(get_principal), _csrf=Depends(require_csrf)
     ):
         require_permission(principal, Permission.JOBS_PLAN)
+        _require_agent_execution()
         body = await request.json()
         if "workflow_name" in body:
             # Pilot-integration correction (section 3): the workflow is
@@ -794,6 +818,7 @@ def create_api_app(
         dry_run_job_id: str, request: Request, principal: Principal = Depends(get_principal), _csrf=Depends(require_csrf)
     ):
         require_permission(principal, Permission.JOBS_EXECUTE)
+        _require_agent_execution()
         body = await request.json()
         if "mode" in body:
             raise ApiError(400, "BAD_REQUEST", "mode is not a client-settable field")
@@ -928,6 +953,37 @@ def create_api_app(
             db_ok = True
         except Exception:
             db_ok = False
-        return {"status": "ok" if db_ok else "degraded", "db": db_ok}
+        if server_state_provider is None:
+            return {"status": "ok" if db_ok else "degraded", "db": db_ok}
+        # Central server: report each component, enumerated states only.
+        state = server_state_provider()
+        return {
+            "status": overall_status(db_ok, state["notifications"], state["shutting_down"]),
+            "db": db_ok,
+            "notifications": state["notifications"],
+            "shutting_down": state["shutting_down"],
+        }
+
+    if server_state_provider is not None:
+
+        @app.get("/ready")
+        def ready():
+            try:
+                conn.execute("SELECT 1").fetchone()
+                db_ok = True
+            except Exception:
+                db_ok = False
+            state = server_state_provider()
+            ok = is_ready(db_ok, state["shutting_down"])
+            return JSONResponse(
+                status_code=200 if ok else 503,
+                content={
+                    "ready": ok,
+                    "status": overall_status(db_ok, state["notifications"], state["shutting_down"]),
+                    "db": db_ok,
+                    "notifications": state["notifications"],
+                    "shutting_down": state["shutting_down"],
+                },
+            )
 
     return app
