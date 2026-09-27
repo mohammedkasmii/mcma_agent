@@ -24,6 +24,7 @@ Subcommands (all take --env-file):
   verify-image    dpkg audit + real Chromium navigation in the built image
   export-image    docker save + gzip + SHA-256 + image id
   import-image    verify SHA-256, docker load, verify image id
+  create-first-admin USER  offline first platform administrator (container stopped)
   backup / restore  SQLite snapshot + vault (+ config, optional keys)
   set-tag         record MCMA_IMAGE_TAG in the env file
 
@@ -794,6 +795,69 @@ def cmd_rollback(env_file: Path, tag: str) -> list:
 
 
 # --------------------------------------------------------------------- #
+# offline first-administrator provisioning
+# --------------------------------------------------------------------- #
+
+# Mirrors mcma.app.auth.users.USERNAME_PATTERN (3-32 chars, letters/digits/._-,
+# starting with a letter or digit; the app lower-cases it). This is only a
+# guard so nothing odd reaches `docker run`; the container CLI is authoritative.
+_ADMIN_NAME_HINT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$")
+
+
+def first_admin_argv(env: dict, username: str, *, tty: bool) -> list:
+    """The `docker run` for the throw-away provisioning container. Pure, so
+    tests can assert every flag. Deliberately absent: any network, any
+    published port, the TLS/vault/keys/config mounts, the Docker socket, and
+    -- above all -- any password (it is typed into the container's own hidden
+    prompt; nothing about it can appear in this argv or its environment)."""
+    uid, gid = _ids(env)
+    root = PurePosixPath(env["MCMA_DATA_ROOT"])        # the host is Linux
+    return [
+        "docker", "run", "--rm", "-i", *(["-t"] if tty else []),
+        "--network", "none",
+        "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m",
+        "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--privileged=false",
+        "--user", f"{uid}:{gid}",
+        "--memory", "512m", "--pids-limit", "64",
+        "--mount", f"type=bind,source={root / 'db'},target=/var/lib/mcma/data",
+        "-e", "MCMA_DB_PATH=/var/lib/mcma/data/mcma.sqlite3",
+        "-e", "MCMA_INSTANCE_LOCK_PATH=/var/lib/mcma/data/mcma.lock",
+        "--entrypoint", "python", image_ref(env["MCMA_IMAGE_TAG"]),
+        "-m", "mcma.app.first_admin_cli", "--", username,
+    ]
+
+
+def _run_interactive(argv: list) -> int:
+    """Inherits stdin/stdout/stderr so the container's hidden password prompt
+    works on the operator's terminal. Nothing is captured or logged."""
+    try:
+        return subprocess.run(argv).returncode
+    except (FileNotFoundError, PermissionError, OSError):
+        raise DeployError("docker could not be run") from None
+
+
+def cmd_create_first_admin(env: dict, username: str) -> list:
+    problems = validate_env(env)
+    if problems:
+        raise DeployError(problems)
+    if not _ADMIN_NAME_HINT.fullmatch(username):
+        raise DeployError(
+            "nom d'utilisateur invalide : 3 à 32 caractères (lettres, chiffres, « . », « _ » ou « - »), "
+            "commençant par une lettre ou un chiffre"
+        )
+    require_owned_root(env)
+    require_stopped()                          # the MCMA container must be POSITIVELY stopped/absent
+    if not (data_root(env) / "db").is_dir():
+        raise DeployError("the db directory is missing (run init)")
+    _docker("image", "inspect", image_ref(env["MCMA_IMAGE_TAG"]))
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    code = _run_interactive(first_admin_argv(env, username, tty=interactive))
+    if code != 0:
+        raise DeployError(f"create-first-admin did not create an administrator (exit {code}); see the message above")
+    return ["first administrator created. Start the platform with: up"]
+
+
+# --------------------------------------------------------------------- #
 # image build verification and immutable delivery
 # --------------------------------------------------------------------- #
 
@@ -1220,6 +1284,8 @@ def main(argv: Optional[list] = None) -> int:
     restore.add_argument("--with-keys", action="store_true")
     tag = sub.add_parser("set-tag")
     tag.add_argument("tag")
+    admin = sub.add_parser("create-first-admin")
+    admin.add_argument("username")
     args = parser.parse_args(argv)
 
     try:
@@ -1253,6 +1319,8 @@ def main(argv: Optional[list] = None) -> int:
                 lines = cmd_check(env, host=not args.no_host)
             elif args.command == "up":
                 lines = cmd_up(args.env_file)
+            elif args.command == "create-first-admin":
+                lines = cmd_create_first_admin(env, args.username)
             elif args.command == "wait-healthy":
                 lines = wait_healthy(env["MCMA_IMAGE_TAG"], timeout=args.timeout)
             elif args.command == "rollback":

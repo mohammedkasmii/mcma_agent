@@ -29,6 +29,9 @@
 #   status | logs [N] | down | images
 #   rollback TAG              transactional: restores the previous tag on failure
 #
+#  platform administrator (application STOPPED; interactive terminal required)
+#   create-first-admin USER   offline: hidden password prompt in a throw-away, network-less container
+#
 #  data
 #   backup [--include-keys] | restore ARCHIVE [--with-config] [--with-keys]
 set -euo pipefail
@@ -55,6 +58,9 @@ compose() { docker compose --project-name "$PROJECT" --env-file "$ENV_FILE" -f "
 
 case "$CMD" in
   init|gen-keys|gen-dev-cert|show-cert|check|up|backup)  tool "$CMD" "$@" ;;
+  create-first-admin)
+    [[ $# -eq 1 ]] || { echo "usage: create-first-admin ADMIN_USERNAME  (the password is typed at a hidden prompt)" >&2; exit 2; }
+    tool create-first-admin "$1" ;;
   install-tls)  [[ $# -eq 2 ]] || { echo "usage: install-tls CERT KEY" >&2; exit 2; }
                 tool install-tls --cert "$1" --key "$2" ;;
   build)

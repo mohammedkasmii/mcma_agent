@@ -1,6 +1,13 @@
 import { useMemo } from "react";
 import type { ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ApiRequestError } from "@shared/api/client";
+
+/** A 401 means the session is gone: retrying can only add a request storm. */
+export function shouldRetryQuery(failureCount: number, error: unknown): boolean {
+  if (error instanceof ApiRequestError && error.apiError.status === 401) return false;
+  return failureCount < 1;
+}
 
 /**
  * Server-state defaults for an operations console.
@@ -17,7 +24,7 @@ export function createQueryClient(): QueryClient {
         staleTime: 30_000,
         gcTime: 5 * 60_000,
         refetchOnWindowFocus: false,
-        retry: 1,
+        retry: shouldRetryQuery,
       },
       mutations: {
         retry: 0,

@@ -31,6 +31,34 @@
   color: var(--ink-on-rail-muted);
 }
 
+.navLink {
+  font-size: var(--text-sm);
+  color: var(--ink-on-rail);
+}
+
+.navLink[aria-current="page"] {
+  font-weight: var(--weight-semibold);
+  text-decoration: underline;
+}
+
+.userArea {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-left: auto;
+}
+
+.identity {
+  display: flex;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--ink-on-rail);
+}
+
+.logout {
+  padding-block: var(--space-1);
+}
+
 .skipLink {
   position: absolute;
   left: var(--space-3);

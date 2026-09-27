@@ -8,6 +8,9 @@ import { NotFoundScreen } from "./NotFoundScreen";
 import { AccountRoute } from "@features/accounts/AccountRoute";
 import { ClaimDetailScreen } from "@features/claims/ClaimDetailScreen";
 import { AgentRunScreen } from "@features/agent/AgentRunScreen";
+import { LoginScreen } from "@features/auth/LoginScreen";
+import { RequireAdmin, RequireAuth } from "@features/auth/RequireAuth";
+import { AdminUsersScreen } from "@features/admin/AdminUsersScreen";
 import { ROUTES } from "@shared/utils/routes";
 
 /**
@@ -18,8 +21,7 @@ import { ROUTES } from "@shared/utils/routes";
  * Account-scoped screens sit under /accounts/:accountId so the account is
  * part of the address, not of component state.
  */
-export const appRoutes: RouteObject[] = [
-  {
+const shellRoute: RouteObject = {
     element: <AppShell />,
     children: [
       { index: true, element: <Navigate to={ROUTES.overview} replace /> },
@@ -63,9 +65,26 @@ export const appRoutes: RouteObject[] = [
           </AccountRoute>
         ),
       },
+      {
+        path: ROUTES.adminUsers,
+        element: (
+          <RequireAdmin>
+            <AdminUsersScreen />
+          </RequireAdmin>
+        ),
+      },
       { path: "*", element: <NotFoundScreen /> },
     ],
-  },
+  };
+
+/**
+ * The login screen sits outside the auth gate; everything else (shell,
+ * account queries, event stream) is a child of RequireAuth and therefore
+ * mounts only after /auth/me confirmed a session.
+ */
+export const appRoutes: RouteObject[] = [
+  { path: ROUTES.login, element: <LoginScreen /> },
+  { element: <RequireAuth />, children: [shellRoute] },
 ];
 
 export function createAppRouter() {

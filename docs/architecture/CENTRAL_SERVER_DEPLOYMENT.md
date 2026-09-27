@@ -268,11 +268,8 @@ filling · systemd unit / proxy configuration files as shipped artefacts.
 > **This is a deployment foundation, not a production go-live.** After this
 > phase the following are still **not complete**:
 >
-> * **Employee UI login** — the API login exists, but no login screen was built;
->   the employee frontend cannot sign in yet.
-> * **Offline first-admin provisioning** — there is no way to create the first
->   user on the central server (the loopback bootstrap app is deliberately not
->   mounted), so nobody can authenticate.
+> * ~~Employee UI login~~ and ~~offline first-admin provisioning~~ — **done**, see
+>   *Platform authentication and employee accounts* at the end of this document.
 > * **Notification-session onboarding** — the four portal sessions cannot be
 >   loaded onto the server yet; every account will report "not connected".
 > * **Workstation runner control plane** — Agent creation stays HTTP 503
@@ -398,7 +395,7 @@ internal-CA certificate and root distribution in `deploy/tls/README.md`.
 
 `notifications: "ready"` means the headless Chromium inside the read-only
 container launched. Expected state right now: HTTP 200 on `/health` and `/ready`,
-the UI shell loads at `/`, **nobody can log in** (no admin provisioning), and no
+the UI shell loads at `/` (create the first administrator, then log in — see the last section), and no
 account is connected (no session onboarding).
 
 Operate: `$D status`, `LOGS_FOLLOW=1 $D logs 200`, `$D down` (stops and removes only
@@ -496,3 +493,118 @@ first `up`:
 `install-tls NEWCERT NEWKEY` validates and swaps the files atomically; then run
 `$D down && $D up` in a maintenance window (single worker, brief gap), per
 `deploy/tls/README.md`. A `restart` command is deliberately not provided.
+
+
+---
+
+# Platform authentication and employee accounts
+
+The central platform now has a French login screen, an offline command to create
+the first administrator, and an administrator page to create the employees.
+
+> **These are MCMA *Platform* accounts.** They only decide who may open this
+> web application. They are **not** the MCMA/MAMDA portal credentials and they
+> never read, change or duplicate the stored portal credentials or the
+> server-side portal (notification) browser sessions, which stay separate.
+> Workstation runners are a later phase; Agent creation is still HTTP 503
+> `RUNNER_CONTROL_PLANE_UNAVAILABLE`.
+
+## Exact production sequence
+
+```bash
+D="sudo ./deploy/central/mcma-deploy.sh --env-file $HOME/mcma-vm.env"
+
+# 1. Build or load the image (VM: build; production: import-image — see above)
+$D build            # or: $D import-image /path/mcma-central-<tag>.tar.gz && $D set-tag <tag>
+
+# 2. Keep the application STOPPED (do not run `up` yet; `down` if it is running)
+$D down
+
+# 3. Create the first platform administrator (interactive terminal required)
+$D create-first-admin ADMIN_USERNAME
+#    Mot de passe :                       <- typed hidden, twice
+#    Confirmez le mot de passe :
+#    Administrateur « admin_username » créé avec accès aux 4 comptes portail. ...
+
+# 4. Start the application (waits until healthy)
+$D up
+
+# 5. Open the platform over HTTPS from an employee PC:  https://192.168.11.111:18443/
+# 6. Log in as the first administrator (French login screen)
+# 7. "Utilisateurs" (admin only, https://<server>:<port>/administration/users) -> create the 2-3 employee accounts, choose the role
+#    and the portal accounts each may open.
+```
+
+### What `create-first-admin` does
+
+* It refuses unless the `mcma-central` container is **positively** stopped (a Docker
+  error, timeout or ambiguous answer aborts it too).
+* It runs `python -m mcma.app.first_admin_cli` in a **throw-away container of the built
+  image**: `--rm`, `--network none`, **no published ports**, `--read-only` root
+  filesystem (16 MB tmpfs `/tmp`), `--cap-drop ALL`, `no-new-privileges`, non-root user,
+  512 MB / 64 PIDs, and **only** `MCMA_DATA_ROOT/db` mounted read-write. The TLS key,
+  the two encryption keys, the vault and the config are **not** mounted. The terminal
+  is kept (`-it`) for the hidden prompt.
+* The password is read twice with `getpass` (no echo) from a terminal. It is never a
+  command-line argument, never an environment variable, never printed or logged, and
+  neither is its hash. A non-interactive stdin (a pipe) is refused, so it cannot be
+  piped in either.
+* It takes the application lock (the same file the server holds), and succeeds **only
+  when the users table is empty**. If any user exists — active or not — it refuses and
+  changes **nothing**, not even the canonical portal accounts.
+* The password is confirmed and validated **before any database write**. Then, in **one
+  transaction**: check the users table is empty → ensure the four canonical portal
+  accounts (existing provisioning logic) → create the admin → grant **exactly** those
+  four account ids (never other rows that may exist) → audit row. Any failure rolls
+  back all of it.
+* The loopback-only bootstrap application is **not** mounted on the central server.
+
+### Rules shared by the command and the web page (one implementation)
+
+* Username: 3–32 characters, letters/digits and `. _ -`, starting with a letter or
+  digit; normalised to lower case; unique **case-insensitively**.
+* Password: 12–128 characters, must not contain the username, not a repeated or
+  sequential string. Errors are in French.
+* Roles: `admin`, `operator`, `viewer`. Administrators always hold all four portal
+  accounts; operators/viewers get exactly the accounts selected on the page.
+* The last active administrator can never be deactivated or demoted, and an
+  administrator cannot deactivate or change the role of their **own** account.
+* Deactivating a user or resetting a password ends that user's live sessions.
+* Audit rows (`user.created`, `user.updated`, `user.password_reset`,
+  `user.first_admin_created`) hold the acting admin (taken from the session, never from
+  the request) and a hash of non-secret fields — never a password or hash.
+
+## Session behaviour
+
+* Cookies: `mcma_session` is **Secure, HttpOnly, SameSite=strict**; `mcma_csrf` is
+  readable by the page but **Secure and SameSite=strict**. Every state-changing request
+  needs the `X-CSRF-Token` header (login itself has no CSRF cookie yet and uses a
+  dedicated request). Logout is CSRF-protected, drops the server-side session and
+  expires both cookies with identical attributes.
+* Sessions live **in server memory** (idle timeout 30 min, absolute 12 h).
+  **Restarting the server invalidates every platform session**: an already-open
+  browser gets a 401 on its next request and returns to the login page with
+  « Votre session a expiré. Veuillez vous reconnecter. » Portal notification sessions
+  are unaffected.
+* **Addresses.** The administrator PAGE is `/administration/users` (part of the
+  single-page app, so a browser refresh works). The JSON API it uses is
+  `/admin/users` (admin-only, CSRF on every change). They are deliberately different:
+  the same path for both would let the API answer a page refresh with JSON/401.
+* **Live event stream and session loss.** `/events` re-checks the live session and the
+  user's active flag about once a second **without refreshing the idle timer** (an open
+  stream cannot keep an idle session alive; the 30-minute idle timeout still applies).
+  Deactivation, password reset, logout or expiry end the stream with a final
+  `session_ended` event. The browser then checks `/auth/me`: a 401 (including after a
+  server restart, as soon as the server is reachable again) returns the employee to the
+  login page; a network failure does **not** log anyone out, and checks are
+  single-flight and rate-limited (no request storm).
+* `GET /auth/me` returns only identity, role, permission names and the portal account
+  ids the user may open (401 for a missing/expired/invalid session or an inactive user).
+
+## Known limits
+
+* No login rate-limiting or lockout yet (a shared Argon2id hash is used and unknown
+  users cost the same time as wrong passwords). Keep the server on the LAN.
+* No self-service password change; an administrator resets passwords.
+* Notification-session onboarding and the workstation runner control plane are still
+  not built (see the Docker section).

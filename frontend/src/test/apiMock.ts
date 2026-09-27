@@ -72,7 +72,7 @@ export function mockNonJsonResponse(text: string): Mock {
  */
 export interface RouteHandler {
   readonly match: (url: string, init: RequestInit) => boolean;
-  readonly status?: number;
+  readonly status?: number | ((url: string, init: RequestInit) => number);
   readonly body: unknown | ((url: string, init: RequestInit) => unknown);
 }
 
@@ -85,7 +85,10 @@ export function mockRoutes(handlers: readonly RouteHandler[]): Mock {
       );
     }
     const body = typeof handler.body === "function" ? handler.body(url, init) : handler.body;
-    return Promise.resolve(jsonResponse(handler.status ?? 200, body));
+    return Promise.resolve(jsonResponse(
+        typeof handler.status === "function" ? handler.status(url, init) : (handler.status ?? 200),
+        body,
+      ));
   });
   vi.stubGlobal("fetch", stub as unknown as typeof fetch);
   return stub;

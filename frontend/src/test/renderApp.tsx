@@ -4,6 +4,28 @@ import { QueryClient } from "@tanstack/react-query";
 import { createMemoryRouter, MemoryRouter, RouterProvider } from "react-router-dom";
 import { appRoutes } from "@app/router";
 import { AppProviders } from "@app/providers";
+import { AuthProvider } from "@features/auth/AuthProvider";
+import type { AuthSession } from "@shared/types";
+
+/** The default signed-in user: existing screen tests are about screens, not sign-in. */
+export const TEST_SESSION: AuthSession = {
+  userId: "user-1",
+  username: "admin",
+  role: "admin",
+  permissions: [],
+  accountIds: [],
+  localSingleUser: false,
+};
+
+export interface RenderAppOptions {
+  /**
+   * A session to start with (default: TEST_SESSION, no /auth/me request), or
+   * "probe" to run the real /auth/me check against the fetch double.
+   */
+  readonly auth?: AuthSession | "probe";
+  /** Shortens the session-recheck cooldown so tests need not wait 5s. */
+  readonly recheckCooldownMs?: number;
+}
 
 /**
  * A query client for tests: no retries, no cache reuse between cases.
@@ -25,13 +47,31 @@ export function createTestQueryClient(): QueryClient {
  * Tests navigate by URL rather than by clicking through the shell, so a
  * routing or guard regression fails here rather than in a screen test.
  */
-export function renderAppAt(initialEntry: string, queryClient?: QueryClient) {
+export function renderAppAt(
+  initialEntry: string,
+  queryClient?: QueryClient,
+  options: RenderAppOptions = {},
+) {
   const router = createMemoryRouter(appRoutes, { initialEntries: [initialEntry] });
-  return render(
-    <AppProviders queryClient={queryClient ?? createTestQueryClient()}>
-      <RouterProvider router={router} />
-    </AppProviders>,
-  );
+  const auth = options.auth ?? TEST_SESSION;
+  const cooldown =
+    options.recheckCooldownMs === undefined ? {} : { recheckCooldownMs: options.recheckCooldownMs };
+  return {
+    router,
+    ...render(
+      <AppProviders queryClient={queryClient ?? createTestQueryClient()}>
+        {auth === "probe" ? (
+          <AuthProvider {...cooldown}>
+            <RouterProvider router={router} />
+          </AuthProvider>
+        ) : (
+          <AuthProvider initialSession={auth} {...cooldown}>
+            <RouterProvider router={router} />
+          </AuthProvider>
+        )}
+      </AppProviders>,
+    ),
+  };
 }
 
 /**

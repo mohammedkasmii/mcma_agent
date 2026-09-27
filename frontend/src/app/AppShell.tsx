@@ -1,8 +1,12 @@
-import { Link, Outlet, useMatch } from "react-router-dom";
+import { Link, NavLink, Outlet, useMatch } from "react-router-dom";
 import { AccountRail } from "@features/accounts/AccountRail";
 import { useAccountRail } from "@features/accounts/useAccountRail";
 import { ActiveRunBanner } from "@features/jobs/ActiveRunBanner";
 import { useEventStream } from "@shared/events/useEventStream";
+import { useAuth } from "@features/auth/AuthProvider";
+import { cx } from "@shared/utils/classNames";
+import { Button } from "@shared/ui";
+import { roleLabel } from "@shared/utils/roles";
 import { ROUTES } from "@shared/utils/routes";
 import styles from "./AppShell.module.css";
 
@@ -23,10 +27,13 @@ import styles from "./AppShell.module.css";
 export function AppShell() {
   // One connection for the whole application: the shell outlives every
   // navigation, so no screen can open a second stream.
-  useEventStream();
+  const auth = useAuth();
+  useEventStream(undefined, auth.recheckSession);
   const { state, accounts } = useAccountRail();
   const accountMatch = useMatch("/accounts/:accountId/*");
   const activeAccountId = accountMatch?.params.accountId ?? null;
+  const logout = auth.logout;
+  const session = auth.state.status === "authenticated" ? auth.state.session : null;
 
   return (
     <div className={styles.shell}>
@@ -37,7 +44,30 @@ export function AppShell() {
         <Link to={ROUTES.overview} className={styles.brand}>
           MCMA Operations
         </Link>
-        <p className={styles.environment}>Poste local</p>
+        {session?.role === "admin" ? (
+          <nav aria-label="Administration">
+            <NavLink to={ROUTES.adminUsers} className={cx(styles.navLink)}>
+              Utilisateurs
+            </NavLink>
+          </nav>
+        ) : null}
+        <div className={styles.userArea}>
+          <p className={styles.environment}>
+            {session?.localSingleUser ? "Poste local" : "Serveur central"}
+          </p>
+          {session === null ? null : (
+            <>
+              <p className={styles.identity}>
+                <span>{session.username}</span> <span>{roleLabel(session.role)}</span>
+              </p>
+              {session.localSingleUser ? null : (
+                <Button className={styles.logout} onClick={() => void logout()}>
+                  Se déconnecter
+                </Button>
+              )}
+            </>
+          )}
+        </div>
       </header>
       <AccountRail state={state} accounts={accounts} activeAccountId={activeAccountId} />
       <main className={styles.content} id="main">

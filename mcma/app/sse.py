@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional, Protocol
+from typing import AsyncIterator, Callable, Optional, Protocol
 
 from fastapi import Request
 from sse_starlette.sse import EventSourceResponse
@@ -23,6 +23,7 @@ from sse_starlette.sse import EventSourceResponse
 from mcma.persistence.outbox import cursor_is_stale, events_after, latest_event_id
 
 REAUTHORIZATION_INTERVAL_SECONDS = 30
+SESSION_ENDED_EVENT = "session_ended"
 
 
 class Authorizer(Protocol):
@@ -77,6 +78,7 @@ async def stream_events(
     poll_interval_seconds: float = 1.0,
     max_iterations: Optional[int] = None,
     sleep=None,
+    is_session_live: Optional[Callable[[], bool]] = None,
 ) -> AsyncIterator[dict]:
     """The actual generator EventSourceResponse consumes. Re-checks
     authorization every iteration (at minimum once per
@@ -84,10 +86,20 @@ async def stream_events(
     REAUTHORIZATION_INTERVAL_SECONDS requires) -- on revocation, the
     stream ends (the caller/transport is expected to not reconnect an
     unauthorized principal). `sleep` is injectable for tests;
-    `max_iterations` bounds a test run instead of looping forever."""
+    `max_iterations` bounds a test run instead of looping forever.
+
+    `is_session_live` re-checks the LIVE session and the user's active flag
+    (not the principal/account snapshot taken when the stream opened). When
+    it reports False the stream sends one final `session_ended` event -- a
+    reliable signal for the frontend -- and ends. It must not refresh the
+    session's idle timer (the endpoint builds it on SessionStore.peek)."""
     sleep = sleep or asyncio.sleep
     cursor = last_event_id
     iterations = 0
+
+    if is_session_live is not None and not is_session_live():
+        yield {"event": SESSION_ENDED_EVENT, "data": "{}"}
+        return
 
     segment = compute_replay(conn, principal, authorizer, cursor)
     if segment.needs_resync:
@@ -99,6 +111,9 @@ async def stream_events(
         cursor = segment.cursor
 
     while max_iterations is None or iterations < max_iterations:
+        if is_session_live is not None and not is_session_live():
+            yield {"event": SESSION_ENDED_EVENT, "data": "{}"}
+            return
         accounts_to_check = authorizer.visible_accounts(principal)
         if accounts_to_check and not all(authorizer.is_authorized(principal, acc) for acc in accounts_to_check):
             return  # revoked -- drop the stream
@@ -114,16 +129,22 @@ async def stream_events(
         await sleep(poll_interval_seconds)
 
 
-def create_sse_endpoint(conn, authorizer: Authorizer, get_principal):
+def create_sse_endpoint(conn, authorizer: Authorizer, get_principal, session_liveness=None):
     """Returns a FastAPI-route-ready async callable. `get_principal(request)`
     resolves the authenticated principal -- injected so this module never
-    imports the real auth system (INC-16/17 wires the real one)."""
+    imports the real auth system (INC-16/17 wires the real one).
+
+    `session_liveness(request, principal)` -- when supplied -- returns the
+    zero-argument callable stream_events polls to detect a lost session."""
 
     async def endpoint(request: Request):
         principal = get_principal(request)
         last_event_id_header = request.headers.get("last-event-id")
         last_event_id = int(last_event_id_header) if last_event_id_header else None
-        generator = stream_events(conn, principal, authorizer, last_event_id=last_event_id)
+        is_live = session_liveness(request, principal) if session_liveness is not None else None
+        generator = stream_events(
+            conn, principal, authorizer, last_event_id=last_event_id, is_session_live=is_live
+        )
         return EventSourceResponse(generator)
 
     return endpoint

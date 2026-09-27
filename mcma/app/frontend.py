@@ -49,6 +49,8 @@ FAVICON_FILENAME = "favicon.ico"
 
 SPA_ROUTES: tuple[str, ...] = (
     "/",
+    "/login",
+    "/administration/users",
     "/overview",
     "/accounts/{account_id}/work",
     "/accounts/{account_id}/work/{claim_pk}",

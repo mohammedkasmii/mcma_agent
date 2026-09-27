@@ -69,6 +69,8 @@ def test_every_declared_spa_route_serves_the_built_index(dist):
     client = TestClient(_app(dist))
     addresses = [
         "/",
+        "/login",
+        "/administration/users",
         "/overview",
         "/accounts/acct-1/work",
         "/accounts/acct-1/work/claim-1",

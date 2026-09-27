@@ -50,7 +50,7 @@ describe("account rail against the real query", () => {
   });
 
   it("reports a backend error rather than an empty list", async () => {
-    mockApiError(401, "UNAUTHENTICATED", "authentication required");
+    mockApiError(403, "FORBIDDEN", "authentication required");
     renderAppAt("/overview");
     expect(await screen.findByText(/Liste des comptes indisponible/)).toBeInTheDocument();
   });
@@ -93,11 +93,11 @@ describe("account route resolution", () => {
   });
 
   it("does not render the raw server message on an API failure", async () => {
-    mockApiError(401, "UNAUTHENTICATED", "authentication required");
+    mockApiError(403, "FORBIDDEN", "authentication required");
     renderAppAt(WORK(WRITABLE_ACCOUNT_WIRE.account_id));
 
     expect(await screen.findByText("Impossible de charger vos comptes")).toBeInTheDocument();
-    expect(screen.getByText("Votre session a expiré. Reconnectez-vous.")).toBeInTheDocument();
+    expect(screen.getByText("Vous n'avez pas accès à cet élément.")).toBeInTheDocument();
     expect(screen.queryByText(/authentication required/)).toBeNull();
   });
 });

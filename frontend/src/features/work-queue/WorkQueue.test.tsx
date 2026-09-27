@@ -107,7 +107,7 @@ describe("work queue states", () => {
   });
 
   it("does not show a claims list when the account list itself failed", async () => {
-    mockApiError(401, "UNAUTHENTICATED", "authentication required");
+    mockApiError(403, "FORBIDDEN", "authentication required");
     renderAppAt(WORK(WRITABLE_ID));
     expect(await screen.findByText("Impossible de charger vos comptes")).toBeInTheDocument();
     expect(screen.queryByRole("table")).toBeNull();

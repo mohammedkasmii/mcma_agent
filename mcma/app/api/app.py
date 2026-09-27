@@ -39,7 +39,11 @@ from mcma.app.api.errors import ApiError, install_error_handlers
 from mcma.app.connection_state import resolve_connection_state
 from mcma.app.auth.csrf import CSRF_COOKIE_NAME, generate_csrf_token
 from mcma.app.auth.provider import AuthProvider
-from mcma.app.auth.sessions import SESSION_COOKIE_NAME, SessionStore, clear_session_cookie, set_session_cookie
+from mcma.app.auth.permissions import permissions_for_role
+from mcma.app.auth.sessions import (
+    SESSION_COOKIE_NAME, SessionStore, clear_csrf_cookie, clear_session_cookie, set_session_cookie,
+)
+from mcma.app.api.admin_users import register_admin_user_routes
 from mcma.app.server_status import is_ready, overall_status
 from mcma.app.sse import Authorizer, create_sse_endpoint
 from mcma.domain.enums import Permission
@@ -204,7 +208,8 @@ def create_api_app(
         from fastapi.responses import JSONResponse
 
         response = JSONResponse(
-            {"user_id": user.user_id, "username": user.username, "role": user.role, "csrf_token": csrf_token}
+            {"user_id": user.user_id, "username": user.username, "role": user.role, "csrf_token": csrf_token},
+            headers={"Cache-Control": "no-store"},
         )
         set_session_cookie(response, token, secure=secure_cookies)
         # The CSRF cookie is deliberately NOT HttpOnly -- the client-side
@@ -215,15 +220,44 @@ def create_api_app(
         return response
 
     @app.post("/auth/logout")
-    def logout(request: Request, principal: Principal = Depends(get_principal)):
+    def logout(request: Request, principal: Principal = Depends(get_principal), _csrf=Depends(require_csrf)):
+        """CSRF-protected. Drops the server-side session, then expires BOTH
+        cookies with the attributes they were set with."""
         from fastapi.responses import JSONResponse
 
         token = request.cookies.get(SESSION_COOKIE_NAME)
         if token:
             session_store.invalidate(token)
-        response = JSONResponse({"status": "logged_out"})
-        clear_session_cookie(response)
+        response = JSONResponse({"status": "logged_out"}, headers={"Cache-Control": "no-store"})
+        clear_session_cookie(response, secure=secure_cookies)
+        clear_csrf_cookie(response, secure=secure_cookies)
         return response
+
+    @app.get("/auth/me")
+    def me(request: Request, principal: Principal = Depends(get_principal)):
+        """What the frontend needs to render, nothing more: identity, role,
+        the permission names that role holds, and the portal account ids the
+        user may open. 401 (from get_principal) for a missing, expired or
+        invalid session and for an inactive user."""
+        from fastapi.responses import JSONResponse
+
+        token = request.cookies.get(SESSION_COOKIE_NAME)
+        via_session = bool(token) and session_store.validate(token) is not None
+        return JSONResponse(
+            {
+                "user_id": principal.user_id,
+                "username": principal.username,
+                "role": principal.role,
+                "permissions": sorted(p.value for p in permissions_for_role(principal.role)),
+                "account_ids": sorted(visible_account_ids(conn, principal)),
+                # True only for the Windows single-office install, where the
+                # loopback user is auto-authenticated and there is no login.
+                "local_single_user": local_user_id is not None and not via_session,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    register_admin_user_routes(app, conn, get_principal, session_store)
 
     # -- notifications (row-filtered list surfaces, review AR-H1) --------
 
@@ -941,7 +975,23 @@ def create_api_app(
 
     # -- events (SSE, real authorizer) -------------------------------------
 
-    sse_endpoint = create_sse_endpoint(conn, authorizer, get_principal)
+    def _session_liveness(request: Request, principal: Principal):
+        """The live check the event stream polls. It re-reads the session
+        (peek: never refreshes the idle timer) and the user's active flag, so
+        deactivation, password reset, logout and expiry all end the stream --
+        not just a change to account access."""
+        token = request.cookies.get(SESSION_COOKIE_NAME)
+        bound_to_session = bool(token) and session_store.peek(token) == principal.user_id
+
+        def is_live() -> bool:
+            if bound_to_session and session_store.peek(token) != principal.user_id:
+                return False
+            row = conn.execute("SELECT active FROM users WHERE user_id = ?", (principal.user_id,)).fetchone()
+            return row is not None and bool(row["active"])
+
+        return is_live
+
+    sse_endpoint = create_sse_endpoint(conn, authorizer, get_principal, _session_liveness)
     app.add_api_route("/events", sse_endpoint, methods=["GET"])
 
     # -- health --------------------------------------------------------------

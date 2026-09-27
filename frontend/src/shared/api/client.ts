@@ -42,6 +42,31 @@ interface RequestOptions {
   /** Serialized as JSON. Only used by state-changing methods. */
   readonly body?: unknown;
   readonly signal?: AbortSignal;
+  /**
+   * Login is the one request made before a CSRF cookie exists. It is still
+   * same-origin checked and still sends credentials.
+   */
+  readonly skipCsrf?: boolean;
+  /**
+   * The login request and the initial session probe expect a 401 as an
+   * ordinary answer, so they must not trigger the session-expired transition.
+   */
+  readonly skipUnauthorizedNotice?: boolean;
+}
+
+type UnauthorizedListener = () => void;
+let unauthorizedListener: UnauthorizedListener | null = null;
+
+/**
+ * Registers the single subscriber told when an authenticated request came
+ * back 401 UNAUTHENTICATED. Returns an unsubscribe function. The subscriber
+ * owns idempotence: a burst of concurrent 401s calls it once per response.
+ */
+export function setUnauthorizedListener(listener: UnauthorizedListener | null): () => void {
+  unauthorizedListener = listener;
+  return () => {
+    if (unauthorizedListener === listener) unauthorizedListener = null;
+  };
 }
 
 /**
@@ -74,7 +99,7 @@ async function apiRequest(path: string, options: RequestOptions = {}): Promise<u
   const method = options.method ?? "GET";
   const headers: Record<string, string> = { Accept: "application/json" };
 
-  if (!SAFE_METHODS.has(method)) {
+  if (!SAFE_METHODS.has(method) && options.skipCsrf !== true) {
     // Double-submit cookie: the backend rejects a state-changing request
     // whose header token does not match the cookie. Failing here rather
     // than sending a request that is certain to be refused gives the
@@ -104,7 +129,15 @@ async function apiRequest(path: string, options: RequestOptions = {}): Promise<u
   }
 
   if (!response.ok) {
-    throw new ApiRequestError(normalizeApiError(response.status, await readJson(response)));
+    const apiError = normalizeApiError(response.status, await readJson(response));
+    if (
+      response.status === 401 &&
+      apiError.code === "UNAUTHENTICATED" &&
+      options.skipUnauthorizedNotice !== true
+    ) {
+      unauthorizedListener?.();
+    }
+    throw new ApiRequestError(apiError);
   }
 
   const body = await readJson(response);
@@ -132,4 +165,22 @@ export function apiSend(
   body?: unknown,
 ): Promise<unknown> {
   return apiRequest(path, body === undefined ? { method } : { method, body });
+}
+
+/** POST /auth/login. No CSRF cookie exists yet; never triggers the 401 transition. */
+export function apiLogin(body: { readonly username: string; readonly password: string }) {
+  return apiRequest("/auth/login", {
+    method: "POST",
+    body,
+    skipCsrf: true,
+    skipUnauthorizedNotice: true,
+  });
+}
+
+/** GET /auth/me as the initial session probe: a 401 here means "not signed in". */
+export function apiSessionProbe(signal?: AbortSignal): Promise<unknown> {
+  return apiRequest("/auth/me", {
+    skipUnauthorizedNotice: true,
+    ...(signal === undefined ? {} : { signal }),
+  });
 }

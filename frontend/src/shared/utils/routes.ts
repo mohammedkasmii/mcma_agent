@@ -9,7 +9,9 @@
  */
 
 export const ROUTES = {
+  login: "/login",
   overview: "/overview",
+  adminUsers: "/administration/users",
   accountWork: "/accounts/:accountId/work",
   accountClaim: "/accounts/:accountId/work/:claimPk",
   accountAgent: "/accounts/:accountId/agent",

@@ -29,6 +29,9 @@ export const JOB_EVENT_TYPES = ["JOB_CREATED", "JOB_STATUS_CHANGED"] as const;
  */
 export const NOTIFICATION_EVENT_TYPES = ["NOTIFICATIONS_REFRESHED"] as const;
 export const RESYNC_EVENT_TYPE = "resync";
+/** Final event the backend sends when the session or user is no longer valid. */
+export const SESSION_ENDED_EVENT_TYPE = "session_ended";
+const EVENT_SOURCE_CLOSED = 2;
 
 export type EventStreamHandlers = {
   /** A job somewhere changed. Refresh job collections and job details. */
@@ -47,6 +50,15 @@ export type EventStreamHandlers = {
    * catch-up point, not a lifecycle notification.
    */
   readonly onConnected: () => void;
+  /**
+   * The stream reported an error. `closed` is true when the browser has given
+   * up (readyState CLOSED, e.g. the reconnect got a 401): it will not retry
+   * by itself, so the owner has to decide what happens next. While it is
+   * false the browser is reconnecting on its own.
+   */
+  readonly onError?: (closed: boolean) => void;
+  /** The server said the session is gone and closed the stream. */
+  readonly onSessionEnded?: () => void;
 };
 
 export interface EventStreamHandle {
@@ -118,7 +130,13 @@ export function openEventStream(
   // Reconnection stays the browser's job. A custom retry loop here would
   // fight it and could open a second connection; the catch-up happens on the
   // "open" that follows, not on a timer.
-  source.addEventListener("error", () => {});
+  source.addEventListener("error", () => {
+    handlers.onError?.(source.readyState === EVENT_SOURCE_CLOSED);
+  });
+
+  source.addEventListener(SESSION_ENDED_EVENT_TYPE, () => {
+    handlers.onSessionEnded?.();
+  });
 
   return {
     close() {
