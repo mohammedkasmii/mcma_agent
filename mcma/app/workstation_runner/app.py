@@ -21,6 +21,7 @@ from mcma.app.workstation_runner.config import ConfigError, RunnerConfig, build_
 from mcma.app.workstation_runner.controller import RunnerController
 from mcma.app.workstation_runner.dry_run_executor import run_dry_run_check
 from mcma.app.workstation_runner.execute_executor import run_execute_check
+from mcma.app.workstation_runner.execution_permit import ExecutionPermit
 from mcma.app.workstation_runner.gui import RunnerApp
 from mcma.app.workstation_runner.heartbeat import HeartbeatLifecycle
 from mcma.app.workstation_runner.http_client import RegistryHttpClient
@@ -36,10 +37,14 @@ from mcma.core.mutex import MutexAcquisitionError, create_single_instance_mutex
 from mcma.planning.registry import default_registry
 from mcma.portal.capabilities import SearchIdentifiers
 from mcma.portal.identity import ExpectedIdentity as PortalExpectedIdentity
+from mcma.portal.pilot_contracts import DEFAULT_PILOT_HOST, pilot_allowed_host
+from mcma.portal.pilot_contracts import write_contracts as pilot_write_contracts
 from mcma.portal.sinauto_contracts import DEFAULT_SINAUTO_HOST, identity_read_contracts
+from mcma.portal.workstation_execute import run_workstation_execute_write
 from mcma.portal.workstation_sessions import (
     perform_dry_run_identity_check, perform_manual_login, verify_saved_session,
 )
+from mcma.portal.writer import PortalRowIntent, WriterPlanData, require_mcma_writer_account
 
 _MUTEX_BASE_NAME = "MCMA_WorkstationRunner"
 
@@ -336,24 +341,89 @@ def _run_with_mutex_held(config: RunnerConfig | None) -> int:
             workflow_registry=_workflow_registry, check_identity_read_only=_check_identity_read_only,
         )
 
-    # Phase 1C-C, Pass 1: the EXECUTE write callable is a FAIL-CLOSED
-    # PLACEHOLDER -- it never calls mcma.portal.writer.VerifiedMissionWriter
-    # (or anything else portal-facing) and always reports
-    # INTERNAL_EXECUTION_ERROR. This is intentionally never exercised in
-    # production: mcma.app.runners.dispatch.EXECUTE_DISPATCH_ENABLED and
-    # mcma.app.central_server's execute_creation_available both stay False,
-    # so claim_job() can never hand this worker an EXECUTE envelope at all.
-    # It exists only so the worker's pipeline is structurally complete for
-    # both job kinds; a future increment replaces this closure with the
-    # reviewed, post-G5 VerifiedMissionWriter behind the SAME
-    # PerformExecuteWrite shape -- never by weakening this placeholder.
-    async def _perform_execute_write(account_id: str, storage_state: dict, plan) -> str:
-        return "INTERNAL_EXECUTION_ERROR"
+    # Phase 1C-C Pass 2A: the EXECUTE write callable now wires the
+    # reviewed, structurally-complete visible-browser path
+    # (mcma.portal.workstation_execute.run_workstation_execute_write)
+    # behind the SAME PerformExecuteWrite shape the Pass 1 placeholder
+    # used -- never by weakening what was there before.
+    #
+    # Both production EXECUTE gates stay False regardless (mcma.app.
+    # runners.dispatch.EXECUTE_DISPATCH_ENABLED and mcma.app.
+    # central_server's execute_creation_available), so claim_job() still
+    # never hands this worker an EXECUTE envelope in production -- this
+    # closure exists so the pipeline is structurally complete, not so it
+    # is reachable.
+    #
+    # Route contracts (requirement G): the pilot/loopback write contracts
+    # ONLY, at an explicit loopback host -- exactly like mcma.execution.
+    # runner's own _open_writer_for_execute, which has used
+    # pilot_write_contracts(cfg.allowed_host) for the identical reason
+    # since before this pass: mcma.portal.sinauto_contracts deliberately
+    # has no write_contracts() at all (no reviewed production row-op
+    # contract exists pending G5), so there is no "production write
+    # contracts" value to wire here even if this composition root wanted
+    # to. Pointing EXECUTE's write contracts at the real production host
+    # would also be refused unconditionally by writer.py's own
+    # _require_loopback_host, called inside open_verified_writer before
+    # any browser context exists -- the live writer construction gate
+    # stays refusing in production regardless of this wiring.
+    _execute_allowed_host = pilot_allowed_host(DEFAULT_PILOT_HOST)
+    _execute_write_contracts = pilot_write_contracts(_execute_allowed_host)
 
-    async def _run_execute_check(claimed_job, plan_hash: str) -> str:
+    def _writer_account_for(account_id: str):
+        # execute_executor.run_execute_check has already refused any
+        # account outside the two fixed MCMA runner accounts before this
+        # closure can ever be reached (_MCMA_RUNNER_ACCOUNT_IDS) -- both
+        # are, by construction, the same fixed MCMA/active roster
+        # mcma.portal.workstation_sessions.WORKSTATION_ENTITY already
+        # hardcodes for this package; there is no accounts table on the
+        # workstation to query (mcma.persistence is off-limits here).
+        return require_mcma_writer_account(account_id, entity="MCMA", active=True)
+
+    async def _perform_execute_write(
+        account_id: str, storage_state: dict, plan, permit, on_ready_for_review, on_phase,
+    ) -> str:
+        # Same conversion mcma.execution.runner's own
+        # _to_portal_expected_identity/_writer_plan_from/
+        # _search_identifiers_for perform -- duplicated here rather than
+        # imported, exactly like _check_identity_read_only above, because
+        # mcma.execution (and everything it pulls in) is off-limits to
+        # this package (test_import_isolation.py's _FULL_FORBIDDEN list
+        # forbids it even for this, the one module allowed to import
+        # mcma.portal).
+        expected = plan.expected_identity
+        expected_identity = PortalExpectedIdentity(
+            registration=expected.registration,
+            insurer_reference=expected.insurer_reference,
+            id_sinistre=expected.id_sinistre,
+        )
+        identifiers = SearchIdentifiers(matricule=expected.registration.raw)
+        writer_plan = WriterPlanData(
+            repair_workflow=plan.repair_workflow,
+            row_intents=tuple(
+                PortalRowIntent(rubrique_id=step.rubrique_id, ht=step.ht, tva=step.tva, vetuste=step.vetuste)
+                for step in plan.steps
+            ),
+            form_field_intents=tuple(plan.form_field_intents),
+        )
+        return await run_workstation_execute_write(
+            storage_state,
+            expected_identity=expected_identity,
+            writer_plan=writer_plan,
+            identifiers=identifiers,
+            contracts=_execute_write_contracts,
+            allowed_host=_execute_allowed_host,
+            writer_account=_writer_account_for(account_id),
+            permit=permit,
+            on_ready_for_review=on_ready_for_review,
+            on_phase=on_phase,
+        )
+
+    async def _run_execute_check(claimed_job, plan_hash: str, permit: ExecutionPermit, on_ready_for_review, on_phase) -> str:
         return await run_execute_check(
             claimed_job, expected_plan_hash=plan_hash, session_store=session_store,
             workflow_registry=_workflow_registry, perform_execute_write=_perform_execute_write,
+            permit=permit, on_ready_for_review=on_ready_for_review, on_phase=on_phase,
         )
 
     gui_app = RunnerApp()

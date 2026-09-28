@@ -41,34 +41,38 @@ def test_app_imports_the_real_browser_session_types():
     assert app_module.VerificationScheduler is VerificationScheduler
 
 
-def test_app_uses_the_production_identity_read_contracts_never_pilot_contracts():
+def test_app_uses_the_production_identity_read_contracts_never_pilot_contracts_for_dry_run():
     """Phase 1C-B release-blocker correction: the DRY_RUN identity gate's
     read contracts must come from mcma.portal.sinauto_contracts (the
-    production module) -- mcma.portal.pilot_contracts stays permanently
-    mock-only and must never be imported, let alone called, from this
-    composition root. AST-based (not a raw substring search): this
-    module's own explanatory prose legitimately NAMES pilot_contracts as
-    the thing NOT to use, which a naive text search would misread as a
-    violation."""
-    import ast
-    import inspect
-
+    production module), never mcma.portal.pilot_contracts."""
     from mcma.portal.sinauto_contracts import identity_read_contracts
 
     assert app_module.identity_read_contracts is identity_read_contracts
     assert not hasattr(app_module, "pilot_read_contracts")
-    tree = ast.parse(inspect.getsource(app_module))
-    imported_modules = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported_modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported_modules.add(node.module)
-    assert "mcma.portal.pilot_contracts" not in imported_modules
-    # No actual CALL to a pilot-contracts function either (import aside).
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            assert "pilot" not in node.func.id.lower()
+
+
+def test_app_uses_pilot_write_contracts_only_at_an_explicit_loopback_host_for_execute():
+    """Phase 1C-C Pass 2A, requirement G: mcma.portal.sinauto_contracts
+    deliberately has no write_contracts() at all (no reviewed production
+    row-op contract exists pending G5) -- the ONLY legally-usable write
+    contracts today are the pilot/loopback ones, wired here at an
+    EXPLICIT loopback host, never the production sinauto host, and never
+    a client-settable value. writer.py's own _require_loopback_host is
+    the structural backstop regardless of this wiring."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    from mcma.portal.pilot_contracts import DEFAULT_PILOT_HOST, pilot_allowed_host
+    from mcma.portal.pilot_contracts import write_contracts as pilot_write_contracts
+    from mcma.portal.sinauto_contracts import DEFAULT_SINAUTO_HOST
+
+    assert app_module.DEFAULT_PILOT_HOST is DEFAULT_PILOT_HOST
+    assert app_module.pilot_allowed_host is pilot_allowed_host
+    assert app_module.pilot_write_contracts is pilot_write_contracts
+    # The two host constants are never accidentally swapped.
+    assert DEFAULT_PILOT_HOST != DEFAULT_SINAUTO_HOST
+    hostname = urlsplit(f"http://{DEFAULT_PILOT_HOST}").hostname
+    assert ipaddress.ip_address(hostname).is_loopback
 
 
 def test_dry_run_identity_check_wires_dynamic_mission_authorization():

@@ -7,10 +7,13 @@ are pure cooperative yields, never a wall-clock delay."""
 
 import asyncio
 import threading
+import time
 from dataclasses import dataclass
 from typing import Optional
 
-from mcma.app.workstation_runner.job_worker import JobPollingLifecycle, JobPollingWorker, LifecycleEvent
+from mcma.app.workstation_runner.job_worker import (
+    _INITIAL_BACKOFF_SECONDS, JobPollingLifecycle, JobPollingWorker, LifecycleEvent,
+)
 
 
 @dataclass(frozen=True)
@@ -19,6 +22,7 @@ class FakeClaimedJob:
     mode: str = "DRY_RUN"
     claim_token: str = "mcma_ct_" + "t" * 40
     generation: int = 1
+    account_id: str = "acct-mcma-oujda"
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,11 @@ class FakeClient:
         self.renew_calls: list = []
         self.release_calls: list = []
         self.finish_calls: list = []
+        self.browser_closed_calls: list = []
+        # Phase 1C-C Pass 2A: None (the default) means "always succeeds
+        # immediately" -- a test overrides this with a callable/exception
+        # to exercise _report_browser_closed_with_retry's own retry path.
+        self.browser_closed_raises = None
         # The SERVER-confirmed shape finish_job() returns. None (the
         # default) auto-derives a realistic response FROM the `result`
         # argument actually passed (mirroring dispatch.py's own mapping
@@ -95,6 +104,12 @@ class FakeClient:
         if result == "READY_FOR_HUMAN_REVIEW":
             return FakeFinishResult(status="SUCCEEDED", job_status="READY_FOR_HUMAN_REVIEW")
         return FakeFinishResult(status="FAILED", job_status=result)
+
+    def report_execute_review_browser_closed(self, runner_secret, *, job_id, claim_token, generation):
+        self.browser_closed_calls.append((job_id, claim_token, generation))
+        self.call_order.append("browser_closed")
+        if self.browser_closed_raises is not None:
+            raise self.browser_closed_raises
 
     def close(self):
         self.closed = True
@@ -434,11 +449,20 @@ def test_stop_is_idempotent_and_never_raises_when_called_many_times():
 # --------------------------------------------------------------------- #
 
 
-async def _execute_ready_for_review(claimed_job, plan_hash):
+async def _execute_ready_for_review(claimed_job, plan_hash, permit, on_ready_for_review, on_phase):
+    """Phase 1C-C Pass 2A: mirrors what the real write callable does --
+    calls on_phase for each automation phase, then on_ready_for_review
+    BEFORE returning READY_FOR_HUMAN_REVIEW (mcma.portal.
+    workstation_execute.run_workstation_execute_write's own contract:
+    finish is reported, and the browser is "closed", before this
+    coroutine returns)."""
+    on_phase("WRITING")
+    on_phase("VERIFYING")
+    await on_ready_for_review()
     return "READY_FOR_HUMAN_REVIEW"
 
 
-async def _execute_never_called(claimed_job, plan_hash):
+async def _execute_never_called(claimed_job, plan_hash, permit, on_ready_for_review, on_phase):
     raise AssertionError("run_execute_check must never be called")
 
 
@@ -450,23 +474,28 @@ def _execute_started(**overrides):
     return FakeStartedJob(status="RUNNING", job_status="IDENTITY_VERIFYING", plan_hash="h" * 64, **overrides)
 
 
-def test_execute_job_runs_through_start_executor_and_finish():
+def test_execute_job_runs_through_start_executor_review_confirmation_and_browser_closed_report():
     client = FakeClient()
     client.claim_queue = [_execute_claimed()]
     client.start_result = _execute_started()
     order = []
 
-    async def _check(claimed_job, plan_hash):
+    async def _check(claimed_job, plan_hash, permit, on_ready_for_review, on_phase):
         order.append("executor")
+        await on_ready_for_review()
         return "READY_FOR_HUMAN_REVIEW"
 
     lifecycle = JobPollingLifecycle(
         client, _never_called, run_execute_check=_check, is_ready=lambda: True, wait=_stop_after(1),
     )
     lifecycle.run_forever("secret", threading.Event())
-    assert client.call_order[:3] == ["claim", "start", "finish"]
+    # Requirements 7/10: finish() is reported BEFORE the (already-closed,
+    # in this fake) browser wait returns, and the browser-closed event is
+    # reported AFTER -- never a finish_job call after browser_closed.
+    assert client.call_order[:4] == ["claim", "start", "finish", "browser_closed"]
     assert order == ["executor"]
     assert client.finish_calls[0][3] == "READY_FOR_HUMAN_REVIEW"
+    assert len(client.browser_closed_calls) == 1
 
 
 def test_execute_needs_review_start_response_never_invokes_the_executor():
@@ -572,7 +601,7 @@ def test_execute_failure_outcome_emits_execute_failed():
     client.start_result = _execute_started()
     events = []
 
-    async def _write_aborted(claimed_job, plan_hash):
+    async def _write_aborted(claimed_job, plan_hash, permit, on_ready_for_review, on_phase):
         return "WRITE_ABORTED"
 
     lifecycle = JobPollingLifecycle(
@@ -602,6 +631,25 @@ def test_execute_claimed_with_no_executor_wired_fails_closed_never_starts_a_writ
 
 
 # ---- finding 2: never display EXECUTE success without server confirmation ---- #
+# Phase 1C-C Pass 2A handoff fix: on_ready_for_review now RETRIES an
+# unconfirmed finish with real bounded backoff, forever, until confirmed
+# OR this lifecycle is cancelled (stop_event/lease_lost) -- so a test
+# whose finish() never confirms must ITSELF trigger stop_event (as a side
+# effect of a finish attempt) to end the retry loop promptly, exactly as
+# a real shutdown would. `_stop_after_finish_attempt` wraps the client's
+# own finish_job and is reused by every "never confirms" test below.
+
+
+def _stop_after_finish_attempt(client: FakeClient, stop_event: threading.Event) -> None:
+    original_finish_job = client.finish_job
+
+    def _finish_then_stop(*args, **kwargs):
+        try:
+            return original_finish_job(*args, **kwargs)
+        finally:
+            stop_event.set()
+
+    client.finish_job = _finish_then_stop
 
 
 def test_execute_success_is_shown_only_when_finish_explicitly_confirms_it():
@@ -616,25 +664,35 @@ def test_execute_success_is_shown_only_when_finish_explicitly_confirms_it():
     )
     lifecycle.run_forever("secret", threading.Event())
     assert LifecycleEvent.EXECUTE_SUCCEEDED in events
+    assert len(client.browser_closed_calls) == 1  # only a CONFIRMED finish ever reports browser-closed
 
 
 def test_execute_rejected_finish_never_shows_success():
     """The local executor reported READY_FOR_HUMAN_REVIEW, but finish()
     itself raises (a rejected/expired claim, or any transport/protocol
-    failure) -- the final visible state must never be success."""
+    failure) on every attempt -- shutdown (triggered here as a side
+    effect of the first attempt, standing in for an operator/lease-loss
+    cancellation) ends the retry loop before it ever confirms; the final
+    visible state must never be success, and browser-closed must never be
+    reported against an unconfirmed assignment (requirement 3)."""
     client = FakeClient()
     client.claim_queue = [_execute_claimed()]
     client.start_result = _execute_started()
     client.finish_result = RuntimeError("CLAIM_NOT_FOUND")
     events = []
+    stop_event = threading.Event()
+    _stop_after_finish_attempt(client, stop_event)
     lifecycle = JobPollingLifecycle(
         client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
-        on_event=events.append, wait=_stop_after(1),
+        on_event=events.append, wait=_stop_after(1), shutdown_poll_interval_seconds=0,
     )
-    lifecycle.run_forever("secret", threading.Event())
+    lifecycle.run_forever("secret", stop_event)
     assert LifecycleEvent.EXECUTE_SUCCEEDED not in events
     assert LifecycleEvent.EXECUTE_FAILED in events
     assert LifecycleEvent.CONNECTION_FAILED in events
+    assert LifecycleEvent.EXECUTE_READY_FOR_REVIEW not in events
+    assert LifecycleEvent.EXECUTE_REVIEW_IN_PROGRESS not in events
+    assert client.browser_closed_calls == []
 
 
 def test_execute_connection_failure_on_finish_never_shows_success():
@@ -643,14 +701,17 @@ def test_execute_connection_failure_on_finish_never_shows_success():
     client.start_result = _execute_started()
     client.finish_result = ConnectionError("unreachable")
     events = []
+    stop_event = threading.Event()
+    _stop_after_finish_attempt(client, stop_event)
     lifecycle = JobPollingLifecycle(
         client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
-        on_event=events.append, wait=_stop_after(1),
+        on_event=events.append, wait=_stop_after(1), shutdown_poll_interval_seconds=0,
     )
-    lifecycle.run_forever("secret", threading.Event())
+    lifecycle.run_forever("secret", stop_event)
     assert LifecycleEvent.EXECUTE_SUCCEEDED not in events
     assert LifecycleEvent.EXECUTE_FAILED in events
     assert LifecycleEvent.CONNECTION_FAILED in events
+    assert client.browser_closed_calls == []
 
 
 def test_execute_expired_claim_on_finish_never_shows_success():
@@ -665,31 +726,38 @@ def test_execute_expired_claim_on_finish_never_shows_success():
     client.start_result = _execute_started()
     client.finish_result = FakeExpiredClaim("CLAIM_NOT_FOUND")
     events = []
+    stop_event = threading.Event()
+    _stop_after_finish_attempt(client, stop_event)
     lifecycle = JobPollingLifecycle(
         client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
-        on_event=events.append, wait=_stop_after(1),
+        on_event=events.append, wait=_stop_after(1), shutdown_poll_interval_seconds=0,
     )
-    lifecycle.run_forever("secret", threading.Event())
+    lifecycle.run_forever("secret", stop_event)
     assert LifecycleEvent.EXECUTE_SUCCEEDED not in events
     assert LifecycleEvent.EXECUTE_FAILED in events
+    assert client.browser_closed_calls == []
 
 
 def test_execute_mismatched_finish_response_never_shows_success():
     """finish() itself succeeds (no exception) but its response does NOT
     confirm BOTH the terminal dispatch status AND the terminal job status
-    -- never trusted as success."""
+    -- never trusted as success, and retried exactly like a transport
+    failure until shutdown ends the attempt."""
     client = FakeClient()
     client.claim_queue = [_execute_claimed()]
     client.start_result = _execute_started()
     client.finish_result = FakeFinishResult(status="FAILED", job_status="WRITE_ABORTED")
     events = []
+    stop_event = threading.Event()
+    _stop_after_finish_attempt(client, stop_event)
     lifecycle = JobPollingLifecycle(
         client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
-        on_event=events.append, wait=_stop_after(1),
+        on_event=events.append, wait=_stop_after(1), shutdown_poll_interval_seconds=0,
     )
-    lifecycle.run_forever("secret", threading.Event())
+    lifecycle.run_forever("secret", stop_event)
     assert LifecycleEvent.EXECUTE_SUCCEEDED not in events
     assert LifecycleEvent.EXECUTE_FAILED in events
+    assert client.browser_closed_calls == []
 
 
 def test_execute_partially_confirmed_finish_response_never_shows_success():
@@ -700,20 +768,107 @@ def test_execute_partially_confirmed_finish_response_never_shows_success():
     client.start_result = _execute_started()
     client.finish_result = FakeFinishResult(status="SUCCEEDED", job_status="IDENTITY_FAILED")
     events = []
+    stop_event = threading.Event()
+    _stop_after_finish_attempt(client, stop_event)
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
+        on_event=events.append, wait=_stop_after(1), shutdown_poll_interval_seconds=0,
+    )
+    lifecycle.run_forever("secret", stop_event)
+    assert LifecycleEvent.EXECUTE_SUCCEEDED not in events
+    assert LifecycleEvent.EXECUTE_FAILED in events
+    assert client.browser_closed_calls == []
+
+
+def test_finish_fails_twice_then_succeeds_renewal_stays_active_and_review_events_wait_for_confirmation():
+    """Handoff-fix regression test: finish is retried across TWO failures
+    before a third, successful, confirming attempt -- renewal must remain
+    active throughout both failures (never stopped early), the SAME
+    idempotent READY_FOR_HUMAN_REVIEW result is what eventually confirms,
+    and EXECUTE_READY_FOR_REVIEW/EXECUTE_REVIEW_IN_PROGRESS fire only
+    after that confirmation -- never during the two failures."""
+    client = FakeClient()
+    claimed = _execute_claimed()
+    started = _execute_started()
+    attempts: list = []
+
+    def _fails_twice_then_confirms(runner_secret, *, job_id, claim_token, generation, result):
+        attempts.append(result)
+        if len(attempts) < 3:
+            raise ConnectionError("transient")
+        assert result == "READY_FOR_HUMAN_REVIEW"  # the SAME idempotent result every time
+        return FakeFinishResult(status="SUCCEEDED", job_status="READY_FOR_HUMAN_REVIEW")
+
+    client.finish_job = _fails_twice_then_confirms
+    events = []
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
+        on_event=events.append, renew_interval_seconds=0,
+    )
+    # Patch asyncio.sleep for the backoff waits only, so this test does not
+    # spend real wall-clock seconds on the (real, intentional) exponential
+    # backoff between finish attempts -- everything else about the retry
+    # loop, including renewal, runs for real.
+    import unittest.mock
+
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(delay, *a, **kw):
+        if delay >= _INITIAL_BACKOFF_SECONDS:
+            return await real_sleep(0, *a, **kw)
+        return await real_sleep(delay, *a, **kw)
+
+    with unittest.mock.patch("asyncio.sleep", _fast_sleep):
+        outcome = asyncio.run(lifecycle._run_execute_lifecycle("secret", claimed, started, threading.Event()))
+    assert attempts == ["READY_FOR_HUMAN_REVIEW"] * 3
+    assert outcome.finish_attempted is True
+    assert outcome.finish_confirmed is True
+    assert len(client.renew_calls) > 0  # renewal genuinely kept running across both failures
+    ready_index = events.index(LifecycleEvent.EXECUTE_READY_FOR_REVIEW)
+    review_index = events.index(LifecycleEvent.EXECUTE_REVIEW_IN_PROGRESS)
+    connection_failed_count = sum(1 for e in events if e is LifecycleEvent.CONNECTION_FAILED)
+    assert connection_failed_count == 2  # exactly the two failed attempts, never after confirmation
+    assert review_index > ready_index
+
+
+def test_lost_response_after_server_commit_is_recovered_by_the_idempotent_retry():
+    """Handoff-fix regression test: the FIRST finish request commits
+    server-side, but its response is lost in transit (modelled here as
+    the client raising on the first call despite having "committed") --
+    the retry sends the SAME idempotent result again and the second
+    (successful) response confirms it -- exactly one logical transition,
+    and browser-close is subsequently accepted."""
+    client = FakeClient()
+    client.claim_queue = [_execute_claimed()]
+    client.start_result = _execute_started()
+    committed = {"value": False}
+
+    def _commits_then_loses_response(runner_secret, *, job_id, claim_token, generation, result):
+        if not committed["value"]:
+            committed["value"] = True
+            raise ConnectionError("response lost after server commit")
+        return FakeFinishResult(status="SUCCEEDED", job_status="READY_FOR_HUMAN_REVIEW")
+
+    client.finish_job = _commits_then_loses_response
+    events = []
     lifecycle = JobPollingLifecycle(
         client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
         on_event=events.append, wait=_stop_after(1),
     )
     lifecycle.run_forever("secret", threading.Event())
-    assert LifecycleEvent.EXECUTE_SUCCEEDED not in events
-    assert LifecycleEvent.EXECUTE_FAILED in events
+    assert LifecycleEvent.EXECUTE_SUCCEEDED in events
+    assert events.count(LifecycleEvent.EXECUTE_READY_FOR_REVIEW) == 1  # exactly one logical transition
+    assert len(client.browser_closed_calls) == 1
 
 
 # ---- finding 4: RUNNER_CANCELLED vs LEASE_LOST, deterministic priority ---- #
+# Phase 1C-C Pass 2A: these now call _run_execute_lifecycle directly (the
+# replacement for _run_and_renew_execute) and check the returned
+# _ExecuteLifecycleOutcome's `.result` field.
 
 
 def test_execute_shutdown_while_running_cancels_the_write_and_reports_runner_cancelled():
-    async def _hangs_forever(claimed_job, plan_hash):
+    async def _hangs_forever(claimed_job, plan_hash, permit, on_ready_for_review, on_phase):
         await asyncio.Event().wait()  # never completes on its own
 
     client = FakeClient()
@@ -725,8 +880,10 @@ def test_execute_shutdown_while_running_cancels_the_write_and_reports_runner_can
         client, _never_called, run_execute_check=_hangs_forever, is_ready=lambda: True,
         shutdown_poll_interval_seconds=0,
     )
-    result = asyncio.run(lifecycle._run_and_renew_execute("secret", claimed, started, stop_event))
-    assert result == "RUNNER_CANCELLED"
+    outcome = asyncio.run(lifecycle._run_execute_lifecycle("secret", claimed, started, stop_event))
+    assert outcome.result == "RUNNER_CANCELLED"
+    assert outcome.finish_attempted is False
+    assert outcome.finish_confirmed is False
     assert client.release_calls == []  # never release() once RUNNING
 
 
@@ -736,7 +893,7 @@ def test_execute_renewal_failure_cancels_the_write_and_reports_lease_lost():
     task is cancelled the moment the FIRST renewal fails, never waiting for
     the write to finish on its own, and the reported outcome is LEASE_LOST
     -- distinct from an operator-driven RUNNER_CANCELLED (finding 4)."""
-    async def _hangs_forever(claimed_job, plan_hash):
+    async def _hangs_forever(claimed_job, plan_hash, permit, on_ready_for_review, on_phase):
         await asyncio.Event().wait()  # never completes on its own
 
     client = FakeClient()
@@ -747,8 +904,8 @@ def test_execute_renewal_failure_cancels_the_write_and_reports_lease_lost():
         client, _never_called, run_execute_check=_hangs_forever, is_ready=lambda: True,
         renew_interval_seconds=0, shutdown_poll_interval_seconds=0,
     )
-    result = asyncio.run(lifecycle._run_and_renew_execute("secret", claimed, started, threading.Event()))
-    assert result == "LEASE_LOST"
+    outcome = asyncio.run(lifecycle._run_execute_lifecycle("secret", claimed, started, threading.Event()))
+    assert outcome.result == "LEASE_LOST"
 
 
 def test_shutdown_takes_priority_over_a_lease_lost_at_the_same_poll():
@@ -757,9 +914,9 @@ def test_shutdown_takes_priority_over_a_lease_lost_at_the_same_poll():
     so when the shutdown signal is ALREADY set before this coroutine is
     even entered, RUNNER_CANCELLED wins even though renewal is ALSO primed
     to fail on its very first attempt (renew_interval_seconds=0). This
-    exercises the REAL priority check in _run_and_renew_execute, not a
+    exercises the REAL priority check in _run_execute_lifecycle, not a
     re-implementation of it."""
-    async def _hangs_forever(claimed_job, plan_hash):
+    async def _hangs_forever(claimed_job, plan_hash, permit, on_ready_for_review, on_phase):
         await asyncio.Event().wait()  # never completes on its own
 
     client = FakeClient()
@@ -773,8 +930,8 @@ def test_shutdown_takes_priority_over_a_lease_lost_at_the_same_poll():
         client, _never_called, run_execute_check=_hangs_forever, is_ready=lambda: True,
         renew_interval_seconds=0, shutdown_poll_interval_seconds=0,
     )
-    result = asyncio.run(lifecycle._run_and_renew_execute("secret", claimed, started, stop_event))
-    assert result == "RUNNER_CANCELLED"
+    outcome = asyncio.run(lifecycle._run_execute_lifecycle("secret", claimed, started, stop_event))
+    assert outcome.result == "RUNNER_CANCELLED"
 
 
 def test_execute_successful_renewal_never_cancels_the_write():
@@ -782,17 +939,436 @@ def test_execute_successful_renewal_never_cancels_the_write():
     claimed = _execute_claimed()
     started = _execute_started()
 
-    async def _slow_write(claimed_job, plan_hash):
+    async def _slow_write(claimed_job, plan_hash, permit, on_ready_for_review, on_phase):
         for _ in range(20):
             await asyncio.sleep(0)
+        await on_ready_for_review()
         return "READY_FOR_HUMAN_REVIEW"
 
     lifecycle = JobPollingLifecycle(
         client, _never_called, run_execute_check=_slow_write, is_ready=lambda: True, renew_interval_seconds=0,
     )
-    result = asyncio.run(lifecycle._run_and_renew_execute("secret", claimed, started, threading.Event()))
-    assert result == "READY_FOR_HUMAN_REVIEW"
+    outcome = asyncio.run(lifecycle._run_execute_lifecycle("secret", claimed, started, threading.Event()))
+    assert outcome.result == "READY_FOR_HUMAN_REVIEW"
+    assert outcome.finish_attempted is True
+    assert outcome.finish_confirmed is True
     assert len(client.renew_calls) > 0  # renewal genuinely ran, and never cancelled the write
+
+
+# ---- Phase 1C-C Pass 2A: the execution permit (requirement B) ---- #
+
+
+def test_renewal_failure_invalidates_the_permit_before_cancelling_the_write():
+    """Requirement B: "the renewal failure path must invalidate the
+    permit before cancelling the portal task." Observed directly: the
+    write callable inspects permit.is_valid from inside its own
+    CancelledError handler, which only runs once this module has already
+    delivered the cancellation -- proving invalidation happened first."""
+    observed = {}
+
+    async def _observes_permit_on_cancel(claimed_job, plan_hash, permit, on_ready_for_review, on_phase):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            observed["was_valid"] = permit.is_valid
+            raise
+
+    client = FakeClient()
+    client.renew_job = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("lease lost"))
+    claimed = _execute_claimed()
+    started = _execute_started()
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_observes_permit_on_cancel, is_ready=lambda: True,
+        renew_interval_seconds=0, shutdown_poll_interval_seconds=0,
+    )
+    outcome = asyncio.run(lifecycle._run_execute_lifecycle("secret", claimed, started, threading.Event()))
+    assert outcome.result == "LEASE_LOST"
+    assert observed["was_valid"] is False
+
+
+def test_shutdown_invalidates_the_permit_before_cancelling_the_write():
+    """Requirement F: shutdown invalidates the permit before cancelling
+    execution -- same proof technique as the renewal-failure test above.
+    stop_event is set from INSIDE the write callable's own first step
+    (never before asyncio.run even starts) so the callable is guaranteed
+    to have actually begun running -- and be parked on its own await --
+    before the shutdown signal can be observed."""
+    observed = {}
+    stop_event = threading.Event()
+
+    async def _observes_permit_on_cancel(claimed_job, plan_hash, permit, on_ready_for_review, on_phase):
+        stop_event.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            observed["was_valid"] = permit.is_valid
+            raise
+
+    client = FakeClient()
+    claimed = _execute_claimed()
+    started = _execute_started()
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_observes_permit_on_cancel, is_ready=lambda: True,
+        shutdown_poll_interval_seconds=0,
+    )
+    outcome = asyncio.run(lifecycle._run_execute_lifecycle("secret", claimed, started, stop_event))
+    assert outcome.result == "RUNNER_CANCELLED"
+    assert observed["was_valid"] is False
+
+
+def test_permit_is_valid_during_the_write_and_starts_activated():
+    """Positive control: the permit is activated (valid) by the time the
+    write callable is invoked -- start_job's own admission (the caller's)
+    already happened before _run_execute_lifecycle is ever entered."""
+    observed = {}
+
+    async def _observes_permit(claimed_job, plan_hash, permit, on_ready_for_review, on_phase):
+        observed["was_valid"] = permit.is_valid
+        await on_ready_for_review()
+        return "READY_FOR_HUMAN_REVIEW"
+
+    client = FakeClient()
+    claimed = _execute_claimed()
+    started = _execute_started()
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_observes_permit, is_ready=lambda: True,
+    )
+    asyncio.run(lifecycle._run_execute_lifecycle("secret", claimed, started, threading.Event()))
+    assert observed["was_valid"] is True
+
+
+# ---- Phase 1C-C Pass 2A: mid-flight phase/status events (item J) ---- #
+
+
+def test_writing_and_verifying_phases_emit_their_own_events_in_order():
+    client = FakeClient()
+    client.claim_queue = [_execute_claimed()]
+    client.start_result = _execute_started()
+    events = []
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
+        on_event=events.append, wait=_stop_after(1),
+    )
+    lifecycle.run_forever("secret", threading.Event())
+    ordered = [
+        e for e in events
+        if e in (
+            LifecycleEvent.EXECUTE_STARTED, LifecycleEvent.EXECUTE_WRITING, LifecycleEvent.EXECUTE_VERIFYING,
+            LifecycleEvent.EXECUTE_READY_FOR_REVIEW, LifecycleEvent.EXECUTE_REVIEW_IN_PROGRESS,
+        )
+    ]
+    assert ordered == [
+        LifecycleEvent.EXECUTE_STARTED, LifecycleEvent.EXECUTE_WRITING, LifecycleEvent.EXECUTE_VERIFYING,
+        LifecycleEvent.EXECUTE_READY_FOR_REVIEW, LifecycleEvent.EXECUTE_REVIEW_IN_PROGRESS,
+    ]
+
+
+# ---- Phase 1C-C Pass 2A: no second job while the review browser is open (requirement 9) ---- #
+
+
+def test_no_second_job_is_claimed_while_the_review_browser_is_open():
+    """The single-threaded poll loop only claims again after
+    _run_one_execute_job returns -- and that method does not return until
+    the (fake) browser is closed, so a second claim while review is open
+    is structurally impossible. Proven directly: the second claimable job
+    is only ever reached if this worker is stopped BEFORE the first job's
+    "review" ever ends."""
+    review_entered = threading.Event()
+
+    async def _blocks_in_review(claimed_job, plan_hash, permit, on_ready_for_review, on_phase):
+        await on_ready_for_review()
+        review_entered.set()
+        await asyncio.Event().wait()  # simulates an open browser -- never returns on its own
+
+    client = FakeClient()
+    client.claim_queue = [_execute_claimed(job_id="job-1"), _execute_claimed(job_id="job-2")]
+    client.start_result = _execute_started()
+    stop_event = threading.Event()
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_blocks_in_review, is_ready=lambda: True,
+        shutdown_poll_interval_seconds=0,
+    )
+    thread = threading.Thread(target=lifecycle.run_forever, args=("secret", stop_event))
+    thread.start()
+    try:
+        assert review_entered.wait(timeout=5.0)
+        # The second job is never claimed while the first is still "under
+        # review" -- claim_calls stays at exactly 1.
+        assert client.claim_calls == 1
+    finally:
+        stop_event.set()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+
+
+# ---- Phase 1C-C Pass 2A: browser-closed reporting (requirement 10-11) ---- #
+
+
+def test_no_second_job_is_claimed_while_an_unconfirmed_review_browser_remains_open():
+    """Requirement 7: the block on claiming a second job does not depend
+    on finish having been confirmed -- an assignment still retrying an
+    unconfirmed finish (browser still open, per requirement 3) is just as
+    "open" as a confirmed one for this purpose."""
+    client = FakeClient()
+    client.finish_result = RuntimeError("still unreachable")  # never confirms on its own
+    client.claim_queue = [_execute_claimed(job_id="job-1"), _execute_claimed(job_id="job-2")]
+    client.start_result = _execute_started()
+    attempted = threading.Event()
+    original_finish_job = client.finish_job
+
+    def _record_attempt(*args, **kwargs):
+        attempted.set()
+        return original_finish_job(*args, **kwargs)
+
+    client.finish_job = _record_attempt
+    stop_event = threading.Event()
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
+        shutdown_poll_interval_seconds=0,
+    )
+    thread = threading.Thread(target=lifecycle.run_forever, args=("secret", stop_event))
+    thread.start()
+    try:
+        assert attempted.wait(timeout=5.0)
+        time.sleep(0.05)  # still well inside the retry loop's own backoff wait, unconfirmed
+        assert client.claim_calls == 1
+    finally:
+        stop_event.set()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+
+
+def test_finish_unavailable_until_shutdown_retries_repeatedly_then_gives_up_cleanly():
+    """Handoff-fix regression test: finish never confirms (every attempt
+    fails) until an operator shutdown ends the lifecycle -- genuinely
+    retried more than once (never single-attempt-then-give-up), no
+    READY/REVIEW event ever fires, the browser still closes (via
+    run_workstation_execute_write's own structural guarantee -- modelled
+    here by the fake simply returning once cancelled), and the retry
+    loop does not continue forever once stopped."""
+    client = FakeClient()
+    claimed = _execute_claimed()
+    started = _execute_started()
+    attempt_count = {"n": 0}
+
+    def _always_fails(*args, **kwargs):
+        attempt_count["n"] += 1
+        raise ConnectionError("still unreachable")
+
+    client.finish_job = _always_fails
+    events = []
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
+        on_event=events.append, renew_interval_seconds=0, shutdown_poll_interval_seconds=0,
+    )
+
+    async def _scenario():
+        stop_event = threading.Event()
+        task = asyncio.ensure_future(lifecycle._run_execute_lifecycle("secret", claimed, started, stop_event))
+        # Let several real retry attempts happen (small, real backoff --
+        # bounded and brief since the exponential cap starts at 2s and
+        # this test only needs to observe more than one attempt).
+        while attempt_count["n"] < 2:
+            await asyncio.sleep(0.01)
+        stop_event.set()
+        return await task
+
+    outcome = asyncio.run(_scenario())
+    assert attempt_count["n"] >= 2  # genuinely retried, not a single attempt
+    assert outcome.result == "RUNNER_CANCELLED"
+    assert outcome.finish_attempted is True
+    assert outcome.finish_confirmed is False
+    assert outcome.browser_closed is True
+    assert LifecycleEvent.EXECUTE_READY_FOR_REVIEW not in events
+    assert LifecycleEvent.EXECUTE_REVIEW_IN_PROGRESS not in events
+
+
+def test_shutdown_while_finish_is_in_flight_awaits_the_bounded_result_and_confirms_it_was_committed():
+    """Handoff-fix requirement 2: a shutdown that lands WHILE a finish
+    attempt is genuinely in flight (blocked on what stands in for the
+    bounded HTTP call) does not abandon it -- the shielded call is
+    awaited to its real conclusion before the cancellation is allowed to
+    propagate. Here the in-flight call ultimately succeeds (the server
+    committed it) -- finish_confirmed must reflect that TRUE outcome,
+    never a guess made the instant stop_event was observed."""
+    client = FakeClient()
+    claimed = _execute_claimed()
+    started = _execute_started()
+    entered_finish = threading.Event()
+    release_finish = threading.Event()
+
+    def _blocking_then_confirms(runner_secret, *, job_id, claim_token, generation, result):
+        entered_finish.set()
+        assert release_finish.wait(timeout=5.0)
+        return FakeFinishResult(status="SUCCEEDED", job_status="READY_FOR_HUMAN_REVIEW")
+
+    client.finish_job = _blocking_then_confirms
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
+        shutdown_poll_interval_seconds=0,
+    )
+
+    async def _scenario():
+        stop_event = threading.Event()
+        task = asyncio.ensure_future(lifecycle._run_execute_lifecycle("secret", claimed, started, stop_event))
+        while not entered_finish.is_set():
+            await asyncio.sleep(0)
+        stop_event.set()  # shutdown lands WHILE the request is genuinely in flight
+        await asyncio.sleep(0.05)  # let the outer poll loop observe it and deliver the cancellation
+        release_finish.set()  # only now does the "server" respond -- it confirms
+        return await task
+
+    outcome = asyncio.run(_scenario())
+    assert outcome.result == "RUNNER_CANCELLED"
+    assert outcome.finish_attempted is True
+    assert outcome.finish_confirmed is True  # the TRUE, awaited outcome -- never assumed False on cancellation alone
+
+
+def test_shutdown_while_finish_is_in_flight_and_it_ultimately_fails_never_reports_confirmed():
+    """Same shape as the test above, but the in-flight call ultimately
+    fails (never committed) -- finish_confirmed must stay False, and (via
+    _run_one_execute_job's own gating, exercised separately) browser-
+    closed must never be sent for it."""
+    client = FakeClient()
+    claimed = _execute_claimed()
+    started = _execute_started()
+    entered_finish = threading.Event()
+    release_finish = threading.Event()
+
+    def _blocking_then_fails(runner_secret, *, job_id, claim_token, generation, result):
+        entered_finish.set()
+        assert release_finish.wait(timeout=5.0)
+        raise ConnectionError("never actually committed")
+
+    client.finish_job = _blocking_then_fails
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
+        shutdown_poll_interval_seconds=0,
+    )
+
+    async def _scenario():
+        stop_event = threading.Event()
+        task = asyncio.ensure_future(lifecycle._run_execute_lifecycle("secret", claimed, started, stop_event))
+        while not entered_finish.is_set():
+            await asyncio.sleep(0)
+        stop_event.set()
+        await asyncio.sleep(0.05)
+        release_finish.set()
+        return await task
+
+    outcome = asyncio.run(_scenario())
+    assert outcome.result == "RUNNER_CANCELLED"
+    assert outcome.finish_attempted is True
+    assert outcome.finish_confirmed is False
+
+
+def test_browser_closed_is_reported_exactly_once_on_first_success():
+    client = FakeClient()
+    client.claim_queue = [_execute_claimed()]
+    client.start_result = _execute_started()
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
+        wait=_stop_after(1),
+    )
+    lifecycle.run_forever("secret", threading.Event())
+    assert len(client.browser_closed_calls) == 1
+
+
+def test_browser_closed_reporting_retries_with_bounded_backoff_then_succeeds():
+    client = FakeClient()
+    attempts = {"count": 0}
+    real_report = client.report_execute_review_browser_closed
+
+    def _fails_twice_then_succeeds(*args, **kwargs):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise ConnectionError("unreachable")
+        return real_report(*args, **kwargs)
+
+    client.report_execute_review_browser_closed = _fails_twice_then_succeeds
+    waits = []
+
+    def _fast_wait(event, timeout):
+        waits.append(timeout)
+        return event.wait(0)  # never actually sleeps -- bounded backoff, never a real delay in this test
+
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
+        wait=_fast_wait,
+    )
+    stop_event = threading.Event()
+    lifecycle._report_browser_closed_with_retry("secret", _execute_claimed(), stop_event)
+    assert attempts["count"] == 3
+    assert len(client.browser_closed_calls) == 1
+    # Exponential, bounded backoff was actually used between attempts --
+    # never a fixed/no delay and never unbounded growth.
+    assert waits == [_INITIAL_BACKOFF_SECONDS, _INITIAL_BACKOFF_SECONDS * 2]
+
+
+def test_browser_closed_reporting_stops_retrying_once_the_runner_is_stopped():
+    client = FakeClient()
+    client.report_execute_review_browser_closed = lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("down"))
+    stop_event = threading.Event()
+
+    def _wait_then_stop(event, timeout):
+        stop_event.set()
+        return True
+
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
+        wait=_wait_then_stop,
+    )
+    # Must return (not hang) once stop_event is observed, and must never
+    # raise even though every attempt failed.
+    lifecycle._report_browser_closed_with_retry("secret", _execute_claimed(), stop_event)
+    assert client.browser_closed_calls == []
+
+
+def test_browser_closed_makes_exactly_one_immediate_attempt_when_stop_event_is_already_set():
+    """Handoff-fix requirement 4: shutdown AFTER a confirmed finish --
+    stop_event is already True the moment this is called (matching
+    _run_one_execute_job's own post-asyncio.run() call site after a
+    shutdown-driven cancellation). Exactly one immediate fenced attempt
+    is made regardless -- never suppressed by the already-set stop_event
+    -- and if that attempt fails, no further retry follows."""
+    client = FakeClient()
+    stop_event = threading.Event()
+    stop_event.set()  # ALREADY set before the first attempt is ever made
+    waits = []
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
+        wait=lambda event, timeout: waits.append(timeout) or True,
+    )
+    lifecycle._report_browser_closed_with_retry("secret", _execute_claimed(), stop_event)
+    assert len(client.browser_closed_calls) == 1  # the one required attempt, made despite stop_event
+    assert waits == []  # never retried -- no backoff wait was ever needed or taken
+
+
+def test_browser_closed_stops_after_one_failed_attempt_when_stop_event_is_already_set():
+    client = FakeClient()
+    client.report_execute_review_browser_closed = lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("down"))
+    stop_event = threading.Event()
+    stop_event.set()
+    waits = []
+    lifecycle = JobPollingLifecycle(
+        client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True,
+        wait=lambda event, timeout: waits.append(timeout) or True,
+    )
+    lifecycle._report_browser_closed_with_retry("secret", _execute_claimed(), stop_event)
+    assert waits == []  # the ONE required attempt was made and failed -- never retried during shutdown
+
+
+def test_a_duplicate_browser_closed_report_is_safe_and_never_marks_completion_itself():
+    """The server's own endpoint is idempotent (AWAITING_HUMAN_CONFIRMATION
+    or a repeated HUMAN_CONFIRMED_COMPLETE) -- this worker never inspects
+    the response to decide "human completion" itself (requirement E)."""
+    client = FakeClient()
+    client.report_execute_review_browser_closed = lambda *a, **kw: client.browser_closed_calls.append("dup") or object()
+    lifecycle = JobPollingLifecycle(client, _never_called, run_execute_check=_execute_ready_for_review, is_ready=lambda: True)
+    stop_event = threading.Event()
+    lifecycle._report_browser_closed_with_retry("secret", _execute_claimed(), stop_event)
+    lifecycle._report_browser_closed_with_retry("secret", _execute_claimed(), stop_event)
+    assert client.browser_closed_calls == ["dup", "dup"]  # each call is independently safe/idempotent server-side
 
 
 def test_join_is_never_called_on_an_unstarted_thread_object():

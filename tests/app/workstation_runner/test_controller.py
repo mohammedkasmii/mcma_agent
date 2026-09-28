@@ -1050,18 +1050,30 @@ def test_job_status_events_translate_to_fixed_non_sensitive_text():
 
 
 def test_execute_job_status_events_translate_to_their_own_fixed_text():
-    """Phase 1C-C, item 10: EXECUTE's own fixed status text is distinct
-    from DRY_RUN's -- never a final-submit affordance, never a claim that
-    the dossier itself is completed."""
+    """Phase 1C-C, item 10 (superseded by Pass 2A's own intermediate
+    phases, item J): EXECUTE's own fixed status text is distinct from
+    DRY_RUN's -- never a final-submit affordance, never a claim that the
+    dossier itself is completed. EXECUTE_SUCCEEDED is now the TERMINAL
+    event (fired only once the review browser has actually closed) and is
+    deliberately left unmapped, falling through to the idle text -- see
+    _JOB_STATUS_TEXT's own comment."""
     statuses = []
     controller = _new_controller(on_job_status=statuses.append)
     controller._handle_job_event(JobLifecycleEvent.EXECUTE_STARTED)
+    controller._handle_job_event(JobLifecycleEvent.EXECUTE_WRITING)
+    controller._handle_job_event(JobLifecycleEvent.EXECUTE_VERIFYING)
+    controller._handle_job_event(JobLifecycleEvent.EXECUTE_READY_FOR_REVIEW)
+    controller._handle_job_event(JobLifecycleEvent.EXECUTE_REVIEW_IN_PROGRESS)
     controller._handle_job_event(JobLifecycleEvent.EXECUTE_SUCCEEDED)
     controller._handle_job_event(JobLifecycleEvent.EXECUTE_FAILED)
     assert statuses == [
         "En attente de travail",  # the initial idle text, emitted at construction
         "Préparation de la saisie",
+        "Saisie en cours",
+        "Vérification en cours",
         "Prêt pour contrôle humain",
+        "Contrôle humain en cours",
+        "En attente de travail",  # EXECUTE_SUCCEEDED -- terminal, deliberately unmapped
         "Saisie interrompue — contrôle requis",
     ]
 

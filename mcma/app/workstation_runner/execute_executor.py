@@ -13,10 +13,17 @@ module never constructs, and never even knows the concrete type of, a
 VerifiedMissionWriter, a Playwright Browser, or any portal exception.
 
 Do not import or call the real portal writer here or from anywhere this
-module can reach: this pass injects only fakes (tests) and a fail-closed
-placeholder (the composition root, mcma.app.workstation_runner.app --
-until a Pass 2 increment wires the reviewed, post-G5 VerifiedMissionWriter
-behind the SAME PerformExecuteWrite shape).
+module can reach: tests inject fakes, and the composition root
+(mcma.app.workstation_runner.app -- the one module allowed to import
+mcma.portal) injects a closure that calls
+mcma.portal.workstation_execute.run_workstation_execute_write behind the
+SAME PerformExecuteWrite shape. This module itself still never imports
+mcma.portal and never constructs a VerifiedMissionWriter -- both
+production EXECUTE gates (mcma.app.runners.dispatch.
+EXECUTE_DISPATCH_ENABLED and mcma.app.central_server's
+execute_creation_available) stay False regardless, so this whole pipeline
+remains structurally unreachable in production dispatch even though it is
+now structurally complete.
 
 Everything server-verifiable is re-verified HERE, on the workstation, one
 more time, before the injected write callable is ever invoked -- never
@@ -45,14 +52,25 @@ job, checked before this function is ever invoked) and the injected write
 callable invoked. Every expected failure mode converts to one of the fixed
 EXECUTE_FINISH_RESULTS values (never a raised exception up to the caller,
 except asyncio.CancelledError, which always propagates on every exit
-path)."""
+path).
+
+Phase 1C-C Pass 2A: `perform_execute_write` now also receives an
+execution permit (mcma.app.workstation_runner.execution_permit.
+ExecutionPermit -- structurally, not by import, since that would cross
+this package's own isolation boundary for no reason: this module never
+calls a method on it, only threads it through) and two callbacks,
+`on_ready_for_review`/`on_phase`, that the write callable invokes at the
+appropriate points. This module still never imports mcma.portal, never
+constructs a VerifiedMissionWriter, and still never lets a raw exception
+from the write callable escape as anything other than
+INTERNAL_EXECUTION_ERROR."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
-from typing import Awaitable, Callable, Optional, Protocol
+from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from mcma.mapping.wexia import parse_wexia
 from mcma.planning.plan import ProposedPlan
@@ -115,14 +133,19 @@ class ClaimedExecuteJobProtocol(Protocol):
     typed_input: dict
 
 
-# (account_id, storage_state, plan) -> one of EXECUTE_FINISH_RESULTS'
-# post-write-attempt members (READY_FOR_HUMAN_REVIEW, WRITE_ABORTED, or
-# INTERNAL_EXECUTION_ERROR for any exception -- see run_execute_check's own
-# exception handling, which never lets a raw exception escape THIS
-# module). This pass injects only fakes/a fail-closed placeholder; a
-# future increment's composition root wraps the reviewed
-# VerifiedMissionWriter behind this exact shape.
-PerformExecuteWrite = Callable[[str, dict, ProposedPlan], Awaitable[str]]
+# (account_id, storage_state, plan, permit, on_ready_for_review, on_phase)
+# -> one of EXECUTE_FINISH_RESULTS' post-write-attempt members
+# (READY_FOR_HUMAN_REVIEW, WRITE_ABORTED, or INTERNAL_EXECUTION_ERROR for
+# any exception -- see run_execute_check's own exception handling, which
+# never lets a raw exception escape THIS module). `permit` is threaded
+# through opaquely (this module never calls a method on it -- see the
+# module docstring); the composition root's real implementation
+# (mcma.app.workstation_runner.app) wraps
+# mcma.portal.workstation_execute.run_workstation_execute_write behind
+# this exact shape.
+OnReadyForReview = Callable[[], Awaitable[None]]
+OnPhase = Callable[[str], None]
+PerformExecuteWrite = Callable[[str, dict, ProposedPlan, Any, OnReadyForReview, OnPhase], Awaitable[str]]
 
 
 def _recompute_input_hash(typed_input: dict) -> str:
@@ -143,6 +166,9 @@ async def run_execute_check(
     session_store: SessionStoreProtocol,
     workflow_registry: WorkflowRegistry,
     perform_execute_write: PerformExecuteWrite,
+    permit: Any,
+    on_ready_for_review: OnReadyForReview,
+    on_phase: OnPhase = lambda phase: None,
 ) -> str:
     """Returns one of EXECUTE_FINISH_RESULTS -- the exact value the worker
     reports to POST /runner/jobs/{job_id}/finish. Never raises, except
@@ -190,7 +216,9 @@ async def run_execute_check(
         return "SESSION_NOT_READY"
 
     try:
-        written = await perform_execute_write(claimed_job.account_id, storage_state, plan)
+        written = await perform_execute_write(
+            claimed_job.account_id, storage_state, plan, permit, on_ready_for_review, on_phase,
+        )
     except asyncio.CancelledError:
         raise
     except Exception:

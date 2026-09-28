@@ -30,10 +30,20 @@ _JOB_STATUS_TEXT = {
     JobLifecycleEvent.CONNECTION_FAILED: "En attente de travail",
     # Phase 1C-C, item 10: EXECUTE's own fixed status text -- never a
     # final-submit affordance, never a claim that the dossier itself is
-    # completed (only READY_FOR_HUMAN_REVIEW/EXECUTE_SUCCEEDED, meaning
-    # agent work is finished and awaiting an employee's own review).
+    # completed. Phase 1C-C Pass 2A adds the visible-writer automation's
+    # own intermediate phases (item J); EXECUTE_SUCCEEDED is deliberately
+    # left unmapped below -- it now fires only once the review browser has
+    # actually closed and this workstation has finished attempting to
+    # report that, at which point the employee's own review continues
+    # exclusively through the platform's separate, employee-authenticated
+    # review endpoint (never this GUI) -- so it falls through to
+    # _JOB_STATUS_IDLE_TEXT ("En attente de travail"), matching item J's
+    # "After browser closure, return to 'En attente de travail'." exactly.
     JobLifecycleEvent.EXECUTE_STARTED: "Préparation de la saisie",
-    JobLifecycleEvent.EXECUTE_SUCCEEDED: "Prêt pour contrôle humain",
+    JobLifecycleEvent.EXECUTE_WRITING: "Saisie en cours",
+    JobLifecycleEvent.EXECUTE_VERIFYING: "Vérification en cours",
+    JobLifecycleEvent.EXECUTE_READY_FOR_REVIEW: "Prêt pour contrôle humain",
+    JobLifecycleEvent.EXECUTE_REVIEW_IN_PROGRESS: "Contrôle humain en cours",
     JobLifecycleEvent.EXECUTE_FAILED: "Saisie interrompue — contrôle requis",
 }
 _JOB_STATUS_IDLE_TEXT = "En attente de travail"

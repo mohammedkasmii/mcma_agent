@@ -81,13 +81,44 @@ def run_async(coro):
     return asyncio.run(coro)
 
 
-def _run(job=None, *, expected_plan_hash=VALID_PLAN_HASH, session_store=None, write=_ready_for_review):
+class FakePermit:
+    """A bare stand-in for mcma.app.workstation_runner.execution_permit.
+    ExecutionPermit -- this module never calls a method on it (see
+    test_permit_and_callbacks_are_threaded_through_opaquely), only threads
+    it through to the write callable, so a real ExecutionPermit is not
+    required for these unit tests."""
+
+    def __init__(self, account_id: str = OUJDA) -> None:
+        self.account_id = account_id
+
+
+async def _never_ready_for_review():
+    raise AssertionError("on_ready_for_review must never be called when the write callable never calls it")
+
+
+def _never_phase(phase: str) -> None:
+    raise AssertionError("on_phase must never be called when the write callable never calls it")
+
+
+def _run(
+    job=None,
+    *,
+    expected_plan_hash=VALID_PLAN_HASH,
+    session_store=None,
+    write=_ready_for_review,
+    permit=None,
+    on_ready_for_review=_never_ready_for_review,
+    on_phase=_never_phase,
+):
     return run_async(run_execute_check(
         job or FakeClaimedJob(),
         expected_plan_hash=expected_plan_hash,
         session_store=session_store or FakeSessionStore({OUJDA: {"cookies": [], "origins": []}}),
         workflow_registry=REGISTRY,
         perform_execute_write=write,
+        permit=permit if permit is not None else FakePermit(),
+        on_ready_for_review=on_ready_for_review,
+        on_phase=on_phase,
     ))
 
 
@@ -171,15 +202,16 @@ def test_cancellation_propagates_from_inside_the_write_callable():
 
 
 def test_the_write_callable_receives_the_real_rebuilt_plan_never_a_portal_type():
-    """The injected callable's signature carries only (account_id,
-    storage_state, plan) -- never a mcma.portal type (this module must
-    never import mcma.portal at all, and never construct or accept a
+    """The injected callable's signature carries (account_id,
+    storage_state, plan, permit, on_ready_for_review, on_phase) -- `plan`
+    is never a mcma.portal type (this module must never import
+    mcma.portal at all, and never construct or accept a
     VerifiedMissionWriter)."""
     from mcma.planning.plan import ProposedPlan
 
     seen = {}
 
-    async def _capture(account_id, storage_state, plan) -> str:
+    async def _capture(account_id, storage_state, plan, permit, on_ready_for_review, on_phase) -> str:
         seen["account_id"] = account_id
         seen["storage_state"] = storage_state
         seen["plan"] = plan
@@ -189,6 +221,51 @@ def test_the_write_callable_receives_the_real_rebuilt_plan_never_a_portal_type()
     assert seen["account_id"] == OUJDA
     assert isinstance(seen["plan"], ProposedPlan)
     assert seen["plan"].provenance.plan_hash == VALID_PLAN_HASH
+
+
+def test_permit_and_callbacks_are_threaded_through_to_the_write_callable_unchanged():
+    """Phase 1C-C Pass 2A: `permit`/`on_ready_for_review`/`on_phase` reach
+    the write callable exactly as given -- this module never calls a
+    method on the permit and never calls the callbacks itself (that is
+    entirely the write callable's own responsibility)."""
+    permit = FakePermit(account_id=OUJDA)
+
+    async def _on_ready() -> None:
+        return None
+
+    def _on_phase(phase: str) -> None:
+        return None
+
+    seen = {}
+
+    async def _capture(account_id, storage_state, plan, seen_permit, seen_on_ready, seen_on_phase) -> str:
+        seen["permit"] = seen_permit
+        seen["on_ready_for_review"] = seen_on_ready
+        seen["on_phase"] = seen_on_phase
+        return "READY_FOR_HUMAN_REVIEW"
+
+    _run(write=_capture, permit=permit, on_ready_for_review=_on_ready, on_phase=_on_phase)
+    assert seen["permit"] is permit
+    assert seen["on_ready_for_review"] is _on_ready
+    assert seen["on_phase"] is _on_phase
+
+
+def test_on_ready_for_review_and_on_phase_are_never_invoked_when_the_write_callable_never_calls_them():
+    """A pre-write verification failure (plan-hash mismatch here) never
+    invokes the write callable at all -- so it can never reach
+    on_ready_for_review/on_phase either. _run's own defaults
+    (_never_ready_for_review/_never_phase) assert this for every OTHER
+    test in this file; this test asserts it explicitly for a write
+    callable that WOULD call them if ever invoked."""
+    async def _would_call_back(account_id, storage_state, plan, permit, on_ready_for_review, on_phase) -> str:
+        await on_ready_for_review()
+        on_phase("WRITING")
+        return "READY_FOR_HUMAN_REVIEW"
+
+    result = _run(
+        expected_plan_hash="tampered-" + VALID_PLAN_HASH, write=_would_call_back,
+    )
+    assert result == "INPUT_OR_PLAN_MISMATCH"
 
 
 def test_the_session_store_is_never_touched_if_planning_already_failed():

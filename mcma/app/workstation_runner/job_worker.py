@@ -39,8 +39,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import threading
+from dataclasses import dataclass
 from enum import Enum
-from typing import Awaitable, Callable, Optional, Protocol
+from typing import Any, Awaitable, Callable, Optional, Protocol
+
+from mcma.app.workstation_runner.execution_permit import ExecutionPermit
 
 _INITIAL_BACKOFF_SECONDS = 2.0
 _MAX_BACKOFF_SECONDS = 60.0
@@ -62,6 +65,21 @@ class LifecycleEvent(Enum):
     EXECUTE_STARTED = "EXECUTE_STARTED"
     EXECUTE_SUCCEEDED = "EXECUTE_SUCCEEDED"
     EXECUTE_FAILED = "EXECUTE_FAILED"
+    # Phase 1C-C Pass 2A: the visible-writer automation's own intermediate
+    # phases (item J) -- distinct events, never folded into EXECUTE_STARTED,
+    # so the GUI can show the employee truthfully where the automation is:
+    # mutating rows (EXECUTE_WRITING), reading them back
+    # (EXECUTE_VERIFYING), the server having just confirmed
+    # READY_FOR_HUMAN_REVIEW (EXECUTE_READY_FOR_REVIEW), and then the
+    # (unbounded) wait for the employee to close the visible browser
+    # (EXECUTE_REVIEW_IN_PROGRESS). EXECUTE_SUCCEEDED is now the TERMINAL
+    # event only -- fired once the review browser has actually closed and
+    # this worker has finished attempting to report that -- never the
+    # "ready for review" moment (which EXECUTE_READY_FOR_REVIEW now owns).
+    EXECUTE_WRITING = "EXECUTE_WRITING"
+    EXECUTE_VERIFYING = "EXECUTE_VERIFYING"
+    EXECUTE_READY_FOR_REVIEW = "EXECUTE_READY_FOR_REVIEW"
+    EXECUTE_REVIEW_IN_PROGRESS = "EXECUTE_REVIEW_IN_PROGRESS"
 
 
 class ClaimedJobLike(Protocol):
@@ -69,6 +87,7 @@ class ClaimedJobLike(Protocol):
     mode: str
     claim_token: str
     generation: int
+    account_id: str
 
 
 class StartedJobLike(Protocol):
@@ -93,6 +112,10 @@ class RegistryClientProtocol(Protocol):
 
     def finish_job(self, runner_secret: str, *, job_id: str, claim_token: str, generation: int, result: str): ...
 
+    def report_execute_review_browser_closed(
+        self, runner_secret: str, *, job_id: str, claim_token: str, generation: int,
+    ): ...
+
     def close(self) -> None: ...
 
 
@@ -106,16 +129,66 @@ RunDryRunCheck = Callable[[ClaimedJobLike, str], Awaitable[str]]  # (claimed_job
 
 # Phase 1C-C: the async EXECUTE executor -- structurally
 # mcma.app.workstation_runner.execute_executor.run_execute_check, called
-# with the SAME (claimed_job, plan_hash) shape as RunDryRunCheck via a
-# caller-supplied closure (expected_plan_hash, session_store,
-# workflow_registry, perform_execute_write are all already bound by the
-# composition root). Optional: a worker that is never handed one simply
-# can never be handed an EXECUTE envelope either (claim_job's own server-
-# side gate, EXECUTE_DISPATCH_ENABLED, is what actually prevents that in
-# production -- this parameter's absence is not itself a safety boundary).
-RunExecuteCheck = Callable[[ClaimedJobLike, str], Awaitable[str]]  # (claimed_job, plan_hash) -> EXECUTE_FINISH_RESULTS member
+# with the SAME (claimed_job, plan_hash) shape as RunDryRunCheck PLUS
+# (Phase 1C-C Pass 2A) the execution permit and the two callbacks this
+# worker uses to observe the automation's own mid-flight phases -- all
+# already bound to expected_plan_hash/session_store/workflow_registry/
+# perform_execute_write by the composition root. Optional: a worker that
+# is never handed one simply can never be handed an EXECUTE envelope
+# either (claim_job's own server-side gate, EXECUTE_DISPATCH_ENABLED, is
+# what actually prevents that in production -- this parameter's absence
+# is not itself a safety boundary).
+RunExecuteCheck = Callable[
+    [ClaimedJobLike, str, ExecutionPermit, "OnReadyForReview", "OnPhase"], Awaitable[str]
+]  # (claimed_job, plan_hash, permit, on_ready_for_review, on_phase) -> EXECUTE_FINISH_RESULTS member
+
+# Phase 1C-C Pass 2A: called once writes+verification succeed, before the
+# (unbounded) wait for the employee to close the review browser -- reports
+# finish to the server and stops lease renewal. Never raises.
+OnReadyForReview = Callable[[], Awaitable[None]]
+# Fixed phase names the write callable reports through -- must match
+# mcma.portal.workstation_execute.PHASE_WRITING/PHASE_VERIFYING's own
+# literal values exactly (duplicated, not imported: this module never
+# imports mcma.portal -- see the module docstring).
+OnPhase = Callable[[str], None]
+_PHASE_WRITING = "WRITING"
+_PHASE_VERIFYING = "VERIFYING"
+_PHASE_EVENTS = {
+    _PHASE_WRITING: LifecycleEvent.EXECUTE_WRITING,
+    _PHASE_VERIFYING: LifecycleEvent.EXECUTE_VERIFYING,
+}
 
 OnEvent = Callable[[LifecycleEvent], None]
+
+
+@dataclass(frozen=True)
+class _ExecuteLifecycleOutcome:
+    """Internal result of one EXECUTE job's full automation-through-review
+    lifecycle (Phase 1C-C Pass 2A, corrected in the Pass 2A handoff fix).
+    Tracks three DISTINCT facts, never conflating "attempted" with
+    "confirmed" (correction requirement 3):
+
+    * finish_attempted -- at least one READY_FOR_HUMAN_REVIEW finish()
+      call was made (the retry loop in _on_ready_for_review was entered).
+      When True, the caller must never call finish_job again with a
+      different result (an assignment the server may already have moved
+      past RUNNING must not be double-finished with a contradictory
+      value).
+    * finish_confirmed -- the server's response EXPLICITLY confirmed BOTH
+      the terminal dispatch status and the terminal job status for that
+      exact READY_FOR_HUMAN_REVIEW call. Only this authorizes reporting
+      the browser-closed event or showing success.
+    * browser_closed -- the review browser has genuinely been closed
+      (employee-driven or forced by this same cancellation) by the time
+      this outcome is returned -- always true by construction, since
+      run_workstation_execute_write's own finally block closes the
+      writer/browser on every exit path before this coroutine can ever
+      complete or be observed as cancelled."""
+
+    result: str
+    finish_attempted: bool
+    finish_confirmed: bool
+    browser_closed: bool
 
 
 def _default_wait(event: threading.Event, timeout: float) -> bool:
@@ -300,16 +373,52 @@ class JobPollingLifecycle:
             return
 
         self._on_event(LifecycleEvent.EXECUTE_STARTED)
-        result = asyncio.run(self._run_and_renew_execute(runner_secret, claimed, started, stop_event))
-        finish_result = self._safe_finish(runner_secret, claimed, result)
-        # Finding 2: EXECUTE_SUCCEEDED is NEVER emitted from the local
-        # executor's own return value alone -- only when the SERVER's own
-        # finish() response explicitly confirms BOTH the terminal dispatch
-        # status and the terminal job status. A raised exception (rejected
-        # finish, a transport/protocol failure, an already-expired claim)
-        # or any other/partial/mismatched response is fail-closed to
-        # EXECUTE_FAILED -- the final visible state is never success
-        # unless the server said so.
+        # Phase 1C-C Pass 2A: automation, the server finish confirmation,
+        # and the (unbounded) visible human review all happen inside this
+        # ONE asyncio.run() call -- the write callable
+        # (mcma.portal.workstation_execute.run_workstation_execute_write,
+        # via the composition root) does not return until the review
+        # browser has actually closed, so no live Playwright object is
+        # ever handed back across this loop boundary (requirement C).
+        outcome = asyncio.run(self._run_execute_lifecycle(runner_secret, claimed, started, stop_event))
+
+        if outcome.finish_confirmed:
+            # Handoff-fix requirement 3: ONLY an explicitly server-
+            # confirmed finish authorizes this. finish() was already
+            # reported to and confirmed by the server from inside the
+            # coroutine (on_ready_for_review) -- calling finish_job again
+            # here would double-finish an assignment the server has
+            # already moved past RUNNING. All that remains is the fenced
+            # browser-closed report (requirement 4: bounded retry while
+            # active for an employee closure, exactly one immediate
+            # attempt -- never further retried -- if shutdown already
+            # requested it).
+            self._report_browser_closed_with_retry(runner_secret, claimed, stop_event)
+            self._on_event(LifecycleEvent.EXECUTE_SUCCEEDED)
+            return
+
+        if outcome.finish_attempted:
+            # Requirement 3: finish was attempted (possibly retried many
+            # times) but the server never explicitly confirmed it before
+            # this lifecycle gave up (shutdown or a lost lease). Never
+            # report browser-closed against an unconfirmed assignment,
+            # and never invent a fresh finish() call with a DIFFERENT
+            # result here either -- an unknown number of genuine
+            # READY_FOR_HUMAN_REVIEW attempts may already have reached
+            # the server. Left to the server's own fenced lease-expiry
+            # recovery (INTERRUPTED_NEEDS_HUMAN_REVIEW), exactly like any
+            # other assignment this worker abandons mid-flight.
+            self._on_event(LifecycleEvent.EXECUTE_FAILED)
+            return
+
+        # finish was never even attempted -- the write itself failed,
+        # aborted, or was cancelled before ever reaching the review-
+        # confirmation stage. Unchanged from before this correction:
+        # EXECUTE_SUCCEEDED is NEVER emitted from the local executor's
+        # own return value alone -- only when the SERVER's own finish()
+        # response explicitly confirms BOTH the terminal dispatch status
+        # and the terminal job status.
+        finish_result = self._safe_finish(runner_secret, claimed, outcome.result)
         confirmed = (
             finish_result is not None
             and getattr(finish_result, "status", None) == "SUCCEEDED"
@@ -318,6 +427,45 @@ class JobPollingLifecycle:
         if finish_result is None:
             self._on_event(LifecycleEvent.CONNECTION_FAILED)
         self._on_event(LifecycleEvent.EXECUTE_SUCCEEDED if confirmed else LifecycleEvent.EXECUTE_FAILED)
+
+    def _report_browser_closed_with_retry(
+        self, runner_secret: str, claimed: ClaimedJobLike, stop_event: threading.Event,
+    ) -> None:
+        """Requirement 4 (handoff fix): stop_event suppresses RETRIES, it
+        never suppresses the first, required attempt. Two callers rely on
+        this:
+
+        * an employee closure with the runner still active (stop_event
+          not yet set) -- retries with bounded exponential backoff for as
+          long as it remains active, exactly as before;
+        * a shutdown that lands AFTER finish was already confirmed
+          (stop_event ALREADY set when this is called) -- makes exactly
+          ONE immediate fenced attempt regardless, and if that single
+          attempt fails, does NOT continue retrying during shutdown.
+
+        A duplicate/retried call is safe either way -- the server's own
+        endpoint is idempotent (BrowserClosedResult's own
+        AWAITING_HUMAN_CONFIRMATION/HUMAN_CONFIRMED_COMPLETE vocabulary is
+        designed for exactly this repeat). Never marks human completion
+        itself -- that remains exclusively the platform's own
+        employee-authenticated review endpoint (requirement E). Never
+        called at all for an unconfirmed assignment -- see
+        _run_one_execute_job's own gating on outcome.finish_confirmed."""
+        backoff = _INITIAL_BACKOFF_SECONDS
+        while True:
+            try:
+                self._client.report_execute_review_browser_closed(
+                    runner_secret, job_id=claimed.job_id, claim_token=claimed.claim_token,
+                    generation=claimed.generation,
+                )
+                return
+            except Exception:
+                pass
+            if stop_event.is_set():
+                return  # shutdown already requested -- exactly one attempt, never retried further
+            if self._wait(stop_event, backoff):
+                return
+            backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
 
     async def _run_and_renew(self, runner_secret: str, claimed: ClaimedJobLike, started, stop_event: threading.Event) -> str:
         """Runs the executor and a periodic lease renewal CONCURRENTLY
@@ -357,88 +505,199 @@ class JobPollingLifecycle:
         except asyncio.CancelledError:
             raise
 
-    async def _run_and_renew_execute(
+    async def _run_execute_lifecycle(
         self, runner_secret: str, claimed: ClaimedJobLike, started, stop_event: threading.Event,
-    ) -> str:
-        """Phase 1C-C, EXECUTE's own twin of _run_and_renew. Critical
-        difference from DRY_RUN (see _renew_forever_execute's own
-        docstring): a renewal failure here is NOT best-effort-swallowed --
-        it sets `lease_lost`, and this loop cancels the write task the
-        moment either `stop_event` or `lease_lost` fires. Once mutation may
-        have begun, this worker never keeps writing on a lease it can no
-        longer prove it still holds.
+    ) -> _ExecuteLifecycleOutcome:
+        """Phase 1C-C Pass 2A: replaces _run_and_renew_execute. Spans
+        automation, the server finish confirmation, and the visible human
+        review on ONE event loop -- the write callable itself
+        (run_execute_check, injected as self._run_execute_check) does not
+        return until the review browser has closed, so this coroutine's
+        own await of it naturally covers the whole lifecycle.
 
-        Correction (Phase 1C-C, finding 4): the two cancellation causes are
-        DISTINGUISHED, not collapsed into one generic outcome -- an
-        operator-driven shutdown reports "RUNNER_CANCELLED", a lost lease
-        reports "LEASE_LOST" (both members of EXECUTE_FINISH_RESULTS,
-        mapped server-side to WRITE_ABORTED with their own distinct
-        reason_code). Deterministic priority when both are already true at
-        the SAME poll: `stop_event` wins -- checked first, every
-        iteration -- because an operator-requested shutdown is a more
-        specific, more intentional signal than an incidental renewal
-        failure racing it. Either way, this never returns the job to
-        PLANNED or leaves it automatically claimable again: a finish()
-        call reporting either result, if it still reaches an assignment
-        the server considers RUNNING, lands on WRITE_ABORTED; if the lease
-        had ALREADY genuinely expired server-side by the time finish() is
-        attempted, that call is simply refused (CLAIM_NOT_FOUND) -- the
-        server's own expire_stale_assignments/fail_closed_on_runner_
-        exception path (INTERRUPTED_NEEDS_HUMAN_REVIEW) remains the
-        authoritative landing in that case, and this worker's own finish
-        attempt failing is expected and harmless."""
-        exec_task = asyncio.ensure_future(self._run_execute_check(claimed, started.plan_hash))
+        Renewal (see _renew_forever_execute) runs CONCURRENTLY until
+        on_ready_for_review's own retry loop signals `renewal_stopped` --
+        and (handoff-fix requirement 1) ONLY once the server has
+        EXPLICITLY CONFIRMED READY_FOR_HUMAN_REVIEW, never merely because
+        a finish attempt was made -- requirement E's "stop renewal but
+        keep the browser open" is conditioned on confirmation, not on
+        attempt. Before that point, the same fail-closed cancellation
+        discipline as before applies: a renewal failure invalidates the
+        execution permit BEFORE this loop cancels the write task
+        (requirement B), and an operator shutdown takes priority over a
+        lease lost at the same poll (Phase 1C-C, finding 4) -- both still
+        converge on a fail-closed outcome, never an automatic retry."""
+        permit = ExecutionPermit(claimed.account_id)
+        permit.activate()  # requirement B: valid only now -- start_job already succeeded (the caller's own admission)
+        renewal_stopped = asyncio.Event()
+        finish_state = {"attempted": False, "confirmed": False}
+
+        def _confirms_ready_for_review(finish_result) -> bool:
+            return (
+                finish_result is not None
+                and getattr(finish_result, "status", None) == "SUCCEEDED"
+                and getattr(finish_result, "job_status", None) == "READY_FOR_HUMAN_REVIEW"
+            )
+
+        async def _on_ready_for_review() -> None:
+            """Handoff-fix requirement 1: retries the idempotent
+            READY_FOR_HUMAN_REVIEW finish report with bounded exponential
+            backoff, keeping lease renewal ACTIVE throughout (renewal_
+            stopped is set ONLY after confirmation, never before), until
+            the server's response explicitly confirms BOTH the terminal
+            dispatch status and the terminal job status -- never on "the
+            call was made" alone (requirement 3). Returns only once
+            confirmed; the only other way this ever stops retrying is a
+            cancellation (operator shutdown or a lost lease), delivered
+            here as asyncio.CancelledError from the outer polling loop
+            below.
+
+            Requirement 2: each individual finish attempt is shielded
+            from this coroutine's own cancellation, so a shutdown landing
+            mid-request never abandons a call that may already be
+            committing server-side -- the TRUE, bounded (httpx's own
+            connect/read/write/pool timeouts -- see http_client.py's
+            RegistryHttpClient construction) outcome of that exact
+            attempt is always learned and recorded in finish_state before
+            the cancellation is allowed to propagate, so the caller's
+            later "should I report browser-closed" decision
+            (finish_confirmed) is never a guess."""
+            finish_state["attempted"] = True
+            backoff = _INITIAL_BACKOFF_SECONDS
+            while True:
+                finish_task = asyncio.ensure_future(
+                    asyncio.to_thread(self._safe_finish, runner_secret, claimed, "READY_FOR_HUMAN_REVIEW")
+                )
+                try:
+                    finish_result = await asyncio.shield(finish_task)
+                except asyncio.CancelledError:
+                    # Our own await was cancelled -- the shielded task is
+                    # still running (or has already finished) regardless;
+                    # await its real, bounded outcome rather than leaving
+                    # an orphan thread whose eventual result no one ever
+                    # observes.
+                    finish_result = await finish_task
+                    confirmed = _confirms_ready_for_review(finish_result)
+                    finish_state["confirmed"] = confirmed
+                    if not confirmed and finish_result is None:
+                        self._on_event(LifecycleEvent.CONNECTION_FAILED)
+                    raise
+                if _confirms_ready_for_review(finish_result):
+                    finish_state["confirmed"] = True
+                    renewal_stopped.set()  # requirement 1: only NOW, after confirmation -- never before
+                    self._on_event(LifecycleEvent.EXECUTE_READY_FOR_REVIEW)
+                    # The browser stays open for review regardless of the
+                    # employee not having seen it confirm yet -- the write
+                    # genuinely happened and must remain reviewable.
+                    self._on_event(LifecycleEvent.EXECUTE_REVIEW_IN_PROGRESS)
+                    return
+                if finish_result is None:
+                    self._on_event(LifecycleEvent.CONNECTION_FAILED)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
+
+        def _on_phase(phase: str) -> None:
+            event = _PHASE_EVENTS.get(phase)
+            if event is not None:
+                self._on_event(event)
+
+        assert self._run_execute_check is not None  # guaranteed by the sync caller's own None-check before this runs
+        exec_task = asyncio.ensure_future(
+            self._run_execute_check(claimed, started.plan_hash, permit, _on_ready_for_review, _on_phase)
+        )
         lease_lost = asyncio.Event()
-        renew_task = asyncio.ensure_future(self._renew_forever_execute(runner_secret, claimed, lease_lost))
+        renew_task = asyncio.ensure_future(
+            self._renew_forever_execute(runner_secret, claimed, lease_lost, permit, renewal_stopped)
+        )
         cancel_reason = "WRITE_ABORTED"  # fail-closed fallback; overwritten below whenever this module cancels
         try:
             while not exec_task.done():
                 if stop_event.is_set():
                     cancel_reason = "RUNNER_CANCELLED"  # priority: shutdown wins over a lease lost at the same poll
+                    permit.invalidate()
                     exec_task.cancel()
                     break
                 if lease_lost.is_set():
                     cancel_reason = "LEASE_LOST"
+                    # permit is already invalidated by _renew_forever_execute,
+                    # BEFORE it set lease_lost (requirement B).
                     exec_task.cancel()
                     break
                 await asyncio.sleep(self._shutdown_poll_interval_seconds)
             try:
-                return await exec_task
+                result = await exec_task
             except asyncio.CancelledError:
                 # Fail-closed, never a guess: this module has no visibility
                 # into whether the injected write callable had already
                 # begun mutating the portal when it was cancelled -- the
                 # critical rule this increment requires (never
                 # automatically retry, never PLANNED/claimable again)
-                # holds regardless of which of the two causes fired.
-                return cancel_reason
+                # holds regardless of which of the two causes fired, and
+                # regardless of whether the cancellation landed before or
+                # during human review (a shutdown mid-review closes the
+                # browser too -- run_workstation_execute_write's own
+                # finally-block close covers that).
+                result = cancel_reason
         finally:
+            renewal_stopped.set()
             renew_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await renew_task
 
+        return _ExecuteLifecycleOutcome(
+            result=result,
+            finish_attempted=finish_state["attempted"],
+            finish_confirmed=finish_state["confirmed"],
+            # run_workstation_execute_write's own finally block closes the
+            # writer/browser on every exit path (normal return or this
+            # coroutine's own cancellation) before control can ever return
+            # here -- always true by construction, tracked explicitly per
+            # requirement 3 rather than left implicit.
+            browser_closed=True,
+        )
+
     async def _renew_forever_execute(
-        self, runner_secret: str, claimed: ClaimedJobLike, lease_lost: asyncio.Event,
+        self,
+        runner_secret: str,
+        claimed: ClaimedJobLike,
+        lease_lost: asyncio.Event,
+        permit: ExecutionPermit,
+        renewal_stopped: asyncio.Event,
     ) -> None:
         """EXECUTE-only renewal loop. Unlike DRY_RUN's _renew_forever
         (where a lost lease is harmless -- finish_job's own server-side
         fencing is the truthful landing either way, no live write is ever
         at risk), an EXECUTE renewal failure means this worker can no
         longer PROVE it still owns the account it may be mid-write on: it
-        sets `lease_lost` and returns immediately -- the caller cancels the
-        write task the moment this fires, per this increment's own
-        critical rule (stop mutation immediately when lease ownership is
-        lost or renewal is refused)."""
+        invalidates `permit` BEFORE setting `lease_lost` (requirement B --
+        "the renewal failure path must invalidate the permit before
+        cancelling the portal task"), and returns immediately -- the
+        caller cancels the write task the moment this fires.
+
+        Stops renewing the instant `renewal_stopped` is set (requirement
+        E) rather than only being cancelled once the whole lifecycle ends
+        -- a renewal failure AFTER that point is moot (no further
+        mutation will ever be attempted) and must never spuriously
+        cancel a write task that has already told the server
+        READY_FOR_HUMAN_REVIEW."""
         try:
-            while True:
-                await asyncio.sleep(self._renew_interval_seconds)
+            while not renewal_stopped.is_set():
+                try:
+                    await asyncio.wait_for(renewal_stopped.wait(), timeout=self._renew_interval_seconds)
+                    return  # renewal_stopped fired during the wait -- stop cleanly, never renew again
+                except asyncio.TimeoutError:
+                    pass
+                if renewal_stopped.is_set():
+                    return
                 try:
                     await asyncio.to_thread(
                         self._client.renew_job, runner_secret, job_id=claimed.job_id,
                         claim_token=claimed.claim_token, generation=claimed.generation,
                     )
                 except Exception:
-                    lease_lost.set()
+                    if not renewal_stopped.is_set():
+                        permit.invalidate()
+                        lease_lost.set()
                     return
         except asyncio.CancelledError:
             raise
