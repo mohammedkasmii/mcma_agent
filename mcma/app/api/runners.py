@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -32,8 +32,9 @@ from mcma.app.api.authz import Principal, require_permission
 from mcma.app.api.deps import require_csrf
 from mcma.app.api.errors import ApiError
 from mcma.app.auth.users import UserInputError
-from mcma.app.runners import registry
+from mcma.app.runners import dispatch, registry
 from mcma.domain.enums import Permission
+from mcma.execution.inputs import InputEncryptor
 
 MAX_BODY_BYTES = 4096
 
@@ -87,7 +88,7 @@ async def _bounded_json(request: Request, allowed: set, required: set) -> dict:
     return body
 
 
-def register_runner_routes(app: FastAPI, conn, get_principal) -> None:
+def register_runner_routes(app: FastAPI, conn, get_principal, encryptor: InputEncryptor) -> None:
     def admin(principal: Principal = Depends(get_principal)) -> Principal:
         require_permission(principal, Permission.RUNNERS_MANAGE)
         return principal
@@ -157,6 +158,67 @@ def register_runner_routes(app: FastAPI, conn, get_principal) -> None:
                 registry.heartbeat, conn, principal,
                 protocol_version=body["protocol_version"], app_version=body["app_version"],
                 sessions=body["sessions"],
+            )
+        except UserInputError as exc:
+            raise _as_api_error(exc) from None
+        return JSONResponse(result, headers=_NO_STORE)
+
+    # ------------------------- machine: job dispatch ---------------------- #
+    # Phase 1C-A: the durable claim/renew/release transport. No Playwright,
+    # no form filling -- see mcma.app.runners.dispatch's own module
+    # docstring. Registered unconditionally alongside enroll/heartbeat
+    # (same runner_registry flag, NEVER gated by agent_execution_available
+    # -- the central server keeps employee job CREATION refused via
+    # RUNNER_CONTROL_PLANE_UNAVAILABLE regardless of whether this transport
+    # exists; see app.py's _require_agent_execution).
+
+    async def _authenticated_runner(request: Request) -> registry.RunnerPrincipal:
+        principal = await run_in_threadpool(registry.authenticate_runner, conn, _bearer_token(request))
+        if principal is None:
+            raise ApiError(401, "RUNNER_UNAUTHENTICATED", "authentification du poste refusée")
+        return principal
+
+    @app.post("/runner/jobs/claim")
+    async def runner_claim_job(request: Request):
+        principal = await _authenticated_runner(request)
+        # Only protocol/app version -- the request cannot name a job,
+        # account, employee, mode or workflow; every one of those is
+        # derived entirely server-side inside dispatch.claim_job().
+        body = await _bounded_json(request, {"protocol_version", "app_version"}, {"protocol_version", "app_version"})
+        try:
+            envelope = await run_in_threadpool(
+                dispatch.claim_job, conn, principal,
+                protocol_version=body["protocol_version"], app_version=body["app_version"], encryptor=encryptor,
+            )
+        except UserInputError as exc:
+            raise _as_api_error(exc) from None
+        if envelope is None:
+            return Response(status_code=204, headers=_NO_STORE)
+        return JSONResponse(envelope.to_response_dict(), headers=_NO_STORE)
+
+    @app.post("/runner/jobs/{job_id}/renew")
+    async def runner_renew_job(job_id: str, request: Request):
+        principal = await _authenticated_runner(request)
+        body = await _bounded_json(request, {"claim_token", "generation"}, {"claim_token", "generation"})
+        try:
+            result = await run_in_threadpool(
+                dispatch.renew_job, conn, principal, job_id=job_id,
+                claim_token=body["claim_token"], generation=body["generation"],
+            )
+        except UserInputError as exc:
+            raise _as_api_error(exc) from None
+        return JSONResponse(result, headers=_NO_STORE)
+
+    @app.post("/runner/jobs/{job_id}/release")
+    async def runner_release_job(job_id: str, request: Request):
+        principal = await _authenticated_runner(request)
+        body = await _bounded_json(
+            request, {"claim_token", "generation", "reason_code"}, {"claim_token", "generation", "reason_code"},
+        )
+        try:
+            result = await run_in_threadpool(
+                dispatch.release_job, conn, principal, job_id=job_id,
+                claim_token=body["claim_token"], generation=body["generation"], reason_code=body["reason_code"],
             )
         except UserInputError as exc:
             raise _as_api_error(exc) from None

@@ -102,6 +102,37 @@ def test_agent_creation_stays_503_even_with_an_online_runner(tmp_path, launcher)
         assert server.api_conn.execute("SELECT COUNT(*) AS c FROM automation_jobs").fetchone()["c"] == 0
 
 
+def test_agent_creation_stays_503_even_though_the_dispatch_endpoints_exist(tmp_path, launcher):
+    """Phase 1C-A adds /runner/jobs/claim|renew|release to the SAME
+    runner_registry-gated block as enroll/heartbeat -- proving those routes
+    now exist and even WORK (a claim returns 204 with no eligible work,
+    since no job can exist while Agent creation itself is still refused) is
+    not enough: central Agent job CREATION must stay 503/
+    RUNNER_CONTROL_PLANE_UNAVAILABLE regardless, exactly like heartbeat
+    already does not turn it on."""
+    server = _server(tmp_path)
+    _seed(server)
+    with _client(server) as client:
+        csrf = _login(client, "boss")
+        code = client.post("/admin/runner-enrollments", json={"target_user_id": "emp-id"}, headers=csrf).json()["pairing_code"]
+        secret = TestClient(server.app, base_url="https://testserver").post(
+            "/runner/enroll", json={"pairing_code": code, "protocol_version": 1, "app_version": "0.1.0"}).json()["runner_secret"]
+        TestClient(server.app, base_url="https://testserver").post(
+            "/runner/heartbeat", headers={"Authorization": f"Bearer {secret}"},
+            json={"protocol_version": 1, "app_version": "0.1.0", "sessions": [{"account_id": OUJDA, "state": "READY"}]})
+
+        claim = TestClient(server.app, base_url="https://testserver").post(
+            "/runner/jobs/claim", headers={"Authorization": f"Bearer {secret}"},
+            json={"protocol_version": 1, "app_version": "0.1.0"})
+        assert claim.status_code == 204                # the transport works: no eligible work exists
+
+        body = {"account_id": OUJDA, "typed_input": {"x": 1}, "idempotency_key": "k1"}
+        for path in ("/jobs/dry-runs", "/jobs/some-job/executions"):
+            response = client.post(path, json=body, headers=csrf)
+            assert response.status_code == 503 and response.json()["error"] == "RUNNER_CONTROL_PLANE_UNAVAILABLE"
+        assert server.api_conn.execute("SELECT COUNT(*) AS c FROM automation_jobs").fetchone()["c"] == 0
+
+
 def test_the_migration_ran_at_central_startup(tmp_path, launcher):
     server = _server(tmp_path)
     tables = {r["name"] for r in server.api_conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}

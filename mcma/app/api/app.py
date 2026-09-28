@@ -264,7 +264,7 @@ def create_api_app(
         # The local Windows composition never registers these routes.
         from mcma.app.api.runners import register_runner_routes
 
-        register_runner_routes(app, conn, get_principal)
+        register_runner_routes(app, conn, get_principal, encryptor)
 
     # -- notifications (row-filtered list surfaces, review AR-H1) --------
 

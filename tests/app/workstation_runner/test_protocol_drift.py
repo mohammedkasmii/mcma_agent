@@ -6,7 +6,7 @@ and asserts every duplicated value is byte-for-byte identical. A failure
 here means the client and server have drifted -- fix protocol.py, don't
 import the registry module from the client."""
 
-from mcma.app.runners import registry
+from mcma.app.runners import dispatch, registry
 from mcma.app.workstation_runner import protocol
 
 
@@ -36,3 +36,27 @@ def test_protocol_version_is_supported_by_the_server():
 
 def test_app_version_matches_the_servers_version_regex():
     assert registry._VERSION_RE.match(protocol.APP_VERSION)
+
+
+def test_claim_token_prefix_matches_the_server():
+    assert protocol.CLAIM_TOKEN_PREFIX == dispatch.CLAIM_TOKEN_PREFIX
+
+
+def test_max_claim_token_length_matches_the_server():
+    assert protocol.MAX_CLAIM_TOKEN_LENGTH == dispatch.MAX_CLAIM_TOKEN_LENGTH
+
+
+def test_release_reasons_match_the_server():
+    assert set(protocol.RELEASE_REASONS) == dispatch._RELEASE_REASONS
+
+
+def test_job_modes_match_the_dispatchable_mode_status_pairs():
+    assert set(protocol.JOB_MODES) == {mode for mode, _status in dispatch._DISPATCHABLE_MODE_STATUS}
+
+
+def test_max_claim_response_bytes_matches_the_server():
+    assert protocol.MAX_CLAIM_RESPONSE_BYTES == dispatch.MAX_CLAIM_RESPONSE_BYTES
+
+
+def test_max_typed_input_depth_matches_the_server():
+    assert protocol.MAX_TYPED_INPUT_DEPTH == dispatch.MAX_TYPED_INPUT_DEPTH

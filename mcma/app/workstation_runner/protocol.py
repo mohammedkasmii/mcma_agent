@@ -34,3 +34,26 @@ MIN_HEARTBEAT_INTERVAL_SECONDS = 1
 MAX_HEARTBEAT_INTERVAL_SECONDS = 3600
 MIN_OFFLINE_AFTER_SECONDS = 1
 MAX_OFFLINE_AFTER_SECONDS = 7200
+
+# mirrors mcma.app.runners.dispatch.CLAIM_TOKEN_PREFIX / MAX_CLAIM_TOKEN_LENGTH
+# (Phase 1C-A: durable job-dispatch claim/renew/release). No job dispatch
+# is actually PERFORMED by this lightweight package yet -- only the wire
+# constants needed to validate a server response are duplicated here.
+CLAIM_TOKEN_PREFIX = "mcma_ct_"
+MAX_CLAIM_TOKEN_LENGTH = 200
+
+# mirrors mcma.app.runners.dispatch's fixed release reason set.
+RELEASE_REASONS = ("CANCELLED_BEFORE_EXECUTION", "RUNNER_SHUTDOWN", "EXECUTION_NOT_AVAILABLE")
+
+# mirrors mcma.execution.jobs' mode literals -- the only two a claimed job
+# envelope may ever report.
+JOB_MODES = ("DRY_RUN", "EXECUTE")
+
+# mirrors mcma.app.runners.dispatch.MAX_CLAIM_RESPONSE_BYTES / MAX_TYPED_INPUT_DEPTH
+# (P1 correction: the server now enforces these SAME bounds before a claim
+# row is ever inserted, not just this client on receipt -- see dispatch.py's
+# own module-level comment. http_client.py imports these from here rather
+# than defining its own copy, so there is exactly one client-side literal to
+# keep byte-for-byte identical to the server's.)
+MAX_CLAIM_RESPONSE_BYTES = 262_144  # 256 KiB
+MAX_TYPED_INPUT_DEPTH = 16

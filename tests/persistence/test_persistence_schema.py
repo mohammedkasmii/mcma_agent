@@ -25,6 +25,7 @@ ALL_TABLES = {
     "runner_enrollments",  # migration 0005 -- workstation runner registry
     "runners",
     "runner_account_capabilities",
+    "workstation_job_dispatch",  # migration 0006 -- workstation job dispatch
     "poll_runs",
     "poll_run_categories",
     "unmatched_notifications",
