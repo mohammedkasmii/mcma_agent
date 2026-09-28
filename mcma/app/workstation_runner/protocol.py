@@ -56,6 +56,19 @@ FINISH_RESULTS = (
     "IDENTITY_MATCHED", "IDENTITY_NOT_MATCHED", "SESSION_UNAVAILABLE", "PORTAL_READ_FAILED", "RUNNER_CANCELLED",
 )
 
+# mirrors mcma.app.runners.dispatch.EXECUTE_FINISH_RESULTS (Phase 1C-C: the
+# fixed, closed enum a claimed EXECUTE job may report to the SAME
+# /runner/jobs/{job_id}/finish endpoint -- the server tells the two enums
+# apart by the claimed assignment's own job mode, never by anything the
+# request chooses). RUNNER_CANCELLED is intentionally shared with
+# FINISH_RESULTS above -- same meaning (the worker itself gave up), a
+# different resulting automation_jobs status per mode (see dispatch.py's
+# own mapping tables).
+EXECUTE_FINISH_RESULTS = (
+    "READY_FOR_HUMAN_REVIEW", "IDENTITY_FAILED", "WRITE_ABORTED", "RUNNER_CANCELLED",
+    "SESSION_NOT_READY", "INPUT_OR_PLAN_MISMATCH", "INTERNAL_EXECUTION_ERROR", "LEASE_LOST",
+)
+
 # mirrors mcma.app.runners.dispatch.MAX_CLAIM_RESPONSE_BYTES / MAX_TYPED_INPUT_DEPTH
 # (P1 correction: the server now enforces these SAME bounds before a claim
 # row is ever inserted, not just this client on receipt -- see dispatch.py's

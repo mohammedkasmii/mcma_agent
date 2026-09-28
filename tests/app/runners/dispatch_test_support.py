@@ -145,11 +145,28 @@ def principal(conn, runner_id: str) -> RunnerPrincipal:
     return RunnerPrincipal(runner_id=runner_id, user_id=row["user_id"])
 
 
+def real_plan_hash(typed_input: dict = VALID_TYPED_INPUT, workflow_name: str = VALID_WORKFLOW_NAME) -> str:
+    """The REAL plan_hash mcma.planning.registry.default_registry() /
+    mcma.mapping.wexia.parse_wexia rebuild for `typed_input` -- used to
+    seed an EXECUTE job's own already-approved plan_hash so start_job's
+    real server-side plan rebuild-and-compare (Phase 1C-C) matches, exactly
+    like a real run_execute_planning() would have set it at creation time.
+    Never hardcoded: this table's own hashing is free to change shape, and
+    a hardcoded magic string would silently stop testing anything the
+    moment it did."""
+    from mcma.mapping.wexia import parse_wexia
+    from mcma.planning.registry import default_registry
+
+    parsed = parse_wexia(typed_input)
+    plan = default_registry().get(workflow_name)(parsed)
+    return plan.provenance.plan_hash
+
+
 def create_job(
     conn, job_id: str, *, account_id: str, user_id: str, mode: str = "DRY_RUN", status: str = "QUEUED",
     workflow_name: str = "RENOUVELLEMENT_CONTRAT", created_at: str = "2026-01-01T00:00:00+00:00",
     typed_input: object = None, encryptor: Optional[TestOnlyPlaintextEncryptor] = None,
-    raw_payload: Optional[bytes] = None,
+    raw_payload: Optional[bytes] = None, parent_job_id: Optional[str] = None, plan_hash: Optional[str] = None,
 ) -> None:
     """Seeds a job directly (dispatch tests may seed jobs directly, per the
     task spec) along with its verifiable job_inputs row -- unless
@@ -168,7 +185,7 @@ def create_job(
     AutomationJobsRepository(conn).insert(
         job_id=job_id, account_id=account_id, requested_by_user_id=user_id, workflow_name=workflow_name,
         mode=mode, status=status, input_hash=content_hash, idempotency_key=job_id, created_at=created_at,
-        state_version=1,
+        state_version=1, parent_job_id=parent_job_id, plan_hash=plan_hash,
     )
     if typed_input is not False:  # False is the explicit "no input row at all" sentinel
         enc = encryptor or TestOnlyPlaintextEncryptor()

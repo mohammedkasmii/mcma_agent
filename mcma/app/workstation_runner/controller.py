@@ -28,6 +28,13 @@ _JOB_STATUS_TEXT = {
     JobLifecycleEvent.JOB_SUCCEEDED: "Vérification terminée",
     JobLifecycleEvent.JOB_FAILED: "Échec de la vérification",
     JobLifecycleEvent.CONNECTION_FAILED: "En attente de travail",
+    # Phase 1C-C, item 10: EXECUTE's own fixed status text -- never a
+    # final-submit affordance, never a claim that the dossier itself is
+    # completed (only READY_FOR_HUMAN_REVIEW/EXECUTE_SUCCEEDED, meaning
+    # agent work is finished and awaiting an employee's own review).
+    JobLifecycleEvent.EXECUTE_STARTED: "Préparation de la saisie",
+    JobLifecycleEvent.EXECUTE_SUCCEEDED: "Prêt pour contrôle humain",
+    JobLifecycleEvent.EXECUTE_FAILED: "Saisie interrompue — contrôle requis",
 }
 _JOB_STATUS_IDLE_TEXT = "En attente de travail"
 

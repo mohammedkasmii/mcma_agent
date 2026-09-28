@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from mcma.app.workstation_runner.http_client import (
-    ClaimedJob, FinishResult, RegistryClaimNotFound, RegistryConnectionError, RegistryHttpClient,
+    BrowserClosedResult, ClaimedJob, FinishResult, RegistryClaimNotFound, RegistryConnectionError, RegistryHttpClient,
     RegistryProtocolError, RegistryUnauthorized, ReleaseResult, RenewResult, StartedJob,
 )
 
@@ -390,3 +390,112 @@ def test_finish_job_connection_failure_raises_connection_error():
     client = _client(handler)
     with pytest.raises(RegistryConnectionError):
         client.finish_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1, result="IDENTITY_MATCHED")
+
+
+# -------------------------- finish (EXECUTE results, Phase 1C-C) --------------------------- #
+# The SAME finish_job() client method and /runner/jobs/{job_id}/finish
+# server route serve BOTH job kinds -- see this method's own docstring.
+
+
+def test_start_job_parses_the_execute_running_shape():
+    """A claimed EXECUTE job's own RUNNING admission reports job_status=
+    IDENTITY_VERIFYING -- never READ_ONLY_IDENTITY_CHECK, which is
+    DRY_RUN-only."""
+    client = _client(lambda r: httpx.Response(200, json={
+        "status": "RUNNING", "job_status": "IDENTITY_VERIFYING",
+        "plan_hash": "h" * 64, "lease_expires_at": "2026-01-01T00:02:00+00:00",
+    }))
+    result = client.start_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1)
+    assert result.status == "RUNNING"
+    assert result.job_status == "IDENTITY_VERIFYING"
+    assert result.plan_hash == "h" * 64
+
+
+@pytest.mark.parametrize("result,job_status", [
+    ("READY_FOR_HUMAN_REVIEW", "READY_FOR_HUMAN_REVIEW"),
+    ("IDENTITY_FAILED", "IDENTITY_FAILED"),
+    ("WRITE_ABORTED", "WRITE_ABORTED"),
+    ("RUNNER_CANCELLED", "WRITE_ABORTED"),
+    ("SESSION_NOT_READY", "IDENTITY_FAILED"),
+    ("INPUT_OR_PLAN_MISMATCH", "IDENTITY_FAILED"),
+    ("INTERNAL_EXECUTION_ERROR", "WRITE_ABORTED"),
+    ("LEASE_LOST", "WRITE_ABORTED"),
+])
+def test_finish_job_accepts_every_execute_result_and_parses_its_response(result, job_status):
+    client = _client(lambda r: httpx.Response(
+        200, json={"status": "SUCCEEDED" if job_status == "READY_FOR_HUMAN_REVIEW" else "FAILED",
+                    "job_status": job_status, "server_time": "t"},
+    ))
+    parsed = client.finish_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1, result=result)
+    assert isinstance(parsed, FinishResult)
+    assert parsed.job_status == job_status
+
+
+def test_finish_job_still_rejects_a_result_outside_either_fixed_set_without_a_network_call():
+    def handler(request: httpx.Request):
+        raise AssertionError("must never reach the network with an invalid result")
+
+    client = _client(handler)
+    with pytest.raises(ValueError):
+        client.finish_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1, result="MADE_UP_RESULT")
+
+
+# ---------------------- review browser-closed handoff (item 7) ---------------------- #
+
+
+def test_browser_closed_sends_only_claim_token_and_generation():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["auth"] = request.headers.get("authorization")
+        seen["body"] = json.loads(request.read())
+        return httpx.Response(200, json={"status": "AWAITING_HUMAN_CONFIRMATION", "server_time": "t"})
+
+    client = _client(handler)
+    result = client.report_execute_review_browser_closed(
+        SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1,
+    )
+    assert seen["path"] == "/runner/jobs/job-1/browser-closed"
+    assert seen["auth"] == f"Bearer {SECRET}"
+    assert seen["body"] == {"claim_token": CLAIM_TOKEN, "generation": 1}
+    assert isinstance(result, BrowserClosedResult)
+    assert result.status == "AWAITING_HUMAN_CONFIRMATION"
+
+
+def test_browser_closed_accepts_the_human_confirmed_complete_idempotent_shape():
+    client = _client(lambda r: httpx.Response(200, json={"status": "HUMAN_CONFIRMED_COMPLETE", "server_time": "t"}))
+    result = client.report_execute_review_browser_closed(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1)
+    assert result.status == "HUMAN_CONFIRMED_COMPLETE"
+
+
+def test_browser_closed_404_raises_claim_not_found():
+    client = _client(lambda r: httpx.Response(404, json={"error": "CLAIM_NOT_FOUND"}))
+    with pytest.raises(RegistryClaimNotFound):
+        client.report_execute_review_browser_closed(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1)
+
+
+def test_browser_closed_401_raises_unauthorized():
+    client = _client(lambda r: httpx.Response(401, json={"error": "RUNNER_UNAUTHENTICATED"}))
+    with pytest.raises(RegistryUnauthorized):
+        client.report_execute_review_browser_closed(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1)
+
+
+@pytest.mark.parametrize("body", [
+    {"status": "SOMETHING_ELSE", "server_time": "t"},
+    {"status": "AWAITING_HUMAN_CONFIRMATION"},
+    {"status": "AWAITING_HUMAN_CONFIRMATION", "server_time": "t", "extra": 1},
+])
+def test_browser_closed_rejects_malformed_responses(body):
+    client = _client(lambda r: httpx.Response(200, json=body))
+    with pytest.raises(RegistryProtocolError):
+        client.report_execute_review_browser_closed(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1)
+
+
+def test_browser_closed_connection_failure_raises_connection_error():
+    def handler(request: httpx.Request):
+        raise httpx.ConnectError("boom", request=request)
+
+    client = _client(handler)
+    with pytest.raises(RegistryConnectionError):
+        client.report_execute_review_browser_closed(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1)

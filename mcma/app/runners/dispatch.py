@@ -66,7 +66,10 @@ from mcma.app.runners.registry import (
     OFFLINE_AFTER_SECONDS, RunnerPrincipal, _ineligibility, _mcma_accounts_of, _validated_versions,
 )
 from mcma.execution.inputs import InputEncryptor, JobInputUnavailable, retrieve_and_verify_job_input
-from mcma.execution.jobs import JobPreconditionMismatch, fail_closed_on_runner_exception, transition
+from mcma.execution.jobs import (
+    JobAuthorizationError, JobPreconditionMismatch, fail_closed_on_runner_exception, transition,
+    transition_on_browser_closed,
+)
 from mcma.mapping.wexia import parse_wexia
 from mcma.planning.registry import WorkflowRegistry
 
@@ -109,18 +112,27 @@ EXECUTE_DISPATCH_ENABLED = False
 
 # The exact (mode, status) pairs a job may ACTUALLY be claimed from right
 # now -- nothing else, regardless of any future status this table's own
-# CHECK constraint might one day accept on automation_jobs, and narrowed
-# to DRY_RUN-only while EXECUTE_DISPATCH_ENABLED is False.
-_DISPATCHABLE_MODE_STATUS = frozenset(
-    {("DRY_RUN", "QUEUED")} | ({("EXECUTE", "PLANNED")} if EXECUTE_DISPATCH_ENABLED else set())
-)
+# CHECK constraint might one day accept on automation_jobs. A function of
+# the gate, not a module-level constant, ONLY so a test can construct an
+# explicitly-enabled call without flipping the production module constant
+# (see claim_job's/start_job's own `execute_dispatch_enabled` parameter --
+# never a hidden env var, never client-settable): every production call
+# site omits the parameter and gets EXECUTE_DISPATCH_ENABLED (False) here,
+# unchanged from before this was a function.
+def _dispatchable_mode_status(execute_dispatch_enabled: bool) -> frozenset:
+    return frozenset(
+        {("DRY_RUN", "QUEUED")} | ({("EXECUTE", "PLANNED")} if execute_dispatch_enabled else set())
+    )
 
-# The SQL fragment mirroring _DISPATCHABLE_MODE_STATUS exactly -- built
-# once, from the same gate, so the candidate-selection query and the
-# defensive Python re-check below can never drift apart from each other.
-_MODE_STATUS_SQL = "(j.mode = 'DRY_RUN' AND j.status = 'QUEUED')"
-if EXECUTE_DISPATCH_ENABLED:
-    _MODE_STATUS_SQL += " OR (j.mode = 'EXECUTE' AND j.status = 'PLANNED')"
+
+# The SQL fragment mirroring _dispatchable_mode_status exactly -- built
+# from the SAME gate, so the candidate-selection query and the defensive
+# Python re-check below can never drift apart from each other.
+def _mode_status_sql(execute_dispatch_enabled: bool) -> str:
+    sql = "(j.mode = 'DRY_RUN' AND j.status = 'QUEUED')"
+    if execute_dispatch_enabled:
+        sql += " OR (j.mode = 'EXECUTE' AND j.status = 'PLANNED')"
+    return sql
 
 _RELEASE_REASONS = frozenset({"CANCELLED_BEFORE_EXECUTION", "RUNNER_SHUTDOWN", "EXECUTION_NOT_AVAILABLE"})
 
@@ -146,6 +158,51 @@ _FINISH_RESULT_TO_JOB_STATUS = {
     "SESSION_UNAVAILABLE": ("IDENTITY_FAILED", "SESSION_UNAVAILABLE"),
     "PORTAL_READ_FAILED": ("IDENTITY_FAILED", "PORTAL_READ_FAILED"),
     "RUNNER_CANCELLED": ("IDENTITY_FAILED", "RUNNER_CANCELLED"),
+}
+
+# Phase 1C-C: the fixed, closed result enum a claimed EXECUTE job may
+# report to the SAME /runner/jobs/{job_id}/finish endpoint -- the server
+# tells the two enums apart by the claimed assignment's own automation_
+# jobs.mode, never by anything the request itself chooses. Mirrors
+# mcma.app.workstation_runner.protocol.EXECUTE_FINISH_RESULTS exactly (see
+# tests/app/workstation_runner/test_protocol_drift.py).
+EXECUTE_FINISH_RESULTS = frozenset(
+    {
+        "READY_FOR_HUMAN_REVIEW", "IDENTITY_FAILED", "WRITE_ABORTED", "RUNNER_CANCELLED",
+        "SESSION_NOT_READY", "INPUT_OR_PLAN_MISMATCH", "INTERNAL_EXECUTION_ERROR", "LEASE_LOST",
+    }
+)
+
+# result -> (final automation_jobs status, job reason_code). Two families:
+#   * IDENTITY_FAILED/SESSION_NOT_READY/INPUT_OR_PLAN_MISMATCH are all
+#     PRE-WRITE verification failures (no mutation could have begun -- the
+#     workstation's own executor never calls the injected write callable
+#     until every one of these checks has already passed) -- one hop from
+#     IDENTITY_VERIFYING to IDENTITY_FAILED, exactly like the EXECUTE
+#     mermaid chart's own IDENTITY_VERIFYING -> IDENTITY_FAILED edge.
+#   * READY_FOR_HUMAN_REVIEW/WRITE_ABORTED/RUNNER_CANCELLED/
+#     INTERNAL_EXECUTION_ERROR/LEASE_LOST all mean the write callable was
+#     actually invoked -- mutation MAY have begun -- so these chain through
+#     IDENTITY_VERIFIED -> WRITING first (see _finish_execute_transitions):
+#     never IDENTITY_FAILED, and never back to PLANNED/QUEUED, once that
+#     line has been crossed. LEASE_LOST (Phase 1C-C correction, finding 4)
+#     is the worker's own self-reported "a renewal failed and I stopped
+#     mutating" outcome -- distinct from RUNNER_CANCELLED (an operator-
+#     driven shutdown) even though both land on the SAME WRITE_ABORTED job
+#     status; a finish() carrying either can also simply be REFUSED
+#     (CLAIM_NOT_FOUND) if the lease had already genuinely expired server-
+#     side by the time it arrives -- expire_stale_assignments' own fail-
+#     closed path (INTERRUPTED_NEEDS_HUMAN_REVIEW) remains authoritative
+#     in that case, and this table is never consulted for it.
+_EXECUTE_FINISH_RESULT_TO_JOB_STATUS = {
+    "READY_FOR_HUMAN_REVIEW": ("READY_FOR_HUMAN_REVIEW", None),
+    "IDENTITY_FAILED": ("IDENTITY_FAILED", None),
+    "SESSION_NOT_READY": ("IDENTITY_FAILED", "SESSION_NOT_READY"),
+    "INPUT_OR_PLAN_MISMATCH": ("IDENTITY_FAILED", "INPUT_OR_PLAN_MISMATCH"),
+    "WRITE_ABORTED": ("WRITE_ABORTED", None),
+    "RUNNER_CANCELLED": ("WRITE_ABORTED", "RUNNER_CANCELLED"),
+    "INTERNAL_EXECUTION_ERROR": ("WRITE_ABORTED", "INTERNAL_EXECUTION_ERROR"),
+    "LEASE_LOST": ("WRITE_ABORTED", "LEASE_LOST"),
 }
 
 _CLAIM_NOT_FOUND = ("CLAIM_NOT_FOUND", "Jeton de réclamation invalide, expiré ou déjà utilisé.", 404)
@@ -368,10 +425,19 @@ def expire_stale_assignments(conn, *, now: Optional[datetime] = None) -> int:
 def claim_job(
     conn, principal: RunnerPrincipal, *, protocol_version: object, app_version: object,
     encryptor: InputEncryptor, now: Optional[datetime] = None,
+    execute_dispatch_enabled: bool = EXECUTE_DISPATCH_ENABLED,
 ) -> Optional[JobEnvelope]:
     """Returns the claimed job's immutable envelope, or None when no
-    eligible work exists (the caller maps None to HTTP 204)."""
+    eligible work exists (the caller maps None to HTTP 204).
+
+    `execute_dispatch_enabled` (Phase 1C-C): every production call site
+    (mcma.app.api.runners) omits this and gets EXECUTE_DISPATCH_ENABLED
+    (False) -- a plain Python default, never an environment variable and
+    never a value the request body can influence. Tests construct an
+    explicitly-enabled call by passing True directly."""
     now = now or utcnow()
+    dispatchable_mode_status = _dispatchable_mode_status(execute_dispatch_enabled)
+    mode_status_sql = _mode_status_sql(execute_dispatch_enabled)
     _validated_versions(protocol_version, app_version)
     expire_stale_assignments(conn, now=now)  # opportunistic recovery, own transaction -- see docstring above
 
@@ -399,14 +465,14 @@ def claim_job(
         candidate = conn.execute(
             f"SELECT j.* FROM automation_jobs j "
             f"WHERE j.requested_by_user_id = ? AND j.account_id IN ({placeholders}) "
-            f"AND ({_MODE_STATUS_SQL}) "
+            f"AND ({mode_status_sql}) "
             f"AND NOT EXISTS (SELECT 1 FROM workstation_job_dispatch d WHERE d.job_id = j.job_id AND d.status IN ('CLAIMED', 'RUNNING')) "
             f"ORDER BY j.created_at ASC LIMIT 1",
             (runner_row["user_id"], *eligible_accounts),
         ).fetchone()
         if candidate is None:
             return None
-        if (candidate["mode"], candidate["status"]) not in _DISPATCHABLE_MODE_STATUS:
+        if (candidate["mode"], candidate["status"]) not in dispatchable_mode_status:
             return None  # defensive; the SQL above already guarantees this
 
         try:
@@ -557,6 +623,17 @@ def renew_job(
         ).fetchone()
         if not _account_still_authorized(conn, runner_row["user_id"], job_row):
             raise _err(*_CLAIM_NOT_FOUND)  # generic: never reveals job/account/token/permission as the cause
+        # Correction (Phase 1C-C, finding 1): the job's EXACT account must
+        # also still be reported READY by this runner -- a session that
+        # dropped to LOGIN_REQUIRED/ERROR (or whose capability row
+        # disappeared entirely) must stop renewing immediately, never
+        # extending the lease, so a RUNNING EXECUTE assignment on it is
+        # left to expire naturally and lands on INTERRUPTED_NEEDS_HUMAN_
+        # REVIEW via expire_stale_assignments' EXISTING fail-closed path --
+        # never silently kept alive on a session that can no longer be
+        # trusted. Same generic refusal as every other check above.
+        if job_row["account_id"] not in _ready_accounts(conn, principal.runner_id):
+            raise _err(*_CLAIM_NOT_FOUND)
         lease_expires = now + timedelta(seconds=DEFAULT_LEASE_TTL_SECONDS)
         conn.execute(
             "UPDATE workstation_job_dispatch SET lease_expires_at = ?, last_renewed_at = ? "
@@ -634,9 +711,35 @@ def _job_snapshot(job_row) -> tuple:
     return (job_row["mode"], job_row["status"], job_row["input_hash"], job_row["workflow_name"])
 
 
+def _require_execute_parent(conn, job_row) -> None:
+    """Phase 1C-C, start_job's own EXECUTE branch: re-verifies the parent
+    DRY_RUN relationship and its DRY_RUN_VERIFIED status FRESH, right
+    before admission -- mcma.app.api.app's create_execution already
+    checked this once at EXECUTE-job creation time (mcma.execution.jobs.
+    run_execute_planning re-checks it again too), but nothing checked
+    before this moment may be trusted stale: the parent could have been
+    re-planned, superseded, or otherwise mutated in the time since this
+    EXECUTE job was created and claimed. Raises the SAME generic
+    _JOB_NOT_STARTABLE any other genuine state problem in this function
+    uses -- never a token-forgery-shaped refusal."""
+    parent_id = job_row["parent_job_id"]
+    parent = conn.execute(
+        "SELECT mode, status, account_id, workflow_name FROM automation_jobs WHERE job_id = ?", (parent_id,)
+    ).fetchone() if parent_id else None
+    if (
+        parent is None
+        or parent["mode"] != "DRY_RUN"
+        or parent["status"] != "DRY_RUN_VERIFIED"
+        or parent["account_id"] != job_row["account_id"]
+        or parent["workflow_name"] != job_row["workflow_name"]
+    ):
+        raise _err(*_JOB_NOT_STARTABLE)
+
+
 def start_job(
     conn, principal: RunnerPrincipal, *, job_id: str, claim_token: object, generation: object,
     workflow_registry: WorkflowRegistry, encryptor: InputEncryptor, now: Optional[datetime] = None,
+    execute_dispatch_enabled: bool = EXECUTE_DISPATCH_ENABLED,
 ) -> dict:
     """CLAIMED -> RUNNING (browser work about to begin), or straight to a
     terminal SUCCEEDED/NEEDS_REVIEW_NO_BROWSER when planning alone already
@@ -689,10 +792,22 @@ def start_job(
         expected_statuses=frozenset({"CLAIMED"}),
     )
     job_row = _start_eligibility_checks(conn, principal, row, now=now)
-    if job_row["mode"] != "DRY_RUN" or job_row["status"] != "QUEUED":
-        # A genuine, attributable state problem -- not a token-forgery
-        # boundary -- so this is the one lifecycle refusal in this module
-        # that is NOT folded into the generic CLAIM_NOT_FOUND.
+    mode = job_row["mode"]
+    # A genuine, attributable state problem -- not a token-forgery boundary
+    # -- so this is the one lifecycle refusal in this function that is NOT
+    # folded into the generic CLAIM_NOT_FOUND. Phase 1C-C: EXECUTE is only
+    # ever startable while explicitly enabled (see this function's own
+    # `execute_dispatch_enabled` parameter) AND from PLANNED -- the exact
+    # status enqueue_execute()/run_execute_planning() land a newly-created
+    # EXECUTE job on.
+    if mode == "DRY_RUN":
+        if job_row["status"] != "QUEUED":
+            raise _err(*_JOB_NOT_STARTABLE)
+    elif mode == "EXECUTE" and execute_dispatch_enabled:
+        if job_row["status"] != "PLANNED":
+            raise _err(*_JOB_NOT_STARTABLE)
+        _require_execute_parent(conn, job_row)
+    else:
         raise _err(*_JOB_NOT_STARTABLE)
     snapshot = _job_snapshot(job_row)
 
@@ -707,6 +822,20 @@ def start_job(
         plaintext = retrieve_and_verify_job_input(conn, job_row["job_id"], job_row["input_hash"], encryptor)
         typed_input = parse_wexia(json.loads(plaintext))
         plan = workflow_registry.get(job_row["workflow_name"])(typed_input)
+        if mode == "EXECUTE" and plan.provenance.plan_hash != job_row["plan_hash"]:
+            # The job's OWN already-approved plan_hash (set by
+            # run_execute_planning at creation, re-verified against its
+            # DRY_RUN parent then) no longer matches what this function
+            # just independently rebuilt from the SAME retained input --
+            # never trusted, always re-derived. Never executed on a
+            # mismatch; the except block below fails this closed exactly
+            # like any other planning failure.
+            raise ValueError("EXECUTE plan_hash no longer matches the job's own retained approval")
+        if mode == "EXECUTE" and plan.needs_review:
+            # An approved EXECUTE plan must never need review -- its DRY_RUN
+            # parent already resolved that. Treated as a planning failure,
+            # never silently admitted.
+            raise ValueError("EXECUTE plan unexpectedly needs review")
     except Exception as exc:
         reason_code = f"RUNNER_EXCEPTION_{type(exc).__name__}"
         with write_transaction(conn):
@@ -730,7 +859,15 @@ def start_job(
             current_job = conn.execute(
                 "SELECT status FROM automation_jobs WHERE job_id = ?", (job_id,)
             ).fetchone()
-            if current_job is None or current_job["status"] != "QUEUED":
+            # The exact pre-planning status this job's OWN mode starts
+            # planning from -- QUEUED for DRY_RUN, PLANNED for EXECUTE (see
+            # this function's own admission check above). Phase 1C-C
+            # correction: this used to hardcode "QUEUED", which wrongly
+            # refused an EXECUTE plan-build failure with the generic
+            # CLAIM_NOT_FOUND instead of truthfully landing it on ERROR/
+            # PLANNING_FAILED below.
+            expected_pre_planning_status = "QUEUED" if mode == "DRY_RUN" else "PLANNED"
+            if current_job is None or current_job["status"] != expected_pre_planning_status:
                 # Something else already moved the job (should be
                 # unreachable if the claim above is still exactly CLAIMED,
                 # but never assumed) -- refuse generically, touch nothing.
@@ -774,6 +911,41 @@ def start_job(
             # the race) -- refused generically, nothing committed.
             raise _err(*_JOB_NOT_STARTABLE)
 
+        if mode == "EXECUTE":
+            # Server-authoritative EXECUTE admission (Phase 1C-C): PLANNED
+            # -> ACQUIRING_ACCOUNT_LOCK -> IDENTITY_VERIFYING, atomically
+            # with the matching CLAIMED -> RUNNING dispatch transition --
+            # both legal edges of the EXECUTE mermaid chart
+            # (WORKFLOW_STATE_MODEL.md §4), admitted here as a single
+            # atomic unit because this pass has no separate signal for
+            # "account lock acquired" distinct from "admitted to run" (the
+            # dispatch row's own CLAIMED/RUNNING generation+token fencing
+            # -- not a separate mcma.persistence.leases.account_leases row
+            # -- IS this pass's single-writer guarantee for a remote
+            # EXECUTE job; see this increment's own scope notes). The
+            # workstation's OWN independent pre-write verification (input_
+            # hash/plan_hash/session-readiness) still runs entirely AFTER
+            # this, before any write callable is ever invoked -- this
+            # transition never claims that verification has happened.
+            transition(
+                conn, job_id, "ACQUIRING_ACCOUNT_LOCK", in_transaction=True,
+                expected_from_statuses=frozenset({"PLANNED"}),
+            )
+            transition(
+                conn, job_id, "IDENTITY_VERIFYING", in_transaction=True,
+                expected_from_statuses=frozenset({"ACQUIRING_ACCOUNT_LOCK"}),
+            )
+            lease_expires = admission_now + timedelta(seconds=DEFAULT_LEASE_TTL_SECONDS)
+            conn.execute(
+                "UPDATE workstation_job_dispatch SET status = 'RUNNING', started_at = ?, lease_expires_at = ?, "
+                "last_renewed_at = ? WHERE assignment_id = ? AND status = 'CLAIMED'",
+                (_iso(admission_now), _iso(lease_expires), _iso(admission_now), row["assignment_id"]),
+            )
+            return {
+                "status": "RUNNING", "job_status": "IDENTITY_VERIFYING",
+                "plan_hash": plan.provenance.plan_hash, "lease_expires_at": _iso(lease_expires),
+            }
+
         transition(conn, job_id, "PLANNING", in_transaction=True, expected_from_statuses=frozenset({"QUEUED"}))
         if plan.needs_review:
             transition(
@@ -816,7 +988,14 @@ def _idempotent_finish_response(
     else -- a different result, a different generation, a row that never
     existed, or one still active -- returns None, so the caller raises the
     SAME generic refusal every other stale/wrong claim gets (conflicting or
-    stale results fail generically, never distinguishably)."""
+    stale results fail generically, never distinguishably).
+
+    Phase 1C-C: disambiguated by the row's OWN job's mode (never by the
+    result string alone) -- FINISH_RESULTS and EXECUTE_FINISH_RESULTS
+    deliberately share one member (RUNNER_CANCELLED) with DIFFERENT
+    resulting job_status per mode, so guessing the mapping from the result
+    string alone would silently answer an EXECUTE retry with a DRY_RUN
+    mapping (or vice versa) whenever they collide."""
     if not _valid_claim_token(claim_token) or not _valid_generation(generation):
         return None
     computed = digest_token(claim_token)
@@ -831,26 +1010,98 @@ def _idempotent_finish_response(
         or row["outcome_code"] != result
     ):
         return None
-    new_status, _reason_code = _FINISH_RESULT_TO_JOB_STATUS[result]
+    job_row = conn.execute("SELECT mode FROM automation_jobs WHERE job_id = ?", (row["job_id"],)).fetchone()
+    mode = job_row["mode"] if job_row is not None else None
+    if mode == "EXECUTE" and result in EXECUTE_FINISH_RESULTS:
+        new_status, _reason_code = _EXECUTE_FINISH_RESULT_TO_JOB_STATUS[result]
+    elif result in FINISH_RESULTS:
+        new_status, _reason_code = _FINISH_RESULT_TO_JOB_STATUS[result]
+    else:
+        return None
     return {"status": row["status"], "job_status": new_status, "server_time": _iso(now)}
+
+
+def _finish_execute_transitions(conn, job_id: str, result: str, *, now: datetime) -> tuple:
+    """Chains the fixed, legal automation_jobs transitions from
+    IDENTITY_VERIFYING (start_job's own EXECUTE admission status) to the
+    terminal status _EXECUTE_FINISH_RESULT_TO_JOB_STATUS[result] names,
+    entirely inside the caller's already-open transaction (in_
+    transaction=True throughout -- see transition()'s own docstring on why
+    that requires an already-active BEGIN IMMEDIATE, which finish_job's
+    caller holds). Every hop is fenced with expected_from_statuses, so a
+    job that is not truthfully exactly where this chain expects raises
+    JobPreconditionMismatch immediately -- never silently skipped.
+
+    Two families, matching the EXECUTE mermaid chart's own legal edges
+    (WORKFLOW_STATE_MODEL.md §4):
+      * IDENTITY_FAILED (with SESSION_NOT_READY/INPUT_OR_PLAN_MISMATCH as
+        its own distinct reason_code) is ONE hop, IDENTITY_VERIFYING ->
+        IDENTITY_FAILED -- the workstation's own executor never calls the
+        injected write callable until every pre-write check has already
+        passed, so none of these three outcomes can mean mutation began.
+      * READY_FOR_HUMAN_REVIEW/WRITE_ABORTED (RUNNER_CANCELLED/
+        INTERNAL_EXECUTION_ERROR both land on WRITE_ABORTED, as their own
+        distinct reason_code) all mean the write callable WAS invoked --
+        mutation MAY have begun -- so these chain through IDENTITY_VERIFIED
+        -> WRITING first. Nothing in this function can ever land on
+        NEEDS_REVIEW, PLANNED, or QUEUED: once IDENTITY_VERIFYING has been
+        reached there is no legal edge back to any of those three, exactly
+        the fail-closed guarantee this increment requires.
+
+    Returns (final_job_status, terminal_dispatch_status)."""
+    target_status, reason_code = _EXECUTE_FINISH_RESULT_TO_JOB_STATUS[result]
+    stamp = _iso(now)
+    if target_status == "IDENTITY_FAILED":
+        transition(
+            conn, job_id, "IDENTITY_FAILED", reason_code=reason_code, finished_at=stamp, in_transaction=True,
+            expected_from_statuses=frozenset({"IDENTITY_VERIFYING"}),
+        )
+        return "IDENTITY_FAILED", "FAILED"
+    transition(
+        conn, job_id, "IDENTITY_VERIFIED", in_transaction=True,
+        expected_from_statuses=frozenset({"IDENTITY_VERIFYING"}),
+    )
+    transition(conn, job_id, "WRITING", in_transaction=True, expected_from_statuses=frozenset({"IDENTITY_VERIFIED"}))
+    if target_status == "READY_FOR_HUMAN_REVIEW":
+        transition(conn, job_id, "VERIFYING", in_transaction=True, expected_from_statuses=frozenset({"WRITING"}))
+        # F.8 (mcma.execution.jobs' own convention): finished_at is NOT set
+        # here -- READY_FOR_HUMAN_REVIEW is not a terminal outcome, the
+        # browser stays open for human review.
+        transition(
+            conn, job_id, "READY_FOR_HUMAN_REVIEW", in_transaction=True,
+            expected_from_statuses=frozenset({"VERIFYING"}),
+        )
+        return "READY_FOR_HUMAN_REVIEW", "SUCCEEDED"
+    transition(
+        conn, job_id, "WRITE_ABORTED", reason_code=reason_code, finished_at=stamp, in_transaction=True,
+        expected_from_statuses=frozenset({"WRITING"}),
+    )
+    return "WRITE_ABORTED", "FAILED"
 
 
 def finish_job(
     conn, principal: RunnerPrincipal, *, job_id: str, claim_token: object, generation: object,
     result: object, now: Optional[datetime] = None,
+    execute_dispatch_enabled: bool = EXECUTE_DISPATCH_ENABLED,
 ) -> dict:
     """RUNNING -> a terminal SUCCEEDED/FAILED dispatch outcome, atomic with
-    the corresponding automation_jobs transition (READ_ONLY_IDENTITY_CHECK
-    -> DRY_RUN_VERIFIED or IDENTITY_FAILED) -- ONE write_transaction commits
-    both, via transition(..., in_transaction=True), so a crash between the
-    two can never leave a terminal job with an active dispatch row, or a
-    terminal dispatch row with a job still mid-check.
+    the corresponding automation_jobs transition -- ONE write_transaction
+    commits both, via transition(..., in_transaction=True), so a crash
+    between the two can never leave a terminal job with an active dispatch
+    row, or a terminal dispatch row with a job still mid-check.
 
-    `result` is one of FINISH_RESULTS -- a small, fixed, closed enum, never
-    arbitrary client status/error text. The client cannot choose an
-    automation_jobs status: this table (_FINISH_RESULT_TO_JOB_STATUS) is
-    the ONE place that mapping exists, and it is never influenced by
-    anything else in the request.
+    Phase 1C-C: the SAME endpoint/function now serves BOTH job kinds --
+    the client never chooses which enum applies; this function determines
+    it from the claimed assignment's OWN automation_jobs.mode, looked up
+    fresh inside the transaction, exactly like every other fact here.
+    DRY_RUN uses `result` in FINISH_RESULTS -> _FINISH_RESULT_TO_JOB_STATUS
+    (READ_ONLY_IDENTITY_CHECK -> DRY_RUN_VERIFIED/IDENTITY_FAILED, one
+    hop). EXECUTE uses `result` in EXECUTE_FINISH_RESULTS ->
+    _finish_execute_transitions (IDENTITY_VERIFYING -> ... -> READY_FOR_
+    HUMAN_REVIEW/IDENTITY_FAILED/WRITE_ABORTED). Neither table is ever
+    influenced by anything else in the request; `execute_dispatch_enabled`
+    follows the same never-a-hidden-bypass discipline as claim_job's/
+    start_job's own parameter of the same name.
 
     Release-blocker correction: before accepting a RUNNING result, this
     reuses the SAME _start_eligibility_checks() start_job() itself uses --
@@ -869,7 +1120,7 @@ def finish_job(
     a conflicting or stale attempt fails with the same generic
     CLAIM_NOT_FOUND every other wrong/stale claim gets."""
     now = now or utcnow()
-    if not isinstance(result, str) or result not in FINISH_RESULTS:
+    if not isinstance(result, str) or (result not in FINISH_RESULTS and result not in EXECUTE_FINISH_RESULTS):
         raise _err("BAD_REQUEST", "Résultat invalide.")
     expire_stale_assignments(conn, now=now)  # own transaction -- see its own docstring
 
@@ -887,19 +1138,91 @@ def finish_job(
             if idempotent is not None:
                 return idempotent
             raise
-        _start_eligibility_checks(conn, principal, row, now=now)
-        new_status, reason_code = _FINISH_RESULT_TO_JOB_STATUS[result]
+        job_row = _start_eligibility_checks(conn, principal, row, now=now)
+        mode = job_row["mode"]
         try:
-            transition(
-                conn, job_id, new_status, reason_code=reason_code, finished_at=_iso(now), in_transaction=True,
-                expected_from_statuses=frozenset({"READ_ONLY_IDENTITY_CHECK"}),
-            )
+            if mode == "EXECUTE" and execute_dispatch_enabled:
+                if result not in EXECUTE_FINISH_RESULTS:
+                    raise _err("BAD_REQUEST", "Résultat invalide.")
+                new_status, terminal = _finish_execute_transitions(conn, job_id, result, now=now)
+            else:
+                if result not in FINISH_RESULTS:
+                    raise _err("BAD_REQUEST", "Résultat invalide.")
+                new_status, reason_code = _FINISH_RESULT_TO_JOB_STATUS[result]
+                transition(
+                    conn, job_id, new_status, reason_code=reason_code, finished_at=_iso(now), in_transaction=True,
+                    expected_from_statuses=frozenset({"READ_ONLY_IDENTITY_CHECK"}),
+                )
+                terminal = "SUCCEEDED" if result == "IDENTITY_MATCHED" else "FAILED"
         except JobPreconditionMismatch:
             raise _err(*_CLAIM_NOT_FOUND) from None
-        terminal = "SUCCEEDED" if result == "IDENTITY_MATCHED" else "FAILED"
         conn.execute(
             "UPDATE workstation_job_dispatch SET status = ?, outcome_code = ?, finished_at = ? "
             "WHERE assignment_id = ? AND status = 'RUNNING'",
             (terminal, result, _iso(now), row["assignment_id"]),
         )
     return {"status": terminal, "job_status": new_status, "server_time": _iso(now)}
+
+
+# --------------------------------------------------------------------- #
+# EXECUTE human-review handoff (Phase 1C-C, item 7)
+# --------------------------------------------------------------------- #
+
+
+def report_execute_review_browser_closed(
+    conn, principal: RunnerPrincipal, *, job_id: str, claim_token: object, generation: object,
+    now: Optional[datetime] = None,
+) -> dict:
+    """The narrow, authenticated "review browser closed" machine event.
+    Fenced by the SAME claim_token+generation every other lifecycle call in
+    this module uses -- only the exact assignment that itself finished this
+    EXECUTE job with outcome_code=READY_FOR_HUMAN_REVIEW may ever report
+    this; a stale, wrong, or someone-else's token/generation gets the SAME
+    generic CLAIM_NOT_FOUND every other refusal in this module gives.
+
+    This function's ONLY effect is automation_jobs' READY_FOR_HUMAN_REVIEW
+    -> AWAITING_HUMAN_CONFIRMATION transition, via the EXISTING
+    mcma.execution.jobs.transition_on_browser_closed -- never a new,
+    ad-hoc transition, and never anything the workstation's own request
+    could otherwise choose (the request carries only claim_token/
+    generation, no status field at all). It never marks
+    HUMAN_CONFIRMED_COMPLETE (only the existing employee-authenticated
+    POST /jobs/{job_id}/review-completed can do that) and never mutates
+    workstation_job_dispatch -- the assignment is already terminal
+    (SUCCEEDED) by the time this can ever legally be called.
+
+    Idempotent: called again (or called after an employee has already
+    confirmed/reported a problem through the existing review-completion
+    API) is answered with the job's current status rather than raising --
+    transition_on_browser_closed() itself is only ever invoked from the
+    one status it is legal from."""
+    now = now or utcnow()
+    row = _locate_claim_row(
+        conn, principal, job_id=job_id, claim_token=claim_token, generation=generation,
+        expected_statuses=frozenset({"SUCCEEDED"}),
+    )
+    if row["outcome_code"] != "READY_FOR_HUMAN_REVIEW":
+        raise _err(*_CLAIM_NOT_FOUND)
+    job_row = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (row["job_id"],)).fetchone()
+    if job_row is not None and job_row["status"] in (
+        "AWAITING_HUMAN_CONFIRMATION", "HUMAN_CONFIRMED_COMPLETE",
+        # Correction (Phase 1C-C, finding 5): an employee may report a
+        # problem (mcma.execution.jobs.report_review_problem) while the
+        # job is STILL READY_FOR_HUMAN_REVIEW -- that already-legal,
+        # already-authenticated path moves it straight to INTERRUPTED_
+        # NEEDS_HUMAN_REVIEW without ever passing through AWAITING_HUMAN_
+        # CONFIRMATION. The browser then closes AFTER that has happened.
+        # This is read-only recognition of a state the EMPLOYEE/recovery
+        # path already produced -- this function never creates INTERRUPTED_
+        # NEEDS_HUMAN_REVIEW itself (see transition_on_browser_closed,
+        # which this function calls only when the job is NOT already one
+        # of these three) -- so answering idempotently here can never be
+        # confused with a NEW server-detected interruption.
+        "INTERRUPTED_NEEDS_HUMAN_REVIEW",
+    ):
+        return {"status": job_row["status"], "server_time": _iso(now)}  # idempotent -- already advanced
+    try:
+        new_status = transition_on_browser_closed(conn, job_id)
+    except JobAuthorizationError:
+        raise _err(*_CLAIM_NOT_FOUND) from None
+    return {"status": new_status, "server_time": _iso(now)}

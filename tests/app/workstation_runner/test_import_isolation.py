@@ -39,6 +39,7 @@ import mcma.app.workstation_runner.heartbeat
 import mcma.app.workstation_runner.controller
 import mcma.app.workstation_runner.browser_worker
 import mcma.app.workstation_runner.dry_run_executor
+import mcma.app.workstation_runner.execute_executor
 import mcma.app.workstation_runner.job_worker
 import mcma.app.workstation_runner.logging_setup
 forbidden = {forbidden!r}

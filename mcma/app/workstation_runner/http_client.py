@@ -16,10 +16,10 @@ from urllib.parse import urlsplit
 import httpx
 
 from mcma.app.workstation_runner.protocol import (
-    APP_VERSION, CLAIM_TOKEN_PREFIX, FINISH_RESULTS, JOB_MODES, MAX_CLAIM_RESPONSE_BYTES, MAX_CLAIM_TOKEN_LENGTH,
-    MAX_HEARTBEAT_INTERVAL_SECONDS, MAX_OFFLINE_AFTER_SECONDS, MAX_RUNNER_SECRET_LENGTH, MAX_TYPED_INPUT_DEPTH,
-    MIN_HEARTBEAT_INTERVAL_SECONDS, MIN_OFFLINE_AFTER_SECONDS, PROTOCOL_VERSION, RELEASE_REASONS,
-    RUNNER_ACCOUNT_IDS, RUNNER_SECRET_PREFIX, SESSION_STATES,
+    APP_VERSION, CLAIM_TOKEN_PREFIX, EXECUTE_FINISH_RESULTS, FINISH_RESULTS, JOB_MODES, MAX_CLAIM_RESPONSE_BYTES,
+    MAX_CLAIM_TOKEN_LENGTH, MAX_HEARTBEAT_INTERVAL_SECONDS, MAX_OFFLINE_AFTER_SECONDS, MAX_RUNNER_SECRET_LENGTH,
+    MAX_TYPED_INPUT_DEPTH, MIN_HEARTBEAT_INTERVAL_SECONDS, MIN_OFFLINE_AFTER_SECONDS, PROTOCOL_VERSION,
+    RELEASE_REASONS, RUNNER_ACCOUNT_IDS, RUNNER_SECRET_PREFIX, SESSION_STATES,
 )
 
 _CONNECT_TIMEOUT = 5.0
@@ -144,6 +144,19 @@ class FinishResult:
     server_time: str
 
 
+@dataclass(frozen=True)
+class BrowserClosedResult:
+    """Phase 1C-C, item 7: the result of
+    /runner/jobs/{job_id}/browser-closed. `status` is the automation_jobs
+    status the server actually landed on (AWAITING_HUMAN_CONFIRMATION, or
+    -- an idempotent repeat after an employee has already confirmed
+    through the existing, separately-authenticated review-completion API
+    -- HUMAN_CONFIRMED_COMPLETE); never a free-form value."""
+
+    status: str
+    server_time: str
+
+
 # Bounds for validating a claim response -- MAX_CLAIM_RESPONSE_BYTES and
 # MAX_TYPED_INPUT_DEPTH come from protocol.py (the server's own dispatch.py
 # enforces the SAME two bounds before a claim row is ever inserted -- see
@@ -163,7 +176,20 @@ _START_NEEDS_REVIEW_FIELDS = frozenset({"status", "job_status"})
 _START_RUNNING_FIELDS = frozenset({"status", "job_status", "plan_hash", "lease_expires_at"})
 _FINISH_RESPONSE_FIELDS = frozenset({"status", "job_status", "server_time"})
 _FINISH_DISPATCH_STATUSES = frozenset({"SUCCEEDED", "FAILED"})
-_FINISH_JOB_STATUSES = frozenset({"DRY_RUN_VERIFIED", "IDENTITY_FAILED"})
+# Phase 1C-C: extended with the EXECUTE lifecycle's own terminal job
+# statuses (READY_FOR_HUMAN_REVIEW, WRITE_ABORTED) -- IDENTITY_FAILED is
+# already shared between the two job kinds.
+_FINISH_JOB_STATUSES = frozenset({"DRY_RUN_VERIFIED", "IDENTITY_FAILED", "READY_FOR_HUMAN_REVIEW", "WRITE_ABORTED"})
+# Phase 1C-C: the two closed shapes /runner/jobs/{job_id}/browser-closed
+# ever accepts.
+_BROWSER_CLOSED_RESPONSE_FIELDS = frozenset({"status", "server_time"})
+# Phase 1C-C correction (finding 5): INTERRUPTED_NEEDS_HUMAN_REVIEW is a
+# legal idempotent response too -- an employee may report a problem while
+# the job is still READY_FOR_HUMAN_REVIEW, and the browser can then close
+# after that has already happened.
+_BROWSER_CLOSED_STATUSES = frozenset({
+    "AWAITING_HUMAN_CONFIRMATION", "HUMAN_CONFIRMED_COMPLETE", "INTERRUPTED_NEEDS_HUMAN_REVIEW",
+})
 
 
 def _json_depth(value: object, *, _current: int = 0) -> int:
@@ -512,24 +538,38 @@ class RegistryHttpClient:
                 raise RegistryProtocolError("start response failed validation")
             return StartedJob(status="NEEDS_REVIEW", job_status="NEEDS_REVIEW", plan_hash=None, lease_expires_at=None)
         if set(body) == _START_RUNNING_FIELDS:
+            # Phase 1C-C: a claimed EXECUTE job's own RUNNING admission
+            # reports job_status="IDENTITY_VERIFYING" (never
+            # READ_ONLY_IDENTITY_CHECK, which is DRY_RUN-only) -- the two
+            # are mutually exclusive per job kind, never chosen by this
+            # client, only validated against the closed pair the server can
+            # ever send.
+            job_status = body.get("job_status")
             if (
                 body.get("status") != "RUNNING"
-                or body.get("job_status") != "READ_ONLY_IDENTITY_CHECK"
+                or job_status not in ("READ_ONLY_IDENTITY_CHECK", "IDENTITY_VERIFYING")
                 or not _valid_bounded_str(body.get("plan_hash"), _MAX_PLAN_HASH_LENGTH)
                 or not _valid_bounded_str(body.get("lease_expires_at"), _MAX_TIMESTAMP_LENGTH)
             ):
                 raise RegistryProtocolError("start response failed validation")
             return StartedJob(
-                status="RUNNING", job_status="READ_ONLY_IDENTITY_CHECK",
+                status="RUNNING", job_status=job_status,
                 plan_hash=body["plan_hash"], lease_expires_at=body["lease_expires_at"],
             )
         raise RegistryProtocolError("start response failed validation")
 
     def finish_job(self, runner_secret: str, *, job_id: str, claim_token: str, generation: int, result: str) -> FinishResult:
-        if result not in FINISH_RESULTS:
+        """Phase 1C-C: `result` may be a member of EITHER FINISH_RESULTS
+        (DRY_RUN) or EXECUTE_FINISH_RESULTS (EXECUTE) -- this single client
+        method, and the single server endpoint it posts to, serve both job
+        kinds. This client never decides which one applies (it does not
+        even need to): the server determines it from the claimed
+        assignment's own job mode. Either way, `result` is a fixed, closed
+        enum, never arbitrary free text."""
+        if result not in FINISH_RESULTS and result not in EXECUTE_FINISH_RESULTS:
             # Never sent to the server: this is a fixed, closed client-side
             # enum, not a caller-supplied free-text status/error field.
-            raise ValueError("result must be one of FINISH_RESULTS")
+            raise ValueError("result must be one of FINISH_RESULTS or EXECUTE_FINISH_RESULTS")
         body = self._post(
             f"/runner/jobs/{job_id}/finish",
             json_body={"claim_token": claim_token, "generation": generation, "result": result},
@@ -544,3 +584,25 @@ class RegistryHttpClient:
         ):
             raise RegistryProtocolError("finish response failed validation")
         return FinishResult(status=body["status"], job_status=body["job_status"], server_time=body["server_time"])
+
+    def report_execute_review_browser_closed(
+        self, runner_secret: str, *, job_id: str, claim_token: str, generation: int,
+    ) -> BrowserClosedResult:
+        """Phase 1C-C, item 7: the narrow, authenticated "review browser
+        closed" event. Carries only the fencing identity (claim_token +
+        generation, same as every other lifecycle call) -- never a
+        free-form status; the server alone decides the resulting
+        automation_jobs status."""
+        body = self._post(
+            f"/runner/jobs/{job_id}/browser-closed",
+            json_body={"claim_token": claim_token, "generation": generation},
+            headers={"Authorization": f"Bearer {runner_secret}"},
+        )
+        assert body is not None  # allow_no_content defaults to False: _post never returns None here
+        if (
+            set(body) != _BROWSER_CLOSED_RESPONSE_FIELDS
+            or body.get("status") not in _BROWSER_CLOSED_STATUSES
+            or not _valid_bounded_str(body.get("server_time"), _MAX_TIMESTAMP_LENGTH)
+        ):
+            raise RegistryProtocolError("browser-closed response failed validation")
+        return BrowserClosedResult(status=body["status"], server_time=body["server_time"])

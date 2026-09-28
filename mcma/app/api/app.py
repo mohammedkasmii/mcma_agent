@@ -159,6 +159,7 @@ def create_api_app(
     dry_run_creation_available: bool = True,
     execute_creation_available: bool = True,
     runner_registry: bool = False,
+    execute_dispatch_enabled: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="MCMA API")
     install_error_handlers(app)
@@ -286,7 +287,9 @@ def create_api_app(
         # The local Windows composition never registers these routes.
         from mcma.app.api.runners import register_runner_routes
 
-        register_runner_routes(app, conn, get_principal, encryptor)
+        register_runner_routes(
+            app, conn, get_principal, encryptor, execute_dispatch_enabled=execute_dispatch_enabled,
+        )
 
     # -- notifications (row-filtered list surfaces, review AR-H1) --------
 

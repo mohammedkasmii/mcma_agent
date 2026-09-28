@@ -89,7 +89,15 @@ async def _bounded_json(request: Request, allowed: set, required: set) -> dict:
     return body
 
 
-def register_runner_routes(app: FastAPI, conn, get_principal, encryptor: InputEncryptor) -> None:
+def register_runner_routes(
+    app: FastAPI, conn, get_principal, encryptor: InputEncryptor, *, execute_dispatch_enabled: bool = False,
+) -> None:
+    """`execute_dispatch_enabled` (Phase 1C-C): a composition-root-only
+    parameter, threaded down from mcma.app.api.app.create_api_app -- never
+    a client-settable field, never an environment variable. The central
+    server (mcma.app.central_server) omits it and gets False, unchanged;
+    only a test (or a future increment's own composition root, once a
+    real EXECUTE writer exists) ever passes True."""
     def admin(principal: Principal = Depends(get_principal)) -> Principal:
         require_permission(principal, Permission.RUNNERS_MANAGE)
         return principal
@@ -192,6 +200,7 @@ def register_runner_routes(app: FastAPI, conn, get_principal, encryptor: InputEn
             envelope = await run_in_threadpool(
                 dispatch.claim_job, conn, principal,
                 protocol_version=body["protocol_version"], app_version=body["app_version"], encryptor=encryptor,
+                execute_dispatch_enabled=execute_dispatch_enabled,
             )
         except UserInputError as exc:
             raise _as_api_error(exc) from None
@@ -247,6 +256,7 @@ def register_runner_routes(app: FastAPI, conn, get_principal, encryptor: InputEn
                 dispatch.start_job, conn, principal, job_id=job_id,
                 claim_token=body["claim_token"], generation=body["generation"],
                 workflow_registry=_workflow_registry, encryptor=encryptor,
+                execute_dispatch_enabled=execute_dispatch_enabled,
             )
         except UserInputError as exc:
             raise _as_api_error(exc) from None
@@ -262,6 +272,31 @@ def register_runner_routes(app: FastAPI, conn, get_principal, encryptor: InputEn
             result = await run_in_threadpool(
                 dispatch.finish_job, conn, principal, job_id=job_id,
                 claim_token=body["claim_token"], generation=body["generation"], result=body["result"],
+                execute_dispatch_enabled=execute_dispatch_enabled,
+            )
+        except UserInputError as exc:
+            raise _as_api_error(exc) from None
+        return JSONResponse(result, headers=_NO_STORE)
+
+    # ------------- machine: EXECUTE human-review handoff (Phase 1C-C) ----- #
+    # Same bearer-only, no-cookie/CSRF, strict-bounded-JSON, no-store rules
+    # as every other machine lifecycle route. Carries only claim_token/
+    # generation -- never a status field; mcma.app.runners.dispatch.
+    # report_execute_review_browser_closed() alone decides the resulting
+    # automation_jobs status, via the EXISTING mcma.execution.jobs.
+    # transition_on_browser_closed. Final human confirmation remains the
+    # separate, employee-authenticated POST /jobs/{job_id}/review-completed
+    # (mcma.app.api.app) -- this route can never reach HUMAN_CONFIRMED_
+    # COMPLETE.
+
+    @app.post("/runner/jobs/{job_id}/browser-closed")
+    async def runner_execute_review_browser_closed(job_id: str, request: Request):
+        principal = await _authenticated_runner(request)
+        body = await _bounded_json(request, {"claim_token", "generation"}, {"claim_token", "generation"})
+        try:
+            result = await run_in_threadpool(
+                dispatch.report_execute_review_browser_closed, conn, principal, job_id=job_id,
+                claim_token=body["claim_token"], generation=body["generation"],
             )
         except UserInputError as exc:
             raise _as_api_error(exc) from None

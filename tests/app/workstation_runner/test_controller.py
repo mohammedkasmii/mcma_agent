@@ -1049,6 +1049,23 @@ def test_job_status_events_translate_to_fixed_non_sensitive_text():
     ]
 
 
+def test_execute_job_status_events_translate_to_their_own_fixed_text():
+    """Phase 1C-C, item 10: EXECUTE's own fixed status text is distinct
+    from DRY_RUN's -- never a final-submit affordance, never a claim that
+    the dossier itself is completed."""
+    statuses = []
+    controller = _new_controller(on_job_status=statuses.append)
+    controller._handle_job_event(JobLifecycleEvent.EXECUTE_STARTED)
+    controller._handle_job_event(JobLifecycleEvent.EXECUTE_SUCCEEDED)
+    controller._handle_job_event(JobLifecycleEvent.EXECUTE_FAILED)
+    assert statuses == [
+        "En attente de travail",  # the initial idle text, emitted at construction
+        "Préparation de la saisie",
+        "Prêt pour contrôle humain",
+        "Saisie interrompue — contrôle requis",
+    ]
+
+
 def test_job_status_text_never_contains_a_dossier_identifier_or_token():
     """JobLifecycleEvent carries no payload at all -- there is nothing for
     the fixed text map to leak, by construction."""

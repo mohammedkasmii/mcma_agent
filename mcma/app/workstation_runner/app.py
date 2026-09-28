@@ -20,6 +20,7 @@ from mcma.app.workstation_runner.browser_worker import BrowserSessionWorker
 from mcma.app.workstation_runner.config import ConfigError, RunnerConfig, build_config
 from mcma.app.workstation_runner.controller import RunnerController
 from mcma.app.workstation_runner.dry_run_executor import run_dry_run_check
+from mcma.app.workstation_runner.execute_executor import run_execute_check
 from mcma.app.workstation_runner.gui import RunnerApp
 from mcma.app.workstation_runner.heartbeat import HeartbeatLifecycle
 from mcma.app.workstation_runner.http_client import RegistryHttpClient
@@ -335,6 +336,26 @@ def _run_with_mutex_held(config: RunnerConfig | None) -> int:
             workflow_registry=_workflow_registry, check_identity_read_only=_check_identity_read_only,
         )
 
+    # Phase 1C-C, Pass 1: the EXECUTE write callable is a FAIL-CLOSED
+    # PLACEHOLDER -- it never calls mcma.portal.writer.VerifiedMissionWriter
+    # (or anything else portal-facing) and always reports
+    # INTERNAL_EXECUTION_ERROR. This is intentionally never exercised in
+    # production: mcma.app.runners.dispatch.EXECUTE_DISPATCH_ENABLED and
+    # mcma.app.central_server's execute_creation_available both stay False,
+    # so claim_job() can never hand this worker an EXECUTE envelope at all.
+    # It exists only so the worker's pipeline is structurally complete for
+    # both job kinds; a future increment replaces this closure with the
+    # reviewed, post-G5 VerifiedMissionWriter behind the SAME
+    # PerformExecuteWrite shape -- never by weakening this placeholder.
+    async def _perform_execute_write(account_id: str, storage_state: dict, plan) -> str:
+        return "INTERNAL_EXECUTION_ERROR"
+
+    async def _run_execute_check(claimed_job, plan_hash: str) -> str:
+        return await run_execute_check(
+            claimed_job, expected_plan_hash=plan_hash, session_store=session_store,
+            workflow_registry=_workflow_registry, perform_execute_write=_perform_execute_write,
+        )
+
     gui_app = RunnerApp()
     if resolved_config.server_origin:
         gui_app.prefill_form(resolved_config)
@@ -357,8 +378,8 @@ def _run_with_mutex_held(config: RunnerConfig | None) -> int:
 
     def job_lifecycle_factory(client):
         return JobPollingLifecycle(
-            client, _run_dry_run_check, is_ready=controller._job_worker_is_ready,
-            on_event=controller._handle_job_event,
+            client, _run_dry_run_check, run_execute_check=_run_execute_check,
+            is_ready=controller._job_worker_is_ready, on_event=controller._handle_job_event,
         )
 
     controller = RunnerController(

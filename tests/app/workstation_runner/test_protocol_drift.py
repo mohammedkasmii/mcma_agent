@@ -8,6 +8,7 @@ import the registry module from the client."""
 
 from mcma.app.runners import dispatch, registry
 from mcma.app.workstation_runner import protocol
+from mcma.app.workstation_runner import execute_executor
 
 
 def test_runner_account_ids_match_the_server():
@@ -69,3 +70,14 @@ def test_max_typed_input_depth_matches_the_server():
 
 def test_finish_results_match_the_server():
     assert set(protocol.FINISH_RESULTS) == dispatch.FINISH_RESULTS
+
+
+def test_execute_finish_results_match_the_server():
+    assert set(protocol.EXECUTE_FINISH_RESULTS) == dispatch.EXECUTE_FINISH_RESULTS
+
+
+def test_execute_executors_own_finish_results_mirror_match_the_server():
+    """execute_executor.py duplicates EXECUTE_FINISH_RESULTS as its own
+    local literal (same package-isolation reasoning as dry_run_executor.py's
+    own FINISH_RESULTS mirror) -- kept byte-for-byte identical here too."""
+    assert execute_executor.EXECUTE_FINISH_RESULTS == dispatch.EXECUTE_FINISH_RESULTS

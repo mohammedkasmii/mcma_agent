@@ -528,3 +528,225 @@ def test_conflicting_finish_is_refused(world):
     _finish(world, secret, "job-1", claimed["claim_token"], claimed["generation"], "IDENTITY_MATCHED")
     conflicting = _finish(world, secret, "job-1", claimed["claim_token"], claimed["generation"], "IDENTITY_NOT_MATCHED")
     assert conflicting.status_code == 404
+
+
+# --------------------------- EXECUTE lifecycle (Phase 1C-C) --------------------------- #
+# Explicitly enabled ONLY via the composition-root-only execute_dispatch_
+# enabled=True argument passed directly to create_api_app -- production
+# central_server.py never passes it (see mcma.app.api.runners.register_
+# runner_routes's own docstring). This is a SEPARATE app/world fixture from
+# `world` above, never a shared one, so every DRY_RUN-only test above stays
+# provably exercised against the exact same disabled-by-default composition
+# production actually runs.
+
+
+def _app_execute_enabled(conn):
+    return create_api_app(
+        conn, auth_provider=LocalUserAuthProvider(conn), session_store=SessionStore(),
+        encryptor=TestOnlyPlaintextEncryptor(), secure_cookies=True, runner_registry=True,
+        execute_dispatch_enabled=True,
+    )
+
+
+@pytest.fixture()
+def execute_world(conn):
+    boss = _user(conn, "boss", "admin", ALL)
+    emp = _user(conn, "emp", "operator", [OUJDA])
+    app = _app_execute_enabled(conn)
+    admin = _client(app)
+    csrf = login_client(admin, "boss", PASSWORD)
+    return {"conn": conn, "app": app, "admin": admin, "csrf": csrf, "boss": boss, "emp": emp}
+
+
+def _real_plan_hash(typed_input=VALID_TYPED_INPUT, workflow_name=VALID_WORKFLOW_NAME) -> str:
+    from mcma.mapping.wexia import parse_wexia
+    from mcma.planning.registry import default_registry
+
+    plan = default_registry().get(workflow_name)(parse_wexia(typed_input))
+    return plan.provenance.plan_hash
+
+
+def _seed_execute_job(
+    w, *, job_id="execute-1", parent_id="parent-dry-run-1", account_id=OUJDA, user_id=None,
+) -> None:
+    conn = w["conn"]
+    payload = json.dumps(VALID_TYPED_INPUT, sort_keys=True).encode("utf-8")
+    content_hash = compute_content_hash(payload)
+    plan_hash = _real_plan_hash()
+    AutomationJobsRepository(conn).insert(
+        job_id=parent_id, account_id=account_id, requested_by_user_id=user_id or w["emp"],
+        workflow_name=VALID_WORKFLOW_NAME, mode="DRY_RUN", status="DRY_RUN_VERIFIED", input_hash=content_hash,
+        idempotency_key=parent_id, created_at="2026-01-01T00:00:00+00:00", state_version=1, plan_hash=plan_hash,
+    )
+    JobInputsRepository(conn).insert(
+        parent_id, content_hash, payload, "CLAIM_DATA", "2026-01-01T00:00:00+00:00", "2027-01-01T00:00:00+00:00",
+    )
+    AutomationJobsRepository(conn).insert(
+        job_id=job_id, account_id=account_id, requested_by_user_id=user_id or w["emp"],
+        workflow_name=VALID_WORKFLOW_NAME, mode="EXECUTE", status="PLANNED", input_hash=content_hash,
+        idempotency_key=job_id, created_at="2026-01-01T00:01:00+00:00", state_version=1,
+        parent_job_id=parent_id, plan_hash=plan_hash,
+    )
+    JobInputsRepository(conn).insert(
+        job_id, content_hash, payload, "CLAIM_DATA", "2026-01-01T00:01:00+00:00", "2027-01-01T00:00:00+00:00",
+    )
+
+
+def _browser_closed(w, secret, job_id, claim_token, generation, **overrides):
+    body = {"claim_token": claim_token, "generation": generation, **overrides}
+    headers = {"Authorization": f"Bearer {secret}"} if secret is not None else {}
+    return _machine(w).post(f"/runner/jobs/{job_id}/browser-closed", json=body, headers=headers)
+
+
+def test_execute_is_claimed_once_the_gate_is_explicitly_enabled(execute_world):
+    secret = _ready_runner(execute_world)
+    _seed_execute_job(execute_world)
+    response = _claim(execute_world, secret)
+    assert response.status_code == 200
+    assert response.json()["mode"] == "EXECUTE"
+
+
+def test_execute_is_never_claimed_on_the_default_disabled_world(world):
+    """The SAME job seeded against the production-shaped `world` fixture
+    (execute_dispatch_enabled omitted, defaults False) is never claimed."""
+    secret = _ready_runner(world)
+    _seed_execute_job(world)
+    response = _claim(world, secret)
+    assert response.status_code == 204
+
+
+def test_execute_start_moves_to_running_and_identity_verifying(execute_world):
+    secret = _ready_runner(execute_world)
+    _seed_execute_job(execute_world)
+    claimed = _claim(execute_world, secret).json()
+    response = _start(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "RUNNING"
+    assert body["job_status"] == "IDENTITY_VERIFYING"
+    assert body["plan_hash"]
+    job = execute_world["conn"].execute("SELECT status FROM automation_jobs WHERE job_id = 'execute-1'").fetchone()
+    assert job["status"] == "IDENTITY_VERIFYING"
+
+
+def test_execute_finish_ready_for_human_review(execute_world):
+    secret = _ready_runner(execute_world)
+    _seed_execute_job(execute_world)
+    claimed = _claim(execute_world, secret).json()
+    _start(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    response = _finish(
+        execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"], "READY_FOR_HUMAN_REVIEW",
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "SUCCEEDED"
+    assert body["job_status"] == "READY_FOR_HUMAN_REVIEW"
+    job = execute_world["conn"].execute("SELECT status FROM automation_jobs WHERE job_id = 'execute-1'").fetchone()
+    assert job["status"] == "READY_FOR_HUMAN_REVIEW"
+
+
+@pytest.mark.parametrize("result", [
+    "IDENTITY_FAILED", "WRITE_ABORTED", "RUNNER_CANCELLED", "SESSION_NOT_READY",
+    "INPUT_OR_PLAN_MISMATCH", "INTERNAL_EXECUTION_ERROR", "LEASE_LOST",
+])
+def test_execute_finish_every_other_outcome_is_accepted_and_mapped(execute_world, result):
+    secret = _ready_runner(execute_world)
+    _seed_execute_job(execute_world)
+    claimed = _claim(execute_world, secret).json()
+    _start(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    response = _finish(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"], result)
+    assert response.status_code == 200
+    assert response.json()["job_status"] in ("IDENTITY_FAILED", "WRITE_ABORTED")
+
+
+def test_execute_finish_rejects_a_dry_run_only_result_value(execute_world):
+    """IDENTITY_MATCHED is a real, closed enum member -- just not for
+    EXECUTE. The server determines which enum applies from the claimed
+    job's own mode; it is never guessable/choosable by the request."""
+    secret = _ready_runner(execute_world)
+    _seed_execute_job(execute_world)
+    claimed = _claim(execute_world, secret).json()
+    _start(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    response = _finish(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"], "IDENTITY_MATCHED")
+    assert response.status_code == 400
+
+
+def test_execute_review_browser_closed_moves_to_awaiting_confirmation(execute_world):
+    secret = _ready_runner(execute_world)
+    _seed_execute_job(execute_world)
+    claimed = _claim(execute_world, secret).json()
+    _start(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    _finish(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"], "READY_FOR_HUMAN_REVIEW")
+    response = _browser_closed(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    assert set(body) == {"status", "server_time"}
+    assert body["status"] == "AWAITING_HUMAN_CONFIRMATION"
+    job = execute_world["conn"].execute("SELECT status FROM automation_jobs WHERE job_id = 'execute-1'").fetchone()
+    assert job["status"] == "AWAITING_HUMAN_CONFIRMATION"
+
+
+def test_execute_review_browser_closed_is_idempotent(execute_world):
+    secret = _ready_runner(execute_world)
+    _seed_execute_job(execute_world)
+    claimed = _claim(execute_world, secret).json()
+    _start(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    _finish(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"], "READY_FOR_HUMAN_REVIEW")
+    first = _browser_closed(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    second = _browser_closed(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    assert first.status_code == second.status_code == 200
+    assert first.json()["status"] == second.json()["status"] == "AWAITING_HUMAN_CONFIRMATION"
+
+
+def test_execute_review_browser_closed_requires_bearer_auth(execute_world):
+    secret = _ready_runner(execute_world)
+    _seed_execute_job(execute_world)
+    claimed = _claim(execute_world, secret).json()
+    _start(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    _finish(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"], "READY_FOR_HUMAN_REVIEW")
+    response = _browser_closed(execute_world, None, "execute-1", claimed["claim_token"], claimed["generation"])
+    assert response.status_code == 401
+
+
+def test_execute_review_browser_closed_body_rejects_unknown_and_missing_fields(execute_world):
+    secret = _ready_runner(execute_world)
+    _seed_execute_job(execute_world)
+    claimed = _claim(execute_world, secret).json()
+    _start(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    _finish(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"], "READY_FOR_HUMAN_REVIEW")
+    assert _browser_closed(
+        execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"], extra="x",
+    ).status_code == 400
+    response = _machine(execute_world).post(
+        "/runner/jobs/execute-1/browser-closed", json={"claim_token": claimed["claim_token"]},
+        headers={"Authorization": f"Bearer {secret}"},
+    )
+    assert response.status_code == 400
+
+
+def test_execute_review_browser_closed_cannot_choose_a_free_form_status(execute_world):
+    """The endpoint accepts only claim_token/generation -- a status field is
+    an unknown field, rejected exactly like any other."""
+    secret = _ready_runner(execute_world)
+    _seed_execute_job(execute_world)
+    claimed = _claim(execute_world, secret).json()
+    _start(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    _finish(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"], "READY_FOR_HUMAN_REVIEW")
+    response = _browser_closed(
+        execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"],
+        status="HUMAN_CONFIRMED_COMPLETE",
+    )
+    assert response.status_code == 400
+    job = execute_world["conn"].execute("SELECT status FROM automation_jobs WHERE job_id = 'execute-1'").fetchone()
+    assert job["status"] == "READY_FOR_HUMAN_REVIEW"  # unaffected
+
+
+def test_execute_review_browser_closed_before_finish_is_refused(execute_world):
+    secret = _ready_runner(execute_world)
+    _seed_execute_job(execute_world)
+    claimed = _claim(execute_world, secret).json()
+    _start(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    response = _browser_closed(execute_world, secret, "execute-1", claimed["claim_token"], claimed["generation"])
+    assert response.status_code == 404
+    assert response.json()["error"] == "CLAIM_NOT_FOUND"
