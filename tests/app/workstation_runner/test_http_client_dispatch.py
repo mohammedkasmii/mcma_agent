@@ -1,7 +1,8 @@
-"""Windows client extension for workstation job dispatch (Phase 1C-A):
-RegistryHttpClient.claim_job()/renew_job()/release_job(). No polling worker
-or execution handler here -- see http_client.py's own module docstring.
-Mirrors test_http_client.py's MockTransport conventions."""
+"""Windows client extension for workstation job dispatch (Phase 1C-A/1C-B):
+RegistryHttpClient.claim_job()/renew_job()/release_job()/start_job()/
+finish_job(). No polling worker or execution handler here -- see
+http_client.py's own module docstring. Mirrors test_http_client.py's
+MockTransport conventions."""
 
 import json
 
@@ -9,8 +10,8 @@ import httpx
 import pytest
 
 from mcma.app.workstation_runner.http_client import (
-    ClaimedJob, RegistryClaimNotFound, RegistryConnectionError, RegistryHttpClient, RegistryProtocolError,
-    RegistryUnauthorized, ReleaseResult, RenewResult,
+    ClaimedJob, FinishResult, RegistryClaimNotFound, RegistryConnectionError, RegistryHttpClient,
+    RegistryProtocolError, RegistryUnauthorized, ReleaseResult, RenewResult, StartedJob,
 )
 
 ORIGIN = "https://central.example.local"
@@ -256,3 +257,136 @@ def test_release_job_connection_failure_raises_connection_error():
     client = _client(handler)
     with pytest.raises(RegistryConnectionError):
         client.release_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1, reason_code="RUNNER_SHUTDOWN")
+
+
+# ---------------------------------------- start ---------------------------------------- #
+
+
+def test_start_job_sends_only_claim_token_and_generation():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["auth"] = request.headers.get("authorization")
+        seen["body"] = json.loads(request.read())
+        return httpx.Response(200, json={"status": "RUNNING", "job_status": "READ_ONLY_IDENTITY_CHECK",
+                                          "plan_hash": "h" * 64, "lease_expires_at": "2026-01-01T00:02:00+00:00"})
+
+    client = _client(handler)
+    client.start_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1)
+    assert seen["path"] == "/runner/jobs/job-1/start"
+    assert seen["auth"] == f"Bearer {SECRET}"
+    assert seen["body"] == {"claim_token": CLAIM_TOKEN, "generation": 1}
+
+
+def test_start_job_parses_the_running_shape():
+    client = _client(lambda r: httpx.Response(200, json={
+        "status": "RUNNING", "job_status": "READ_ONLY_IDENTITY_CHECK",
+        "plan_hash": "h" * 64, "lease_expires_at": "2026-01-01T00:02:00+00:00",
+    }))
+    result = client.start_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1)
+    assert isinstance(result, StartedJob)
+    assert result.status == "RUNNING"
+    assert result.job_status == "READ_ONLY_IDENTITY_CHECK"
+    assert result.plan_hash == "h" * 64
+    assert result.lease_expires_at == "2026-01-01T00:02:00+00:00"
+
+
+def test_start_job_parses_the_needs_review_shape():
+    client = _client(lambda r: httpx.Response(200, json={"status": "NEEDS_REVIEW", "job_status": "NEEDS_REVIEW"}))
+    result = client.start_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1)
+    assert result.status == "NEEDS_REVIEW"
+    assert result.plan_hash is None
+    assert result.lease_expires_at is None
+
+
+def test_start_job_404_raises_claim_not_found():
+    client = _client(lambda r: httpx.Response(404, json={"error": "CLAIM_NOT_FOUND"}))
+    with pytest.raises(RegistryClaimNotFound):
+        client.start_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1)
+
+
+def test_start_job_401_raises_unauthorized():
+    client = _client(lambda r: httpx.Response(401, json={"error": "RUNNER_UNAUTHENTICATED"}))
+    with pytest.raises(RegistryUnauthorized):
+        client.start_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1)
+
+
+@pytest.mark.parametrize("body", [
+    {"status": "RUNNING", "job_status": "READ_ONLY_IDENTITY_CHECK"},  # missing plan_hash/lease_expires_at
+    {"status": "RUNNING", "job_status": "READ_ONLY_IDENTITY_CHECK", "plan_hash": "", "lease_expires_at": "t"},
+    {"status": "SOMETHING_ELSE", "job_status": "NEEDS_REVIEW"},
+    {"status": "NEEDS_REVIEW", "job_status": "NEEDS_REVIEW", "extra": 1},
+    {},
+])
+def test_start_job_rejects_malformed_responses(body):
+    client = _client(lambda r: httpx.Response(200, json=body))
+    with pytest.raises(RegistryProtocolError):
+        client.start_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1)
+
+
+def test_start_job_connection_failure_raises_connection_error():
+    def handler(request: httpx.Request):
+        raise httpx.ConnectError("boom", request=request)
+
+    client = _client(handler)
+    with pytest.raises(RegistryConnectionError):
+        client.start_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1)
+
+
+# --------------------------------------- finish ---------------------------------------- #
+
+
+def test_finish_job_sends_only_claim_token_generation_and_result():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["auth"] = request.headers.get("authorization")
+        seen["body"] = json.loads(request.read())
+        return httpx.Response(200, json={"status": "SUCCEEDED", "job_status": "DRY_RUN_VERIFIED", "server_time": "t"})
+
+    client = _client(handler)
+    result = client.finish_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1, result="IDENTITY_MATCHED")
+    assert seen["path"] == "/runner/jobs/job-1/finish"
+    assert seen["auth"] == f"Bearer {SECRET}"
+    assert seen["body"] == {"claim_token": CLAIM_TOKEN, "generation": 1, "result": "IDENTITY_MATCHED"}
+    assert isinstance(result, FinishResult)
+    assert result.status == "SUCCEEDED"
+    assert result.job_status == "DRY_RUN_VERIFIED"
+
+
+def test_finish_job_rejects_a_result_outside_the_fixed_set_without_a_network_call():
+    def handler(request: httpx.Request):
+        raise AssertionError("must never reach the network with an invalid result")
+
+    client = _client(handler)
+    with pytest.raises(ValueError):
+        client.finish_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1, result="MADE_UP_RESULT")
+
+
+def test_finish_job_404_raises_claim_not_found():
+    client = _client(lambda r: httpx.Response(404, json={"error": "CLAIM_NOT_FOUND"}))
+    with pytest.raises(RegistryClaimNotFound):
+        client.finish_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1, result="IDENTITY_MATCHED")
+
+
+@pytest.mark.parametrize("body", [
+    {"status": "SOMETHING_ELSE", "job_status": "DRY_RUN_VERIFIED", "server_time": "t"},
+    {"status": "SUCCEEDED", "job_status": "SOMETHING_ELSE", "server_time": "t"},
+    {"status": "SUCCEEDED", "job_status": "DRY_RUN_VERIFIED", "server_time": "t", "extra": 1},
+    {"status": "SUCCEEDED", "job_status": "DRY_RUN_VERIFIED"},
+])
+def test_finish_job_rejects_malformed_responses(body):
+    client = _client(lambda r: httpx.Response(200, json=body))
+    with pytest.raises(RegistryProtocolError):
+        client.finish_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1, result="IDENTITY_MATCHED")
+
+
+def test_finish_job_connection_failure_raises_connection_error():
+    def handler(request: httpx.Request):
+        raise httpx.ConnectError("boom", request=request)
+
+    client = _client(handler)
+    with pytest.raises(RegistryConnectionError):
+        client.finish_job(SECRET, job_id="job-1", claim_token=CLAIM_TOKEN, generation=1, result="IDENTITY_MATCHED")

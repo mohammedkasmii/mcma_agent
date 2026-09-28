@@ -93,7 +93,8 @@ def build_app(
     portal_login_enabled: bool = True,
     server_state_provider=None,
     crypto_backend: "CryptoBackend | None" = None,
-    agent_execution_available: bool = True,
+    dry_run_creation_available: bool = True,
+    execute_creation_available: bool = True,
     runner_registry_enabled: bool = False,
 ):
     """Assembles the one ASGI app: authenticated API + the built employee
@@ -196,7 +197,8 @@ def build_app(
         notification_refresher=_refresh_notifications if supervisor is not None else None,
         connection_state_tracker=connection_tracker,
         server_state_provider=server_state_provider,
-        agent_execution_available=agent_execution_available,
+        dry_run_creation_available=dry_run_creation_available,
+        execute_creation_available=execute_creation_available,
         runner_registry=runner_registry_enabled,
     )
     if lifespan is not None:

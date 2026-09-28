@@ -22,6 +22,46 @@ NADOR = "acct-mcma-nador"
 MAMDA_OUJDA = "acct-mamda-oujda"
 MAMDA_NADOR = "acct-mamda-nador"
 
+# A proven-valid minimal Wexia payload (tests/execution/runner/
+# runner_test_support.py's own MODE_NORMAL_TYPED_INPUT, duplicated here --
+# bounded duplication over a cross-directory import, the established
+# INC-06+ convention -- see that module's own docstring): parses via
+# parse_wexia, resolves to workflow_name "mission_normal", and builds a
+# real, non-needs-review ProposedPlan. Used wherever a dispatch test needs
+# a typed_input that survives start_job()'s real server-side planning.
+VALID_WORKFLOW_NAME = "mission_normal"
+VALID_TYPED_INPUT = {
+    "dossier": {
+        "id_sinistre": "699001",
+        "mission_type": "normal",
+        "incident_description": "MODE NORMAL",
+        "is_reform": False,
+    },
+    "vehicule": {"license_plate": "77001-C-3"},
+    "chiffrages": [
+        {
+            "id": "CH-NORMAL-1",
+            "status": "approved",
+            "is_final": True,
+            "scenario_type": "repair",
+            "total_cost": 10,
+            "tax_amount": 2,
+            "lignes_pieces": [
+                {"item_type": "part", "item_name": "pare-choc avant", "part_type": "original", "subtotal": 10}
+            ],
+        }
+    ],
+}
+
+# Same shape, but with a responsibility_rate outside {0, 50, 100} -- fails
+# closed to a NeedsReview entry (mcma.planning.plan's own
+# _build_form_field_intents) WITHOUT making the whole plan unbuildable, so
+# start_job's needs_review branch can be exercised deterministically.
+NEEDS_REVIEW_TYPED_INPUT = {
+    **VALID_TYPED_INPUT,
+    "dossier": {**VALID_TYPED_INPUT["dossier"], "responsibility_rate": 37},
+}
+
 
 @pytest.fixture()
 def db_path(tmp_path: Path) -> Path:

@@ -921,3 +921,140 @@ def test_shutdown_never_reports_done_while_the_browser_worker_is_still_alive():
     controller = _new_controller(browser_worker=_SlowBrowserWorker())
     controller.start()
     assert controller.shutdown(timeout=0.05) is False
+
+
+# --------------------------------------------------------------------- #
+# Phase 1C-B -- the job-polling worker (item D wiring)
+# --------------------------------------------------------------------- #
+
+from mcma.app.workstation_runner.job_worker import LifecycleEvent as JobLifecycleEvent  # noqa: E402
+
+
+class _NullJobLifecycle:
+    """Never actually loops -- mirrors _NullLifecycle's shape for
+    JobPollingWorker's own run_forever(secret, stop_event) signature."""
+
+    def run_forever(self, secret, stop_event):
+        stop_event.wait()  # blocks until controller.shutdown() sets it
+
+
+class _RecordingJobLifecycle:
+    def __init__(self):
+        self.run_calls: list = []
+
+    def run_forever(self, secret, stop_event):
+        self.run_calls.append(secret)
+        stop_event.wait()
+
+
+def _paired_controller(*, job_lifecycle_factory=None, on_job_status=None, **kwargs):
+    store = _FakeIdentityStore(existing=None)
+    result = EnrollResult(
+        runner_id="a" * 32, runner_secret="mcma_rs_" + "b" * 40, runner_label="Poste-1",
+        allowed_account_ids=("acct-mcma-oujda",), heartbeat_interval_seconds=10, offline_after_seconds=30,
+    )
+    controller = _new_controller(
+        _config(), store, lambda config: _FakeClient(enroll_result=result), lambda client: _NullLifecycle(),
+        lambda status: None, job_lifecycle_factory=job_lifecycle_factory, on_job_status=on_job_status, **kwargs,
+    )
+    return controller, store
+
+
+def test_job_worker_is_started_after_successful_pairing():
+    job_lifecycle = _RecordingJobLifecycle()
+    controller, store = _paired_controller(job_lifecycle_factory=lambda client: job_lifecycle)
+    with _ShutdownGuard(controller):
+        controller.start()
+        controller.submit_pairing("mcma_pc_x")
+        assert _wait_until(lambda: store.saved is not None)
+        assert _wait_until(lambda: len(job_lifecycle.run_calls) == 1)
+        assert job_lifecycle.run_calls == [store.saved.runner_secret]
+
+
+def test_job_worker_is_never_started_without_a_job_lifecycle_factory():
+    """Backward compatible: a controller built the way every pre-1C-B test
+    already does (no job_lifecycle_factory) never starts a job worker."""
+    controller, store = _paired_controller(job_lifecycle_factory=None)
+    with _ShutdownGuard(controller):
+        controller.start()
+        controller.submit_pairing("mcma_pc_x")
+        assert _wait_until(lambda: store.saved is not None)
+        assert controller._job_worker is None
+
+
+def test_shutdown_stops_the_job_worker_too():
+    job_lifecycle = _RecordingJobLifecycle()
+    controller, store = _paired_controller(job_lifecycle_factory=lambda client: job_lifecycle)
+    controller.start()
+    controller.submit_pairing("mcma_pc_x")
+    assert _wait_until(lambda: len(job_lifecycle.run_calls) == 1)
+    assert controller.shutdown(timeout=2.0) is True
+    assert not controller._job_worker.is_alive()
+
+
+def test_job_worker_is_ready_gate_requires_connection_and_a_ready_account():
+    session_manager = _session_manager()
+    controller = _new_controller(session_manager=session_manager)
+    # Not connected yet -- never ready regardless of accounts.
+    assert controller._job_worker_is_ready() is False
+
+    controller._connected.set()
+    # Connected, but no account tracked/READY yet.
+    assert controller._job_worker_is_ready() is False
+
+    from mcma.app.workstation_runner.sessions import ProbeOutcome
+
+    session_manager.reconcile_allowed_accounts((OUJDA,))
+    assert controller._job_worker_is_ready() is False  # PENDING_VERIFICATION or NOT_CONFIGURED, not READY
+
+    session_manager.record_login_success(OUJDA)
+    assert controller._job_worker_is_ready() is True
+
+
+def test_job_worker_is_ready_gate_is_false_once_shutdown_begins():
+    session_manager = _session_manager()
+    controller = _new_controller(session_manager=session_manager)
+    controller._connected.set()
+    session_manager.reconcile_allowed_accounts((OUJDA,))
+    session_manager.record_login_success(OUJDA)
+    assert controller._job_worker_is_ready() is True
+    controller.shutdown(timeout=0.5)
+    assert controller._job_worker_is_ready() is False
+
+
+def test_connection_failed_clears_the_ready_gate():
+    controller = _new_controller()
+    controller._connected.set()
+    controller._handle_lifecycle_event(LifecycleEvent.CONNECTION_FAILED)
+    assert controller._connected.is_set() is False
+
+
+def test_connected_sets_the_ready_gate():
+    controller = _new_controller()
+    controller._handle_lifecycle_event(LifecycleEvent.CONNECTED)
+    assert controller._connected.is_set() is True
+
+
+def test_job_status_events_translate_to_fixed_non_sensitive_text():
+    statuses = []
+    controller = _new_controller(on_job_status=statuses.append)
+    controller._handle_job_event(JobLifecycleEvent.JOB_STARTED)
+    controller._handle_job_event(JobLifecycleEvent.JOB_SUCCEEDED)
+    controller._handle_job_event(JobLifecycleEvent.JOB_FAILED)
+    assert statuses == [
+        "En attente de travail",  # the initial idle text, emitted at construction
+        "Vérification du dossier en cours",
+        "Vérification terminée",
+        "Échec de la vérification",
+    ]
+
+
+def test_job_status_text_never_contains_a_dossier_identifier_or_token():
+    """JobLifecycleEvent carries no payload at all -- there is nothing for
+    the fixed text map to leak, by construction."""
+    for event in JobLifecycleEvent:
+        for text in {
+            "En attente de travail", "Vérification du dossier en cours",
+            "Vérification terminée", "Échec de la vérification",
+        }:
+            assert "job-" not in text and "mcma_ct_" not in text and "acct-" not in text

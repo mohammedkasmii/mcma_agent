@@ -1,7 +1,9 @@
 """INC-12 -- every transition writes its outbox event in the same
 transaction as the status change."""
 
-from mcma.execution.jobs import enqueue_dry_run, transition
+import pytest
+
+from mcma.execution.jobs import TransitionRequiresActiveTransaction, enqueue_dry_run, transition
 from jobs_test_support import ACCOUNT_ID, USER_ID, WORKFLOW, input_hash_for, typed_input_bytes
 
 
@@ -46,3 +48,61 @@ def test_transition_to_unknown_status_is_rejected_by_the_schema(conn, encryptor)
         transition(conn, job_id, "NOT_A_REAL_STATUS")
     # The failed transition rolled back -- status and outbox unaffected.
     assert conn.execute("SELECT status FROM automation_jobs WHERE job_id=?", (job_id,)).fetchone()["status"] == "QUEUED"
+
+
+# --------------------------------------------------------------------- #
+# Transaction-helper hardening (Phase 1C-B release-blocker correction):
+# transition(in_transaction=True) must fail closed -- never silently
+# autocommit each statement as its own separate write -- when no
+# transaction is actually active on the connection.
+# --------------------------------------------------------------------- #
+
+
+def test_in_transaction_true_without_an_active_transaction_fails_closed(conn, encryptor):
+    payload = {"dossier": "p"}
+    job_id = enqueue_dry_run(
+        conn, account_id=ACCOUNT_ID, requested_by_user_id=USER_ID, workflow_name=WORKFLOW,
+        input_hash=input_hash_for(payload), typed_input_bytes=typed_input_bytes(payload),
+        idempotency_key="trans-3", encryptor=encryptor,
+    )
+    assert conn.in_transaction is False
+    with pytest.raises(TransitionRequiresActiveTransaction):
+        transition(conn, job_id, "PLANNING", in_transaction=True)
+    # Never silently autocommitted -- the job is completely untouched.
+    assert conn.execute("SELECT status FROM automation_jobs WHERE job_id=?", (job_id,)).fetchone()["status"] == "QUEUED"
+
+
+def test_in_transaction_true_with_an_active_transaction_succeeds(conn, encryptor):
+    payload = {"dossier": "q"}
+    job_id = enqueue_dry_run(
+        conn, account_id=ACCOUNT_ID, requested_by_user_id=USER_ID, workflow_name=WORKFLOW,
+        input_hash=input_hash_for(payload), typed_input_bytes=typed_input_bytes(payload),
+        idempotency_key="trans-4", encryptor=encryptor,
+    )
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        assert conn.in_transaction is True
+        transition(conn, job_id, "PLANNING", in_transaction=True)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    assert conn.execute("SELECT status FROM automation_jobs WHERE job_id=?", (job_id,)).fetchone()["status"] == "PLANNING"
+
+
+def test_transition_requires_active_transaction_is_never_a_public_autocommit_path(conn, encryptor):
+    """There is no way to call transition(in_transaction=True) and have it
+    quietly succeed without an active transaction -- the guard raises
+    before any read/write of automation_jobs beyond the initial (harmless)
+    existence lookup."""
+    payload = {"dossier": "r"}
+    job_id = enqueue_dry_run(
+        conn, account_id=ACCOUNT_ID, requested_by_user_id=USER_ID, workflow_name=WORKFLOW,
+        input_hash=input_hash_for(payload), typed_input_bytes=typed_input_bytes(payload),
+        idempotency_key="trans-5", encryptor=encryptor,
+    )
+    events_before = conn.execute("SELECT COUNT(*) AS c FROM event_outbox").fetchone()["c"]
+    with pytest.raises(TransitionRequiresActiveTransaction):
+        transition(conn, job_id, "PLANNING", in_transaction=True)
+    events_after = conn.execute("SELECT COUNT(*) AS c FROM event_outbox").fetchone()["c"]
+    assert events_after == events_before

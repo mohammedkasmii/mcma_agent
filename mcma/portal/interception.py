@@ -21,7 +21,7 @@ created from that context are covered by the same policy automatically
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Protocol, Sequence, runtime_checkable
 
 from mcma.portal.canonical import canonicalize_request
 from mcma.portal.contracts import Decision, RouteContract, evaluate_request
@@ -240,6 +240,44 @@ class PolicyPhaseError(Exception):
     mission authorization, or activating write twice)."""
 
 
+def _validate_mission_route_contract(
+    mission_route_contract: RouteContract, *, allowed_host: str, expected_route: str
+) -> None:
+    """Shared by WriterPolicyController and ReadOnlyMissionPolicyController
+    (Phase 1C-B correction): validates the ONE dynamically-constructed
+    mission-open contract itself (it cannot have been validated anywhere
+    else, since it did not exist before the mission id was resolved by
+    search) before ever admitting it: host equals allowed_host, method GET,
+    capability "read", the exact mission-open operation type, no body
+    fields, no query fields, the exact canonical route derived from the
+    caller's already-validated positive bounded-integer mission id
+    (checked against `expected_route`), and not permanently blocked.
+    Raises ValueError on any failure -- never silently narrows or widens
+    what it is given."""
+    c = mission_route_contract
+    if c.host != allowed_host:
+        raise ValueError("mission route contract host must equal allowed_host")
+    if c.method != "GET":
+        raise ValueError("mission route contract must be GET")
+    if c.capability != "read":
+        raise ValueError("mission route contract capability must be 'read'")
+    if c.operation_type != MISSION_OPEN_OPERATION_TYPE:
+        raise ValueError(
+            f"mission route contract operation_type must be {MISSION_OPEN_OPERATION_TYPE!r}"
+        )
+    if c.body_fields:
+        raise ValueError("mission route contract must not declare body fields")
+    if c.query_fields:
+        raise ValueError("mission route contract must not declare unexpected query fields")
+    if c.route != expected_route:
+        raise ValueError(
+            "mission route contract route does not match the canonical route "
+            "derived from the validated mission id"
+        )
+    if is_permanently_blocked(c.route):
+        raise ValueError("mission route contract targets a permanently blocked route")
+
+
 class WriterPolicyController:
     """Not a general-purpose staged-policy API -- see module note above.
     Only mcma.portal.writer constructs and holds a direct reference to
@@ -293,29 +331,10 @@ class WriterPolicyController:
             raise PolicyPhaseError(
                 f"authorize_exact_mission_route requires SEARCH_READ, current phase is {self._phase!r}"
             )
-        c = mission_route_contract
-        if c.host != self._allowed_host:
-            raise ValueError("mission route contract host must equal allowed_host")
-        if c.method != "GET":
-            raise ValueError("mission route contract must be GET")
-        if c.capability != "read":
-            raise ValueError("mission route contract capability must be 'read'")
-        if c.operation_type != MISSION_OPEN_OPERATION_TYPE:
-            raise ValueError(
-                f"mission route contract operation_type must be {MISSION_OPEN_OPERATION_TYPE!r}"
-            )
-        if c.body_fields:
-            raise ValueError("mission route contract must not declare body fields")
-        if c.query_fields:
-            raise ValueError("mission route contract must not declare unexpected query fields")
-        if c.route != expected_route:
-            raise ValueError(
-                "mission route contract route does not match the canonical route "
-                "derived from the validated mission id"
-            )
-        if is_permanently_blocked(c.route):
-            raise ValueError("mission route contract targets a permanently blocked route")
-        self._active_contracts = self._active_contracts + (c,)
+        _validate_mission_route_contract(
+            mission_route_contract, allowed_host=self._allowed_host, expected_route=expected_route,
+        )
+        self._active_contracts = self._active_contracts + (mission_route_contract,)
         self._phase = WriterPolicyPhase.MISSION_READ
 
     def activate_write_once(self) -> None:
@@ -363,7 +382,88 @@ class AbortOnlyHandle:
         self._controller.abort_deny_all()
 
 
-def _make_phased_route_handler(controller: WriterPolicyController, allowed_host: str):
+# --------------------------------------------------------------------- #
+# ReadOnlyMissionPolicyController -- the read-only analog of
+# WriterPolicyController's SEARCH_READ -> MISSION_READ transition ONLY
+# (Phase 1C-B release-blocker correction). Used exclusively by
+# mcma.portal.capabilities.open_reader's OPTIONAL dynamic-mission-
+# authorization mode (dynamic_mission_authorization=True) -- the default
+# (False) leaves ReadCapability's existing static-contract behavior
+# completely unmodified, so every other caller (notification reading,
+# etc.) is unaffected.
+#
+# This is NOT WriterPolicyController with a write step left unused: it is
+# a SEPARATE, narrower class with NO write-activation method anywhere on
+# it -- there is nothing to call, by accident or otherwise, that could
+# ever add a row_write/native_recalc contract. Exactly one transition
+# exists, usable at most once:
+#
+#   SEARCH_READ --authorize_exact_mission_route()--> MISSION_READ
+#
+# There is no abort_deny_all() either: a read-only session that fails
+# simply closes its context (ReadCapability.close()), which is already
+# the sole teardown path for every ReadCapability outcome today.
+# --------------------------------------------------------------------- #
+
+
+class ReadOnlyMissionPolicyPhase(Enum):
+    SEARCH_READ = "search_read"
+    MISSION_READ = "mission_read"
+
+
+class ReadOnlyMissionPolicyController:
+    """Not a general-purpose staged-policy API -- see module note above.
+    Only mcma.portal.capabilities.ReadCapability (when constructed with
+    dynamic_mission_authorization=True) holds a direct reference to this
+    class."""
+
+    def __init__(self, initial_contracts: Sequence[RouteContract], allowed_host: str) -> None:
+        self._phase = ReadOnlyMissionPolicyPhase.SEARCH_READ
+        self._active_contracts: tuple[RouteContract, ...] = tuple(initial_contracts)
+        self._allowed_host = allowed_host
+
+    @property
+    def phase(self) -> ReadOnlyMissionPolicyPhase:
+        return self._phase
+
+    def contracts(self) -> tuple[RouteContract, ...]:
+        """Read fresh by the phased route handler on every single
+        request -- see _make_phased_route_handler's own docstring."""
+        return self._active_contracts
+
+    def authorize_exact_mission_route(
+        self, mission_route_contract: RouteContract, *, expected_route: str
+    ) -> None:
+        """May run exactly once, only from SEARCH_READ. Same validation as
+        WriterPolicyController's own method (shared via
+        _validate_mission_route_contract) -- host, method GET, capability
+        "read", the exact mission-open operation type, no body/query
+        fields, the exact canonical route derived from the caller's
+        already-validated positive bounded-integer mission id, and not
+        permanently blocked."""
+        if self._phase is not ReadOnlyMissionPolicyPhase.SEARCH_READ:
+            raise PolicyPhaseError(
+                f"authorize_exact_mission_route requires SEARCH_READ, current phase is {self._phase!r}"
+            )
+        _validate_mission_route_contract(
+            mission_route_contract, allowed_host=self._allowed_host, expected_route=expected_route,
+        )
+        self._active_contracts = self._active_contracts + (mission_route_contract,)
+        self._phase = ReadOnlyMissionPolicyPhase.MISSION_READ
+
+
+@runtime_checkable
+class PhasedPolicyController(Protocol):
+    """Structural: satisfied by both WriterPolicyController and
+    ReadOnlyMissionPolicyController -- the phased guard mechanism below
+    (_make_phased_route_handler/install_phased_portal_guard) only ever
+    needs the current contract set, read fresh on every request; it has no
+    reason to know or care which concrete state machine produced it."""
+
+    def contracts(self) -> tuple[RouteContract, ...]: ...
+
+
+def _make_phased_route_handler(controller: PhasedPolicyController, allowed_host: str):
     """Same fail-closed discipline as _make_route_handler, but reads the
     controller's current contract set fresh on every request instead of a
     closed-over sequence -- the mechanism that makes ABORTED deny
@@ -392,13 +492,15 @@ def _make_phased_route_handler(controller: WriterPolicyController, allowed_host:
 
 async def install_phased_portal_guard(
     context: "BrowserContext",
-    controller: WriterPolicyController,
+    controller: PhasedPolicyController,
     allowed_host: str,
 ) -> None:
     """Installs the phased route handler bound to an already-constructed
-    WriterPolicyController. Mirrors install_portal_guard's own
-    close-on-failure discipline. Internal to mcma.portal.writer's
-    construction sequence -- not a general-purpose staged API."""
+    phased policy controller (WriterPolicyController or
+    ReadOnlyMissionPolicyController). Mirrors install_portal_guard's own
+    close-on-failure discipline. Internal to mcma.portal.writer's and
+    mcma.portal.capabilities.open_reader's own construction sequences --
+    not a general-purpose staged API."""
     try:
         await context.route("**/*", _make_phased_route_handler(controller, allowed_host))
         await context.route_web_socket("**/*", _deny_websocket)

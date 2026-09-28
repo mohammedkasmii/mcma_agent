@@ -15,7 +15,21 @@ from mcma.app.workstation_runner.browser_worker import BrowserSessionWorker
 from mcma.app.workstation_runner.config import RunnerConfig
 from mcma.app.workstation_runner.heartbeat import HeartbeatWorker, LifecycleEvent
 from mcma.app.workstation_runner.http_client import RegistryConnectionError, RegistryProtocolError
-from mcma.app.workstation_runner.sessions import VerificationScheduler, WorkstationSessionManager
+from mcma.app.workstation_runner.job_worker import JobPollingWorker
+from mcma.app.workstation_runner.job_worker import LifecycleEvent as JobLifecycleEvent
+from mcma.app.workstation_runner.sessions import AccountState, VerificationScheduler, WorkstationSessionManager
+
+# Phase 1C-B, item F: a small, non-sensitive workstation job-status
+# indication. Fixed French text only -- never a dossier identifier, a
+# claim token, a credential, or raw exception text (JobLifecycleEvent
+# itself carries no such payload; see job_worker.py's own docstring).
+_JOB_STATUS_TEXT = {
+    JobLifecycleEvent.JOB_STARTED: "Vérification du dossier en cours",
+    JobLifecycleEvent.JOB_SUCCEEDED: "Vérification terminée",
+    JobLifecycleEvent.JOB_FAILED: "Échec de la vérification",
+    JobLifecycleEvent.CONNECTION_FAILED: "En attente de travail",
+}
+_JOB_STATUS_IDLE_TEXT = "En attente de travail"
 
 
 class ControllerState(Enum):
@@ -65,6 +79,8 @@ class RunnerController:
         browser_worker: BrowserSessionWorker,
         verification_scheduler: VerificationScheduler,
         on_accounts_changed: Callable[[tuple], None] | None = None,
+        job_lifecycle_factory: Callable[[object], object] | None = None,
+        on_job_status: Callable[[str], None] | None = None,
     ) -> None:
         self._config = config
         self._identity_store = identity_store
@@ -90,6 +106,26 @@ class RunnerController:
         self._browser_worker = browser_worker
         self._verification_scheduler = verification_scheduler
         self._on_accounts_changed = on_accounts_changed
+
+        # Phase 1C-B integration: the DRY_RUN job-polling worker. Started
+        # only once identity exists (same gate as heartbeat -- see
+        # _start_heartbeat), on its OWN RegistryHttpClient instance (never
+        # shared with the heartbeat worker's), and torn down in shutdown()
+        # alongside the other two non-daemon workers this controller owns.
+        # `job_lifecycle_factory`/`on_job_status` are both optional so
+        # EXISTING callers/tests that construct a RunnerController without
+        # any knowledge of Phase 1C-B keep working unchanged.
+        self._job_lifecycle_factory = job_lifecycle_factory
+        self._on_job_status = on_job_status
+        self._job_worker: JobPollingWorker | None = None
+        # Tracks "currently CONNECTED" for the job worker's own is_ready()
+        # gate (claims no job while disconnected) -- set/cleared from
+        # _handle_lifecycle_event, on whatever thread the heartbeat worker
+        # runs on. threading.Event is already safe to read/set from any
+        # thread without extra locking.
+        self._connected = threading.Event()
+        if self._on_job_status is not None:
+            self._on_job_status(_JOB_STATUS_IDLE_TEXT)
 
     def _emit(self, state: ControllerState, text: str | None = None) -> None:
         self._on_status(StatusMessage(state, text if text is not None else _TEXT[state]))
@@ -334,6 +370,48 @@ class RunnerController:
         # (see its comment), not an ordering concern here.
         self._emit(ControllerState.PAIRED_CONNECTING)
         worker.start()
+        self._start_job_worker(runner_secret)
+
+    def _job_worker_is_ready(self) -> bool:
+        """Claims no job while disconnected, shutting down, or before
+        account reconciliation has reported at least one account READY --
+        checked fresh on every poll, never cached."""
+        if self._closing.is_set() or not self._connected.is_set():
+            return False
+        return any(view.state is AccountState.READY for view in self._session_manager.snapshot())
+
+    def _start_job_worker(self, runner_secret: str) -> None:
+        """Phase 1C-B: started alongside the heartbeat, on its own
+        RegistryHttpClient instance (never shared with the heartbeat
+        worker's own client). A no-op when this controller was constructed
+        without job-worker support (job_lifecycle_factory is None) -- kept
+        optional so existing callers/tests are unaffected."""
+        if self._job_lifecycle_factory is None:
+            return
+        client = None
+        try:
+            client = self._client_factory(self._config)
+            lifecycle = self._job_lifecycle_factory(client)
+            worker = JobPollingWorker(lifecycle, runner_secret)
+        except Exception:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            self._log("job_worker_start_failed")
+            return
+        self._job_worker = worker
+        worker.start()
+
+    def _handle_job_event(self, event: JobLifecycleEvent) -> None:
+        """on_event for JobPollingLifecycle -- fixed, non-sensitive French
+        text only (item F). JobLifecycleEvent itself carries no dossier
+        identifier, claim token, credential, or exception text -- see
+        job_worker.py's own docstring -- so there is nothing here to
+        redact, only to translate."""
+        if self._on_job_status is not None:
+            self._on_job_status(_JOB_STATUS_TEXT.get(event, _JOB_STATUS_IDLE_TEXT))
 
     def _handle_lifecycle_event(self, event: LifecycleEvent) -> None:
         # CONNECTED is deliberately not logged here: it recurs on every
@@ -342,12 +420,15 @@ class RunnerController:
         # UNAUTHORIZED are real, comparatively rare anomalies worth a
         # record.
         if event is LifecycleEvent.CONNECTED:
+            self._connected.set()
             self._emit(ControllerState.PAIRED_CONNECTED)
             self._run_periodic_verification()
         elif event is LifecycleEvent.CONNECTION_FAILED:
+            self._connected.clear()
             self._log("heartbeat_connection_failed")
             self._emit(ControllerState.PAIRED_DISCONNECTED)
         elif event is LifecycleEvent.UNAUTHORIZED:
+            self._connected.clear()
             # CLEANUP: this controller is the SOLE owner of clearing the
             # local identity on a 401 -- HeartbeatLifecycle only reports the
             # event and never touches identity_store itself (single
@@ -397,18 +478,23 @@ class RunnerController:
         called), and only does work that is still outstanding.
 
         Ordering: the pairing thread is joined/checked FIRST, THEN the
-        heartbeat worker, THEN the browser session worker -- never any
-        other order. If a pairing attempt already in flight succeeds while
-        shutdown() is being polled, its identity is persisted but
-        _finish_successful_pairing() skips starting a new heartbeat once
-        closing has begun (see there) -- so by the time this method
-        observes the pairing thread has finished, self._heartbeat_worker
-        can no longer change underneath it, and checking it after is safe.
+        heartbeat worker, THEN the job-polling worker (Phase 1C-B), THEN
+        the browser session worker -- never any other order. If a pairing
+        attempt already in flight succeeds while shutdown() is being
+        polled, its identity is persisted but _finish_successful_pairing()
+        skips starting a new heartbeat/job worker once closing has begun
+        (see there) -- so by the time this method observes the pairing
+        thread has finished, self._heartbeat_worker/self._job_worker can no
+        longer change underneath it, and checking them after is safe. The
+        job worker's OWN internal shutdown handling (release before start,
+        cancel-and-report-RUNNER_CANCELLED once RUNNING) already ran on its
+        own thread by the time its stop() here returns -- this method only
+        sets the stop signal and joins, exactly like the heartbeat worker.
         The browser session worker is always owned (never None) and its
         own stop() is itself bounded, idempotent, and safe even if it was
         never started -- so it is always the final step here, and this
-        method returns True only once every one of the three non-daemon
-        workers it owns has actually finished."""
+        method returns True only once every one of the (up to) four
+        non-daemon workers it owns has actually finished."""
         self._closing.set()
         pairing_done = self._pairing_thread is None or not self._pairing_thread.is_alive()
         if not pairing_done:
@@ -421,5 +507,10 @@ class RunnerController:
             self._heartbeat_worker.stop(timeout=timeout)
             heartbeat_done = not self._heartbeat_worker.is_alive()
         if not heartbeat_done:
+            return False
+        job_worker_done = self._job_worker is None or not self._job_worker.is_alive()
+        if not job_worker_done:
+            job_worker_done = self._job_worker.stop(timeout=timeout)
+        if not job_worker_done:
             return False
         return self._browser_worker.stop(timeout=timeout)

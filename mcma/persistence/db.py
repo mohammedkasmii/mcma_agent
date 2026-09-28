@@ -104,6 +104,17 @@ class SerializedConnection:
         self._in_transaction = False
 
     @property
+    def in_transaction(self) -> bool:
+        """True from a successful BEGIN through COMMIT/ROLLBACK -- the
+        SAME flag execute() itself toggles, never a separate re-derivation
+        that could drift from it. Public so a caller that must guard
+        against being invoked OUTSIDE an active transaction (e.g.
+        mcma.execution.jobs.transition's own in_transaction=True fail-
+        closed check) can ask this connection the truth, without needing
+        to track it independently."""
+        return self._in_transaction
+
+    @property
     def row_factory(self):
         return self._conn.row_factory
 

@@ -10,12 +10,13 @@ from __future__ import annotations
 import ssl
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlsplit
 
 import httpx
 
 from mcma.app.workstation_runner.protocol import (
-    APP_VERSION, CLAIM_TOKEN_PREFIX, JOB_MODES, MAX_CLAIM_RESPONSE_BYTES, MAX_CLAIM_TOKEN_LENGTH,
+    APP_VERSION, CLAIM_TOKEN_PREFIX, FINISH_RESULTS, JOB_MODES, MAX_CLAIM_RESPONSE_BYTES, MAX_CLAIM_TOKEN_LENGTH,
     MAX_HEARTBEAT_INTERVAL_SECONDS, MAX_OFFLINE_AFTER_SECONDS, MAX_RUNNER_SECRET_LENGTH, MAX_TYPED_INPUT_DEPTH,
     MIN_HEARTBEAT_INTERVAL_SECONDS, MIN_OFFLINE_AFTER_SECONDS, PROTOCOL_VERSION, RELEASE_REASONS,
     RUNNER_ACCOUNT_IDS, RUNNER_SECRET_PREFIX, SESSION_STATES,
@@ -120,6 +121,29 @@ class ReleaseResult:
     server_time: str
 
 
+@dataclass(frozen=True)
+class StartedJob:
+    """Phase 1C-B: the result of /runner/jobs/{job_id}/start. Two shapes
+    only -- `status="NEEDS_REVIEW"` (the read-only gate never needs to run;
+    plan_hash/lease_expires_at are both None, and a caller must not launch
+    a browser) or `status="RUNNING"` (plan_hash/lease_expires_at are both
+    present -- the caller cross-checks plan_hash against its OWN local
+    rebuild BEFORE ever launching a browser, per the executor's own
+    contract)."""
+
+    status: str
+    job_status: str
+    plan_hash: Optional[str]
+    lease_expires_at: Optional[str]
+
+
+@dataclass(frozen=True)
+class FinishResult:
+    status: str
+    job_status: str
+    server_time: str
+
+
 # Bounds for validating a claim response -- MAX_CLAIM_RESPONSE_BYTES and
 # MAX_TYPED_INPUT_DEPTH come from protocol.py (the server's own dispatch.py
 # enforces the SAME two bounds before a claim row is ever inserted -- see
@@ -131,6 +155,15 @@ _MAX_WORKFLOW_NAME_LENGTH = 200
 _MAX_INPUT_HASH_LENGTH = 128
 _MAX_JOB_ID_LENGTH = 200
 _MAX_TIMESTAMP_LENGTH = 64  # generous bound for an ISO-8601 timestamp string
+_MAX_PLAN_HASH_LENGTH = 128  # a sha256 hex digest is 64 chars; generous margin
+
+# The exact, closed response shapes start_job()/finish_job() ever accept --
+# never a caller-supplied job/account/mode influencing which one wins.
+_START_NEEDS_REVIEW_FIELDS = frozenset({"status", "job_status"})
+_START_RUNNING_FIELDS = frozenset({"status", "job_status", "plan_hash", "lease_expires_at"})
+_FINISH_RESPONSE_FIELDS = frozenset({"status", "job_status", "server_time"})
+_FINISH_DISPATCH_STATUSES = frozenset({"SUCCEEDED", "FAILED"})
+_FINISH_JOB_STATUSES = frozenset({"DRY_RUN_VERIFIED", "IDENTITY_FAILED"})
 
 
 def _json_depth(value: object, *, _current: int = 0) -> int:
@@ -462,3 +495,52 @@ class RegistryHttpClient:
         ):
             raise RegistryProtocolError("release response failed validation")
         return ReleaseResult(status=body["status"], server_time=body["server_time"])
+
+    def start_job(self, runner_secret: str, *, job_id: str, claim_token: str, generation: int) -> StartedJob:
+        """Two closed response shapes only -- see StartedJob's own
+        docstring. Anything else (a third status, extra/missing fields,
+        malformed plan_hash) fails closed with RegistryProtocolError,
+        never a guess at which shape was intended."""
+        body = self._post(
+            f"/runner/jobs/{job_id}/start",
+            json_body={"claim_token": claim_token, "generation": generation},
+            headers={"Authorization": f"Bearer {runner_secret}"},
+        )
+        assert body is not None  # allow_no_content defaults to False: _post never returns None here
+        if set(body) == _START_NEEDS_REVIEW_FIELDS:
+            if body.get("status") != "NEEDS_REVIEW" or body.get("job_status") != "NEEDS_REVIEW":
+                raise RegistryProtocolError("start response failed validation")
+            return StartedJob(status="NEEDS_REVIEW", job_status="NEEDS_REVIEW", plan_hash=None, lease_expires_at=None)
+        if set(body) == _START_RUNNING_FIELDS:
+            if (
+                body.get("status") != "RUNNING"
+                or body.get("job_status") != "READ_ONLY_IDENTITY_CHECK"
+                or not _valid_bounded_str(body.get("plan_hash"), _MAX_PLAN_HASH_LENGTH)
+                or not _valid_bounded_str(body.get("lease_expires_at"), _MAX_TIMESTAMP_LENGTH)
+            ):
+                raise RegistryProtocolError("start response failed validation")
+            return StartedJob(
+                status="RUNNING", job_status="READ_ONLY_IDENTITY_CHECK",
+                plan_hash=body["plan_hash"], lease_expires_at=body["lease_expires_at"],
+            )
+        raise RegistryProtocolError("start response failed validation")
+
+    def finish_job(self, runner_secret: str, *, job_id: str, claim_token: str, generation: int, result: str) -> FinishResult:
+        if result not in FINISH_RESULTS:
+            # Never sent to the server: this is a fixed, closed client-side
+            # enum, not a caller-supplied free-text status/error field.
+            raise ValueError("result must be one of FINISH_RESULTS")
+        body = self._post(
+            f"/runner/jobs/{job_id}/finish",
+            json_body={"claim_token": claim_token, "generation": generation, "result": result},
+            headers={"Authorization": f"Bearer {runner_secret}"},
+        )
+        assert body is not None  # allow_no_content defaults to False: _post never returns None here
+        if (
+            set(body) != _FINISH_RESPONSE_FIELDS
+            or body.get("status") not in _FINISH_DISPATCH_STATUSES
+            or body.get("job_status") not in _FINISH_JOB_STATUSES
+            or not _valid_bounded_str(body.get("server_time"), _MAX_TIMESTAMP_LENGTH)
+        ):
+            raise RegistryProtocolError("finish response failed validation")
+        return FinishResult(status=body["status"], job_status=body["job_status"], server_time=body["server_time"])

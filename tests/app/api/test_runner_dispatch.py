@@ -23,6 +23,25 @@ from mcma.persistence.repositories.jobs import AutomationJobsRepository, JobInpu
 PASSWORD = "correct horse battery"
 ALL = [OUJDA, NADOR, MAMDA_OUJDA]
 
+# A proven-valid minimal Wexia payload (tests/execution/runner/
+# runner_test_support.py's own MODE_NORMAL_TYPED_INPUT, duplicated here --
+# bounded duplication over a cross-directory import, the established
+# INC-06+ convention): parses via parse_wexia, resolves to workflow_name
+# "mission_normal", and builds a real, non-needs-review ProposedPlan.
+VALID_WORKFLOW_NAME = "mission_normal"
+VALID_TYPED_INPUT = {
+    "dossier": {
+        "id_sinistre": "699001", "mission_type": "normal",
+        "incident_description": "MODE NORMAL", "is_reform": False,
+    },
+    "vehicule": {"license_plate": "77001-C-3"},
+    "chiffrages": [{
+        "id": "CH-NORMAL-1", "status": "approved", "is_final": True, "scenario_type": "repair",
+        "total_cost": 10, "tax_amount": 2,
+        "lignes_pieces": [{"item_type": "part", "item_name": "pare-choc avant", "part_type": "original", "subtotal": 10}],
+    }],
+}
+
 
 def _app(conn):
     return create_api_app(
@@ -83,18 +102,39 @@ def _ready_runner(w, *, target=None) -> str:
     return secret
 
 
-def _seed_job(w, *, job_id, account_id=OUJDA, user_id=None, mode="DRY_RUN", status="QUEUED", typed_input=None) -> None:
+def _seed_job(
+    w, *, job_id, account_id=OUJDA, user_id=None, mode="DRY_RUN", status="QUEUED",
+    workflow_name="RENOUVELLEMENT_CONTRAT", typed_input=None,
+) -> None:
     conn = w["conn"]
     payload = json.dumps(typed_input if typed_input is not None else {"claim_id": "C-1"}, sort_keys=True).encode("utf-8")
     content_hash = compute_content_hash(payload)
     AutomationJobsRepository(conn).insert(
         job_id=job_id, account_id=account_id, requested_by_user_id=user_id or w["emp"],
-        workflow_name="RENOUVELLEMENT_CONTRAT", mode=mode, status=status, input_hash=content_hash,
+        workflow_name=workflow_name, mode=mode, status=status, input_hash=content_hash,
         idempotency_key=job_id, created_at="2026-01-01T00:00:00+00:00", state_version=1,
     )
     JobInputsRepository(conn).insert(
         job_id, content_hash, payload, "CLAIM_DATA", "2026-01-01T00:00:00+00:00", "2027-01-01T00:00:00+00:00",
     )
+
+
+def _seed_startable_job(w, *, job_id="job-1", user_id=None) -> None:
+    _seed_job(
+        w, job_id=job_id, user_id=user_id, workflow_name=VALID_WORKFLOW_NAME, typed_input=VALID_TYPED_INPUT,
+    )
+
+
+def _start(w, secret, job_id, claim_token, generation, **overrides):
+    body = {"claim_token": claim_token, "generation": generation, **overrides}
+    headers = {"Authorization": f"Bearer {secret}"} if secret is not None else {}
+    return _machine(w).post(f"/runner/jobs/{job_id}/start", json=body, headers=headers)
+
+
+def _finish(w, secret, job_id, claim_token, generation, result="IDENTITY_MATCHED", **overrides):
+    body = {"claim_token": claim_token, "generation": generation, "result": result, **overrides}
+    headers = {"Authorization": f"Bearer {secret}"} if secret is not None else {}
+    return _machine(w).post(f"/runner/jobs/{job_id}/finish", json=body, headers=headers)
 
 
 def _claim(w, secret, **overrides):
@@ -309,3 +349,182 @@ def test_release_body_rejects_unknown_and_missing_fields(world):
     assert _release(
         world, secret, "job-1", claimed["claim_token"], claimed["generation"], "RUNNER_SHUTDOWN", extra="x",
     ).status_code == 400
+
+
+# ---------------------------------------- start ---------------------------------------- #
+
+
+def test_start_moves_to_running_and_returns_a_plan_hash(world):
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    response = _start(world, secret, "job-1", claimed["claim_token"], claimed["generation"])
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    assert body["status"] == "RUNNING"
+    assert body["job_status"] == "READ_ONLY_IDENTITY_CHECK"
+    assert body["plan_hash"]
+    job = world["conn"].execute("SELECT status FROM automation_jobs WHERE job_id = 'job-1'").fetchone()
+    assert job["status"] == "READ_ONLY_IDENTITY_CHECK"
+
+
+def test_start_lands_needs_review_without_a_plan_hash(world):
+    secret = _ready_runner(world)
+    needs_review_input = {**VALID_TYPED_INPUT, "dossier": {**VALID_TYPED_INPUT["dossier"], "responsibility_rate": 37}}
+    _seed_job(world, job_id="job-1", workflow_name=VALID_WORKFLOW_NAME, typed_input=needs_review_input)
+    claimed = _claim(world, secret).json()
+    response = _start(world, secret, "job-1", claimed["claim_token"], claimed["generation"])
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "NEEDS_REVIEW"
+    assert "plan_hash" not in body
+    job = world["conn"].execute("SELECT status FROM automation_jobs WHERE job_id = 'job-1'").fetchone()
+    assert job["status"] == "NEEDS_REVIEW"
+
+
+def test_start_requires_bearer_auth(world):
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    response = _start(world, None, "job-1", claimed["claim_token"], claimed["generation"])
+    assert response.status_code == 401
+
+
+def test_start_body_rejects_unknown_and_missing_fields(world):
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    assert _start(world, secret, "job-1", claimed["claim_token"], claimed["generation"], extra="x").status_code == 400
+    response = _machine(world).post(
+        "/runner/jobs/job-1/start", json={"claim_token": claimed["claim_token"]},
+        headers={"Authorization": f"Bearer {secret}"},
+    )
+    assert response.status_code == 400
+
+
+def test_start_cannot_choose_a_job_account_or_mode(world):
+    """The start body carries only claim_token/generation -- a caller
+    cannot add a job/account/mode field to influence which job starts."""
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    response = _start(
+        world, secret, "job-1", claimed["claim_token"], claimed["generation"],
+        account_id=NADOR, mode="EXECUTE",
+    )
+    assert response.status_code == 400
+
+
+def test_start_rejects_a_wrong_claim_token(world):
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    response = _start(world, secret, "job-1", "mcma_ct_not-the-real-token", claimed["generation"])
+    assert response.status_code == 404
+    assert response.json()["error"] == "CLAIM_NOT_FOUND"
+
+
+def test_a_second_start_on_the_same_claim_is_refused(world):
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    first = _start(world, secret, "job-1", claimed["claim_token"], claimed["generation"])
+    assert first.status_code == 200
+    second = _start(world, secret, "job-1", claimed["claim_token"], claimed["generation"])
+    assert second.status_code == 404
+
+
+# --------------------------------------- finish ---------------------------------------- #
+
+
+def test_finish_identity_matched_lands_dry_run_verified(world):
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    _start(world, secret, "job-1", claimed["claim_token"], claimed["generation"])
+    response = _finish(world, secret, "job-1", claimed["claim_token"], claimed["generation"], "IDENTITY_MATCHED")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    body = response.json()
+    assert body["status"] == "SUCCEEDED"
+    assert body["job_status"] == "DRY_RUN_VERIFIED"
+    job = world["conn"].execute("SELECT status FROM automation_jobs WHERE job_id = 'job-1'").fetchone()
+    assert job["status"] == "DRY_RUN_VERIFIED"
+
+
+@pytest.mark.parametrize("result", ["IDENTITY_NOT_MATCHED", "SESSION_UNAVAILABLE", "PORTAL_READ_FAILED", "RUNNER_CANCELLED"])
+def test_finish_non_match_results_land_identity_failed(world, result):
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    _start(world, secret, "job-1", claimed["claim_token"], claimed["generation"])
+    response = _finish(world, secret, "job-1", claimed["claim_token"], claimed["generation"], result)
+    assert response.status_code == 200
+    assert response.json()["job_status"] == "IDENTITY_FAILED"
+
+
+def test_finish_rejects_an_arbitrary_result(world):
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    _start(world, secret, "job-1", claimed["claim_token"], claimed["generation"])
+    response = _finish(world, secret, "job-1", claimed["claim_token"], claimed["generation"], "MADE_UP_RESULT")
+    assert response.status_code == 400
+
+
+def test_finish_requires_bearer_auth(world):
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    _start(world, secret, "job-1", claimed["claim_token"], claimed["generation"])
+    response = _finish(world, None, "job-1", claimed["claim_token"], claimed["generation"])
+    assert response.status_code == 401
+
+
+def test_finish_body_rejects_unknown_and_missing_fields(world):
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    _start(world, secret, "job-1", claimed["claim_token"], claimed["generation"])
+    assert _finish(
+        world, secret, "job-1", claimed["claim_token"], claimed["generation"], "IDENTITY_MATCHED", extra="x",
+    ).status_code == 400
+    response = _machine(world).post(
+        "/runner/jobs/job-1/finish", json={"claim_token": claimed["claim_token"], "generation": claimed["generation"]},
+        headers={"Authorization": f"Bearer {secret}"},
+    )
+    assert response.status_code == 400
+
+
+def test_finish_before_start_is_refused(world):
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    response = _finish(world, secret, "job-1", claimed["claim_token"], claimed["generation"], "IDENTITY_MATCHED")
+    assert response.status_code == 404
+
+
+def test_duplicate_identical_finish_is_idempotent(world):
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    _start(world, secret, "job-1", claimed["claim_token"], claimed["generation"])
+    first = _finish(world, secret, "job-1", claimed["claim_token"], claimed["generation"], "IDENTITY_MATCHED")
+    second = _finish(world, secret, "job-1", claimed["claim_token"], claimed["generation"], "IDENTITY_MATCHED")
+    assert first.status_code == 200 and second.status_code == 200
+    # server_time legitimately reflects each real call's own wall-clock
+    # moment (unlike the dispatch-layer unit test, the API layer injects no
+    # fixed `now`) -- everything else must be identical.
+    assert first.json()["status"] == second.json()["status"] == "SUCCEEDED"
+    assert first.json()["job_status"] == second.json()["job_status"] == "DRY_RUN_VERIFIED"
+
+
+def test_conflicting_finish_is_refused(world):
+    secret = _ready_runner(world)
+    _seed_startable_job(world)
+    claimed = _claim(world, secret).json()
+    _start(world, secret, "job-1", claimed["claim_token"], claimed["generation"])
+    _finish(world, secret, "job-1", claimed["claim_token"], claimed["generation"], "IDENTITY_MATCHED")
+    conflicting = _finish(world, secret, "job-1", claimed["claim_token"], claimed["generation"], "IDENTITY_NOT_MATCHED")
+    assert conflicting.status_code == 404

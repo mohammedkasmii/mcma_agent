@@ -1,6 +1,7 @@
 """Phase 1 review fixes: runtime browser loss, startup filesystem checks,
-secret-path hardening, one backend per process, and Agent creation being
-refused in central mode."""
+secret-path hardening, one backend per process, and (Phase 1C-B central-
+integration correction) EXECUTE job creation staying refused in central
+mode while DRY_RUN creation is now enabled."""
 
 import os
 import sys
@@ -20,6 +21,36 @@ from mcma.notifications.service import NotificationServiceState
 
 OUJDA = "acct-mcma-oujda"
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX ownership/permission semantics")
+
+# A proven-valid minimal Wexia payload (tests/app/runners/dispatch_test_
+# support.py's own VALID_TYPED_INPUT, duplicated here -- bounded
+# duplication over a cross-directory import, the established INC-06+
+# convention -- see that module's own docstring): parses via parse_wexia
+# and resolves to a real, non-needs-review workflow, so a DRY_RUN created
+# from it genuinely reaches QUEUED rather than failing WORKFLOW_NOT_
+# DETERMINABLE.
+_VALID_TYPED_INPUT = {
+    "dossier": {
+        "id_sinistre": "699001",
+        "mission_type": "normal",
+        "incident_description": "MODE NORMAL",
+        "is_reform": False,
+    },
+    "vehicule": {"license_plate": "77001-C-3"},
+    "chiffrages": [
+        {
+            "id": "CH-NORMAL-1",
+            "status": "approved",
+            "is_final": True,
+            "scenario_type": "repair",
+            "total_cost": 10,
+            "tax_amount": 2,
+            "lignes_pieces": [
+                {"item_type": "part", "item_name": "pare-choc avant", "part_type": "original", "subtotal": 10}
+            ],
+        }
+    ],
+}
 
 
 def _server(tmp_path, **overrides):
@@ -330,31 +361,77 @@ def test_local_build_app_builds_its_backend_once_not_per_request(tmp_path, monke
 # ------------------------ Agent creation refused centrally ---------------------- #
 
 
-def _counts(server):
+def _all_counts(server):
     return tuple(
         server.api_conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
-        for table in ("automation_jobs", "job_inputs")
+        for table in ("automation_jobs", "job_inputs", "audit_events", "event_outbox")
     )
 
 
-def test_central_agent_posts_are_refused_with_a_typed_503_and_store_nothing(tmp_path, launcher):
+def test_central_execute_posts_are_refused_with_a_typed_503_and_store_nothing(tmp_path, launcher):
+    """Phase 1C-B central-integration correction: EXECUTE creation stays
+    refused centrally -- checked before anything is read, stored or
+    queued, so a disabled-mode request never partially writes a job, its
+    encrypted input, an audit record or an outbox event. (DRY_RUN creation
+    is now enabled centrally -- see
+    test_central_dry_run_creation_succeeds_while_execute_stays_refused
+    below.)"""
     server = _server(tmp_path)
     with _client(server) as client:
         headers = _login(server, client)
-        before = _counts(server)
+        before = _all_counts(server)
         body = {"account_id": OUJDA, "typed_input": {"claim": "PRIVATE-DOSSIER-DATA"}, "idempotency_key": "k1"}
-        for path in ("/jobs/dry-runs", "/jobs/some-dry-run/executions"):
-            response = client.post(path, json=body, headers=headers)
-            assert response.status_code == 503
-            assert response.json()["error"] == "RUNNER_CONTROL_PLANE_UNAVAILABLE"
-            assert "PRIVATE-DOSSIER-DATA" not in response.text
-        assert _counts(server) == before == (0, 0)
+        response = client.post("/jobs/some-dry-run/executions", json=body, headers=headers)
+        assert response.status_code == 503
+        assert response.json()["error"] == "RUNNER_CONTROL_PLANE_UNAVAILABLE"
+        assert "PRIVATE-DOSSIER-DATA" not in response.text
+        # No partial write of any kind -- not the job row, not an input,
+        # not an audit record, not an outbox event. (audit_events/
+        # event_outbox may already hold rows from login/startup; only the
+        # DELTA across this refused request matters here.)
+        assert _all_counts(server) == before
 
         # Still authenticated/CSRF-protected, and reads stay available.
-        assert client.post("/jobs/dry-runs", json=body).status_code in (400, 403)
+        assert client.post("/jobs/dry-runs", json={}).status_code in (400, 403)
         assert client.get("/jobs").status_code == 200
         assert client.get("/accounts").status_code == 200
         assert client.get("/notifications").status_code == 200
+
+
+def test_central_dry_run_creation_succeeds_while_execute_stays_refused(tmp_path, launcher):
+    """Phase 1C-B central-integration correction: an authenticated,
+    authorized employee can now create an MCMA DRY_RUN centrally -- the
+    row lands DRY_RUN/QUEUED, exactly one job and one encrypted input are
+    stored, and EXECUTE creation against that SAME (real, existing) job
+    still returns the fixed 503 -- never bypassed just because a genuine
+    DRY_RUN now exists to reference."""
+    server = _server(tmp_path)
+    with _client(server) as client:
+        headers = _login(server, client)
+        before = _all_counts(server)
+        body = {"account_id": OUJDA, "typed_input": _VALID_TYPED_INPUT, "idempotency_key": "central-dry-run-1"}
+        created = client.post("/jobs/dry-runs", json=body, headers=headers)
+        assert created.status_code == 200, created.text
+        job_id = created.json()["job_id"]
+        assert created.json()["status"] == "QUEUED"
+
+        row = server.api_conn.execute(
+            "SELECT mode, status FROM automation_jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        assert (row["mode"], row["status"]) == ("DRY_RUN", "QUEUED")
+        after_dry_run = _all_counts(server)
+        assert after_dry_run[0] == before[0] + 1  # exactly one job
+        assert after_dry_run[1] == before[1] + 1  # exactly one encrypted input -- nothing extra
+
+        execution = client.post(f"/jobs/{job_id}/executions", json={}, headers=headers)
+        assert execution.status_code == 503
+        assert execution.json()["error"] == "RUNNER_CONTROL_PLANE_UNAVAILABLE"
+        assert server.api_conn.execute(
+            "SELECT COUNT(*) AS n FROM automation_jobs WHERE mode = 'EXECUTE'"
+        ).fetchone()["n"] == 0
+        # The refused EXECUTE attempt itself wrote nothing further -- job/
+        # input counts are exactly what the DRY_RUN alone produced.
+        assert _all_counts(server)[:2] == after_dry_run[:2]
 
 
 def test_local_agent_creation_is_unchanged(tmp_path):

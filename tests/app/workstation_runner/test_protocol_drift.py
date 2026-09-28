@@ -50,8 +50,13 @@ def test_release_reasons_match_the_server():
     assert set(protocol.RELEASE_REASONS) == dispatch._RELEASE_REASONS
 
 
-def test_job_modes_match_the_dispatchable_mode_status_pairs():
-    assert set(protocol.JOB_MODES) == {mode for mode, _status in dispatch._DISPATCHABLE_MODE_STATUS}
+def test_job_modes_match_the_known_mode_status_pairs():
+    """Compared against _ALL_KNOWN_MODE_STATUS_PAIRS (what the schema/wire
+    protocol structurally recognize), never _DISPATCHABLE_MODE_STATUS
+    (which Phase 1C-B's EXECUTE_DISPATCH_ENABLED gate narrows to DRY_RUN
+    only) -- an envelope's `mode` field can still structurally be either
+    value even while only one is actually dispatched today."""
+    assert set(protocol.JOB_MODES) == {mode for mode, _status in dispatch._ALL_KNOWN_MODE_STATUS_PAIRS}
 
 
 def test_max_claim_response_bytes_matches_the_server():
@@ -60,3 +65,7 @@ def test_max_claim_response_bytes_matches_the_server():
 
 def test_max_typed_input_depth_matches_the_server():
     assert protocol.MAX_TYPED_INPUT_DEPTH == dispatch.MAX_TYPED_INPUT_DEPTH
+
+
+def test_finish_results_match_the_server():
+    assert set(protocol.FINISH_RESULTS) == dispatch.FINISH_RESULTS

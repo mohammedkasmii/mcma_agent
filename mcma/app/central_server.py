@@ -218,11 +218,20 @@ def create_central_server(
             expose_loopback_apps=False,
             portal_login_enabled=False,
             crypto_backend=crypto_backend,
-            # No workstation runner exists in Phase 1: Agent creation is
-            # refused with RUNNER_CONTROL_PLANE_UNAVAILABLE before anything
-            # is stored. Phase 2 enables it once runner registration and
-            # dispatch exist.
-            agent_execution_available=False,
+            # Phase 1C-B central-integration correction: DRY_RUN creation
+            # is now enabled -- the workstation runner registry, dispatch
+            # and the server-owned DRY_RUN lifecycle (claim/start/finish)
+            # are all wired, so a DRY_RUN queued here can genuinely be
+            # picked up and completed by a workstation. EXECUTE creation
+            # stays refused with RUNNER_CONTROL_PLANE_UNAVAILABLE before
+            # anything is stored: EXECUTE dispatch/form-filling is not a
+            # sanctioned central capability yet (INC-00's baseline writer
+            # stays permanently disabled; the future VerifiedMissionWriter
+            # is the only sanctioned path, and it does not exist here).
+            # Neither flag is a client-visible setting -- both are fixed at
+            # composition time by this module alone.
+            dry_run_creation_available=True,
+            execute_creation_available=False,
             # Runner registry (enrollment, identity, heartbeat, readiness,
             # revocation): DB rows and HTTP only. No browser, no background
             # thread -- online/offline is derived from server time on read.

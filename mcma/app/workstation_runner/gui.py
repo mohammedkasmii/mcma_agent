@@ -97,12 +97,26 @@ class RunnerApp:
         # thread) only ever put_nowait() here; only the Tk polling loop
         # (_poll_accounts) ever reads it and touches a widget.
         self._accounts_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=_QUEUE_MAXSIZE)
+        # Phase 1C-B: a THIRD, separate bounded queue for job-status text --
+        # same "worker threads only ever put_nowait(), only the Tk polling
+        # loop reads and touches a widget" discipline as the two above.
+        self._job_status_queue: "queue.Queue[str]" = queue.Queue(maxsize=_QUEUE_MAXSIZE)
         self._root = root if root is not None else tk.Tk()
         self._root.title("MCMA — Poste agent")
         self._root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self._status_var = tk.StringVar(master=self._root, value="")
         ttk.Label(self._root, textvariable=self._status_var, wraplength=360).pack(padx=16, pady=(16, 8))
+
+        # Phase 1C-B, item F: a small, non-sensitive workstation job-status
+        # indication -- fixed French text only (never a dossier identifier,
+        # claim token, credential, or raw exception; see controller.py's
+        # own _JOB_STATUS_TEXT map). Same bounded-queue/root.after() pattern
+        # as _status_var/_queue above, kept entirely separate from it: a
+        # pairing/heartbeat status and a job status are two independent
+        # things and must never overwrite each other.
+        self._job_status_var = tk.StringVar(master=self._root, value="")
+        ttk.Label(self._root, textvariable=self._job_status_var, wraplength=360).pack(padx=16, pady=(0, 8))
 
         self._pairing_frame = ttk.Frame(self._root)
         ttk.Label(self._pairing_frame, text="URL du serveur central").pack(anchor="w")
@@ -270,6 +284,33 @@ class RunnerApp:
                 widgets["button"].state(["!disabled"])
             widgets["frame"].pack(anchor="w", pady=(4, 0))
 
+    def _enqueue_job_status(self, text: str) -> None:
+        """Phase 1C-B: the controller's ONLY entry point into the GUI for
+        the workstation job-status indication -- called from whatever
+        thread the job-polling worker runs on. `text` is always one of the
+        controller's own FIXED strings (never a dossier identifier, claim
+        token, credential, or raw exception -- see controller.py's
+        _JOB_STATUS_TEXT map); this method still never touches a widget
+        directly, only the bounded queue."""
+        try:
+            self._job_status_queue.put_nowait(text)
+        except queue.Full:
+            pass  # a full queue means a stale status; the next poll drains the newest we could keep
+
+    def _poll_job_status(self) -> None:
+        try:
+            while True:
+                text = self._job_status_queue.get_nowait()
+                self._render_job_status(text)
+        except queue.Empty:
+            pass
+        self._root.after(_POLL_INTERVAL_MS, self._poll_job_status)
+
+    def _render_job_status(self, text: str) -> None:
+        if self._closing_ui:
+            return  # same guard as _render()/_render_accounts(): never touch a widget once closing has begun
+        self._job_status_var.set(text)
+
     def _on_account_button_clicked(self, account_id: str) -> None:
         """Never performs browser/Playwright work itself, and never accepts
         or displays a credential/OTP -- those are typed directly into the
@@ -322,5 +363,6 @@ class RunnerApp:
         assert self._controller is not None, "bind_controller() must be called before run()"
         self._root.after(_POLL_INTERVAL_MS, self._poll_queue)
         self._root.after(_POLL_INTERVAL_MS, self._poll_accounts)
+        self._root.after(_POLL_INTERVAL_MS, self._poll_job_status)
         self._controller.start()
         self._root.mainloop()

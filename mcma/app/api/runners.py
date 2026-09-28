@@ -35,6 +35,7 @@ from mcma.app.auth.users import UserInputError
 from mcma.app.runners import dispatch, registry
 from mcma.domain.enums import Permission
 from mcma.execution.inputs import InputEncryptor
+from mcma.planning.registry import default_registry
 
 MAX_BODY_BYTES = 4096
 
@@ -167,10 +168,12 @@ def register_runner_routes(app: FastAPI, conn, get_principal, encryptor: InputEn
     # Phase 1C-A: the durable claim/renew/release transport. No Playwright,
     # no form filling -- see mcma.app.runners.dispatch's own module
     # docstring. Registered unconditionally alongside enroll/heartbeat
-    # (same runner_registry flag, NEVER gated by agent_execution_available
-    # -- the central server keeps employee job CREATION refused via
-    # RUNNER_CONTROL_PLANE_UNAVAILABLE regardless of whether this transport
-    # exists; see app.py's _require_agent_execution).
+    # (same runner_registry flag, NEVER gated by dry_run_creation_available/
+    # execute_creation_available -- the central server keeps employee
+    # EXECUTE job CREATION refused via RUNNER_CONTROL_PLANE_UNAVAILABLE
+    # regardless of whether this transport exists; see app.py's
+    # _require_execute_creation. DRY_RUN creation is a separate,
+    # independently controlled flag -- see _require_dry_run_creation).
 
     async def _authenticated_runner(request: Request) -> registry.RunnerPrincipal:
         principal = await run_in_threadpool(registry.authenticate_runner, conn, _bearer_token(request))
@@ -219,6 +222,46 @@ def register_runner_routes(app: FastAPI, conn, get_principal, encryptor: InputEn
             result = await run_in_threadpool(
                 dispatch.release_job, conn, principal, job_id=job_id,
                 claim_token=body["claim_token"], generation=body["generation"], reason_code=body["reason_code"],
+            )
+        except UserInputError as exc:
+            raise _as_api_error(exc) from None
+        return JSONResponse(result, headers=_NO_STORE)
+
+    # ------------------ machine: DRY_RUN lifecycle (Phase 1C-B) ----------- #
+    # Same bearer-only, no-cookie/CSRF, strict-bounded-JSON, no-store rules
+    # as claim/renew/release. The client authenticates with its runner
+    # bearer AND proves ownership of the specific assignment with its claim
+    # token + generation -- it can never choose a job, account, employee,
+    # mode, workflow, plan, or automation_jobs status; every one of those
+    # is derived or computed entirely server-side inside
+    # mcma.app.runners.dispatch.start_job()/finish_job().
+
+    _workflow_registry = default_registry()
+
+    @app.post("/runner/jobs/{job_id}/start")
+    async def runner_start_job(job_id: str, request: Request):
+        principal = await _authenticated_runner(request)
+        body = await _bounded_json(request, {"claim_token", "generation"}, {"claim_token", "generation"})
+        try:
+            result = await run_in_threadpool(
+                dispatch.start_job, conn, principal, job_id=job_id,
+                claim_token=body["claim_token"], generation=body["generation"],
+                workflow_registry=_workflow_registry, encryptor=encryptor,
+            )
+        except UserInputError as exc:
+            raise _as_api_error(exc) from None
+        return JSONResponse(result, headers=_NO_STORE)
+
+    @app.post("/runner/jobs/{job_id}/finish")
+    async def runner_finish_job(job_id: str, request: Request):
+        principal = await _authenticated_runner(request)
+        body = await _bounded_json(
+            request, {"claim_token", "generation", "result"}, {"claim_token", "generation", "result"},
+        )
+        try:
+            result = await run_in_threadpool(
+                dispatch.finish_job, conn, principal, job_id=job_id,
+                claim_token=body["claim_token"], generation=body["generation"], result=body["result"],
             )
         except UserInputError as exc:
             raise _as_api_error(exc) from None

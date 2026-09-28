@@ -49,6 +49,13 @@ RELEASE_REASONS = ("CANCELLED_BEFORE_EXECUTION", "RUNNER_SHUTDOWN", "EXECUTION_N
 # envelope may ever report.
 JOB_MODES = ("DRY_RUN", "EXECUTE")
 
+# mirrors mcma.app.runners.dispatch.FINISH_RESULTS (Phase 1C-B: the fixed,
+# closed enum /runner/jobs/{job_id}/finish accepts -- never arbitrary
+# client status/error text).
+FINISH_RESULTS = (
+    "IDENTITY_MATCHED", "IDENTITY_NOT_MATCHED", "SESSION_UNAVAILABLE", "PORTAL_READ_FAILED", "RUNNER_CANCELLED",
+)
+
 # mirrors mcma.app.runners.dispatch.MAX_CLAIM_RESPONSE_BYTES / MAX_TYPED_INPUT_DEPTH
 # (P1 correction: the server now enforces these SAME bounds before a claim
 # row is ever inserted, not just this client on receipt -- see dispatch.py's

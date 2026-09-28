@@ -57,8 +57,11 @@ from typing import Sequence
 
 from mcma.portal.browser import launch_browser
 from mcma.portal.capabilities import (
-    SessionMaterial, _observe_session_state, open_login_session, portal_origin,
+    ReadCapability, SearchIdentifiers, SessionMaterial, _observe_session_state, open_login_session, open_reader,
+    portal_origin,
 )
+from mcma.portal.contracts import RouteContract
+from mcma.portal.identity import ExpectedIdentity, IdentityMismatch, verify_identity
 from mcma.portal.session import open_guarded_context
 from mcma.portal.sinauto_contracts import (
     DEFAULT_SINAUTO_HOST, auth_contracts, category_discovery_contracts,
@@ -78,8 +81,10 @@ __all__ = [
     "SessionProbeFailed",
     "UnknownWorkstationAccount",
     "InvalidWorkstationStorageState",
+    "DryRunIdentityCheckFailed",
     "perform_manual_login",
     "verify_saved_session",
+    "perform_dry_run_identity_check",
 ]
 
 
@@ -230,3 +235,117 @@ async def verify_saved_session(account_id: str, storage_state: dict) -> SessionP
         finally:
             await context.close()
     return SessionProbeOutcome(observed)
+
+
+class DryRunIdentityCheckFailed(Exception):
+    """An OPERATIONAL failure while performing the workstation's read-only
+    DRY_RUN identity check -- the session could not be applied, or the
+    search/open/observe read itself failed. Distinct from a returned
+    `False` (see perform_dry_run_identity_check's own docstring): that
+    means the read SUCCEEDED but identity did not, or could not
+    unambiguously, match -- a normal outcome, not a fault.
+
+    Carries only the failing exception's TYPE NAME, never its message: a
+    browser-level error can quote page content, and the page behind a
+    session can be a login form or a real dossier. `raise ... from None`
+    is used at every construction site so the original exception's text
+    never reaches a caller's traceback."""
+
+    def __init__(self, cause_type: str) -> None:
+        super().__init__(f"workstation DRY_RUN identity check failed ({cause_type})")
+        self.reason = f"DRY_RUN_IDENTITY_CHECK_FAILED_{cause_type}"
+
+
+class _AlwaysValidLease:
+    """A trivial LeaseHandle stand-in (mcma.portal.capabilities.LeaseHandle
+    is a structural Protocol: an `account_id` attribute plus an async
+    `assert_valid()`) -- open_reader() requires one, but no REAL
+    cross-process account lease is needed here. A workstation's own
+    dispatch-level guarantees (at most one active assignment per runner,
+    at most one runner per employee -- mcma.app.runners.dispatch/registry)
+    already give this account exclusive use of THIS one physical machine's
+    browser; there is no other process that could ever race it for the
+    same account's session the way the central server's shared
+    account_leases table exists to arbitrate."""
+
+    __slots__ = ("account_id",)
+
+    def __init__(self, account_id: str) -> None:
+        self.account_id = account_id
+
+    async def assert_valid(self) -> None:
+        return None
+
+
+async def perform_dry_run_identity_check(
+    account_id: str,
+    storage_state: dict,
+    expected_identity: ExpectedIdentity,
+    search_identifiers: SearchIdentifiers,
+    contracts: Sequence[RouteContract],
+) -> bool:
+    """The real read-only identity gate for the workstation DRY_RUN
+    executor (Phase 1C-B, item E; mirrors mcma.execution.runner's own
+    _observe_and_verify_identity, minus the central-DB account lease no
+    single workstation needs -- see _AlwaysValidLease above): opens a
+    HEADLESS browser, applies `storage_state` purely in memory (never
+    written to disk here), searches for `search_identifiers`, requires
+    EXACTLY one candidate, opens it, observes identity, and verifies it
+    against `expected_identity` via the existing identity verifier.
+
+    Returns True only on a positive match; False for every read that
+    SUCCEEDED but did not positively confirm identity -- no candidate,
+    more than one (ambiguity is never resolved by guessing), or an
+    identity mismatch. Raises DryRunIdentityCheckFailed for every
+    OPERATIONAL failure instead (session could not be applied, or the
+    search/open/observe read itself failed) -- this module makes no
+    mapping to the fixed FINISH_RESULTS enum itself (that enum belongs to
+    the lightweight mcma.app.workstation_runner.dry_run_executor, which
+    must never import mcma.portal; see this module's own docstring on
+    that duplication-over-cross-layer-import boundary).
+
+    Never mutates the portal: only ReadCapability's read-only operations
+    are ever called. The context is closed on every exit path -- success,
+    no/ambiguous candidate, identity mismatch, an operational failure, or
+    task cancellation (asyncio.CancelledError is a BaseException, never
+    caught here as an ordinary Exception, and propagates once the
+    `finally` below has run)."""
+    account_id = _require_known_account(account_id)
+    if not isinstance(storage_state, dict):
+        raise InvalidWorkstationStorageState()
+    host = DEFAULT_SINAUTO_HOST
+
+    async with launch_browser(headless=True) as browser:
+        try:
+            # dynamic_mission_authorization=True (Phase 1C-B release-
+            # blocker correction): `contracts` here carries ONLY the
+            # fixed search-page/search-request routes (mcma.portal.
+            # sinauto_contracts.identity_read_contracts) -- the ONE
+            # mission-open route this specific search resolves to is
+            # constructed and authorized at runtime, inside reader.open()
+            # itself, once search() has returned exactly one Candidate.
+            reader: ReadCapability = await open_reader(
+                browser, _AlwaysValidLease(account_id), contracts, host,
+                context_options={"storage_state": storage_state}, dynamic_mission_authorization=True,
+            )
+        except Exception as exc:
+            raise DryRunIdentityCheckFailed(type(exc).__name__) from None
+        try:
+            try:
+                candidates = await reader.search(search_identifiers)
+            except Exception as exc:
+                raise DryRunIdentityCheckFailed(type(exc).__name__) from None
+            if len(candidates) != 1:
+                return False  # no/ambiguous candidate -- never resolved by picking one
+            try:
+                await reader.open(candidates[0])
+                observed = await reader.observe_identity()
+            except Exception as exc:
+                raise DryRunIdentityCheckFailed(type(exc).__name__) from None
+            try:
+                verify_identity(expected_identity, observed)
+            except IdentityMismatch:
+                return False
+            return True
+        finally:
+            await reader.close()

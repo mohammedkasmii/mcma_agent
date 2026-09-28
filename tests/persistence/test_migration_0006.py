@@ -93,12 +93,18 @@ def test_migration_applies_forward_on_top_of_0005(pre_0006_conn):
 
 
 def test_new_table_has_the_expected_columns(pre_0006_conn):
+    # A SUBSET check, not an exact match: run_migrations() applies every
+    # migration still pending, not just 0006 -- 0007 (Phase 1C-B) later
+    # extends this same table with its own additional column(s). This test
+    # only proves 0006's OWN contribution is present, never that nothing
+    # newer has been added since; see test_migration_0007.py for that
+    # migration's own exact-column proof.
     run_migrations(pre_0006_conn)
     columns = {row["name"] for row in pre_0006_conn.execute("PRAGMA table_info(workstation_job_dispatch)")}
-    assert columns == {
+    assert {
         "assignment_id", "job_id", "runner_id", "generation", "claim_token_digest", "status",
         "claimed_at", "lease_expires_at", "last_renewed_at", "finished_at", "outcome_code",
-    }
+    } <= columns
 
 
 def test_automation_jobs_is_untouched(pre_0006_conn):

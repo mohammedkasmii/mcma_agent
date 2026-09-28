@@ -39,14 +39,20 @@ release gate G5 are unchanged.
   "Actualiser" refresh through that same browser.
 * Report health/readiness (`/health`, `/ready`).
 
-**Agent creation is disabled in central Phase 1.** `POST /jobs/dry-runs` and
-`POST /jobs/{id}/executions` return HTTP 503 with the stable code
-`RUNNER_CONTROL_PLANE_UNAVAILABLE` (checked after authentication, CSRF and
-permission, and *before* the body is read), so no Wexia input or job row is
-ever stored — there is no runner to execute it. Job history/plan reads,
-notifications, claims, employee actions and authentication are unaffected.
-Phase 2 enables creation only after runner registration and dispatch exist
-(the API takes an `agent_execution_available` flag; local mode passes `true`).
+**Creation availability is split by mode (Phase 1C-B).** The API takes two
+independent, composition-root-only flags -- `dry_run_creation_available` and
+`execute_creation_available` -- never a client-settable field. Central now
+sets `dry_run_creation_available=True`: the workstation runner registry,
+durable dispatch and the server-owned DRY_RUN lifecycle (claim/start/finish)
+are wired, so `POST /jobs/dry-runs` runs its normal checks and creates a
+DRY_RUN/QUEUED job a workstation can claim. `execute_creation_available`
+stays `False`: `POST /jobs/{id}/executions` returns HTTP 503 with the stable
+code `RUNNER_CONTROL_PLANE_UNAVAILABLE` (checked after authentication, CSRF
+and permission, and *before* the referenced dry-run is even loaded), so no
+EXECUTE row is ever stored -- EXECUTE dispatch/form-filling is not yet a
+sanctioned central capability. Job history/plan reads, notifications,
+claims, employee actions and authentication are unaffected. Local mode
+passes `true` for both (unchanged).
 
 It never: processes jobs, launches a visible browser, builds a
 `RunnerConfig`/`ActiveReviewRegistry`, targets `127.0.0.1:8080`, starts or

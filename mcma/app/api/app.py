@@ -156,19 +156,41 @@ def create_api_app(
     notification_refresher=None,
     connection_state_tracker=None,
     server_state_provider=None,
-    agent_execution_available: bool = True,
+    dry_run_creation_available: bool = True,
+    execute_creation_available: bool = True,
     runner_registry: bool = False,
 ) -> FastAPI:
     app = FastAPI(title="MCMA API")
     install_error_handlers(app)
     session_store = session_store or SessionStore()
 
-    def _require_agent_execution() -> None:
-        """Central Phase 1 has no workstation runner to hand work to, so a
-        request that would create or authorize Agent work is refused BEFORE
-        anything is read, stored or queued -- accepting it would park a job
-        (and encrypted dossier input) that nothing will ever run."""
-        if not agent_execution_available:
+    # Phase 1C-B central-integration correction: creation availability is
+    # split by MODE, each independently controlled by the composition root
+    # -- never by the client, and never by a single combined flag. The
+    # central server enables DRY_RUN creation (the workstation runner can
+    # now claim/start/finish it) while EXECUTE creation stays refused (form
+    # filling/writing is not yet a sanctioned central capability). Every
+    # non-central composition (local Windows install, every test that does
+    # not pass these explicitly) keeps BOTH available, unchanged from
+    # before this split.
+    def _require_dry_run_creation() -> None:
+        """A request that would create DRY_RUN work is refused BEFORE
+        anything is read, stored or queued when this server has no
+        workstation runner able to pick it up -- accepting it would park a
+        job (and encrypted dossier input) that nothing will ever claim."""
+        if not dry_run_creation_available:
+            raise ApiError(
+                503, "RUNNER_CONTROL_PLANE_UNAVAILABLE",
+                "Le traitement automatique n'est pas disponible sur ce serveur : "
+                "aucun poste de travail n'est enregistré pour exécuter les dossiers.",
+            )
+
+    def _require_execute_creation() -> None:
+        """EXECUTE (portal form-filling/writing) creation is refused BEFORE
+        the referenced dry-run is even loaded -- so a verified dry-run can
+        never be used to sneak an EXECUTE row into automation_jobs while
+        this capability is off, on the central server or anywhere else."""
+        if not execute_creation_available:
             raise ApiError(
                 503, "RUNNER_CONTROL_PLANE_UNAVAILABLE",
                 "Le traitement automatique n'est pas disponible sur ce serveur : "
@@ -812,7 +834,7 @@ def create_api_app(
         request: Request, principal: Principal = Depends(get_principal), _csrf=Depends(require_csrf)
     ):
         require_permission(principal, Permission.JOBS_PLAN)
-        _require_agent_execution()
+        _require_dry_run_creation()
         body = await request.json()
         if "workflow_name" in body:
             # Pilot-integration correction (section 3): the workflow is
@@ -859,7 +881,7 @@ def create_api_app(
         dry_run_job_id: str, request: Request, principal: Principal = Depends(get_principal), _csrf=Depends(require_csrf)
     ):
         require_permission(principal, Permission.JOBS_EXECUTE)
-        _require_agent_execution()
+        _require_execute_creation()
         body = await request.json()
         if "mode" in body:
             raise ApiError(400, "BAD_REQUEST", "mode is not a client-settable field")

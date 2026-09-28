@@ -1,6 +1,7 @@
 """The runner registry inside the CENTRAL composition: it is wired, it needs
-no browser or background thread, it never degrades health, and it cannot
-turn Agent creation on."""
+no browser or background thread, it never degrades health, and (Phase
+1C-B central-integration correction) it lets an authorized employee's
+DRY_RUN reach an online runner while EXECUTE creation stays refused."""
 
 import json
 import subprocess
@@ -17,6 +18,36 @@ from mcma.app.central_server import create_central_server
 
 REPO = Path(__file__).resolve().parents[2]
 OUJDA, NADOR = "acct-mcma-oujda", "acct-mcma-nador"
+MAMDA_OUJDA = "acct-mamda-oujda"
+
+# A proven-valid minimal Wexia payload (tests/app/runners/dispatch_test_
+# support.py's own VALID_TYPED_INPUT, duplicated here -- bounded
+# duplication over a cross-directory import, the established INC-06+
+# convention): parses via parse_wexia and resolves to a real, non-needs-
+# review workflow, so a DRY_RUN created from it genuinely reaches QUEUED
+# and can be claimed by a real runner via real server-side planning.
+_VALID_TYPED_INPUT = {
+    "dossier": {
+        "id_sinistre": "699001",
+        "mission_type": "normal",
+        "incident_description": "MODE NORMAL",
+        "is_reform": False,
+    },
+    "vehicule": {"license_plate": "77001-C-3"},
+    "chiffrages": [
+        {
+            "id": "CH-NORMAL-1",
+            "status": "approved",
+            "is_final": True,
+            "scenario_type": "repair",
+            "total_cost": 10,
+            "tax_amount": 2,
+            "lignes_pieces": [
+                {"item_type": "part", "item_name": "pare-choc avant", "part_type": "original", "subtotal": 10}
+            ],
+        }
+    ],
+}
 
 
 @pytest.fixture()
@@ -81,7 +112,21 @@ def test_registry_operations_launch_no_browser_and_start_no_thread(tmp_path, lau
         assert all(b.headless for b in launcher.launches)
 
 
-def test_agent_creation_stays_503_even_with_an_online_runner(tmp_path, launcher):
+def _job_input_counts(server):
+    return tuple(
+        server.api_conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+        for table in ("automation_jobs", "job_inputs", "audit_events", "event_outbox")
+    )
+
+
+def test_dry_run_creation_succeeds_and_an_online_runner_can_claim_it_while_execute_stays_503(tmp_path, launcher):
+    """Phase 1C-B central-integration correction: DRY_RUN creation is now
+    enabled centrally -- an authenticated, authorized employee can create
+    an MCMA DRY_RUN, the resulting row is DRY_RUN/QUEUED, and the SAME
+    online workstation runner this test already enrolls/heartbeats can
+    immediately claim it through the existing dispatch transport. EXECUTE
+    creation against that SAME real job still returns the fixed 503, and
+    never stores an EXECUTE row."""
     server = _server(tmp_path)
     _seed(server)
     with _client(server) as client:
@@ -93,23 +138,50 @@ def test_agent_creation_stays_503_even_with_an_online_runner(tmp_path, launcher)
             "/runner/heartbeat", headers={"Authorization": f"Bearer {secret}"},
             json={"protocol_version": 1, "app_version": "0.1.0", "sessions": [{"account_id": OUJDA, "state": "READY"}]})
         employee = _client(server)
-        _login(employee, "emp")
+        emp_csrf = _login(employee, "emp")
         assert employee.get("/runner-status").json()["status"] == "ONLINE"
-        body = {"account_id": OUJDA, "typed_input": {"x": 1}, "idempotency_key": "k1"}
-        for path in ("/jobs/dry-runs", "/jobs/some-job/executions"):
-            response = client.post(path, json=body, headers=csrf)
-            assert response.status_code == 503 and response.json()["error"] == "RUNNER_CONTROL_PLANE_UNAVAILABLE"
-        assert server.api_conn.execute("SELECT COUNT(*) AS c FROM automation_jobs").fetchone()["c"] == 0
+
+        before = _job_input_counts(server)
+        body = {"account_id": OUJDA, "typed_input": _VALID_TYPED_INPUT, "idempotency_key": "central-dr-1"}
+        created = employee.post("/jobs/dry-runs", json=body, headers=emp_csrf)
+        assert created.status_code == 200, created.text
+        job_id = created.json()["job_id"]
+        assert created.json()["status"] == "QUEUED"
+        row = server.api_conn.execute(
+            "SELECT mode, status FROM automation_jobs WHERE job_id = ?", (job_id,)
+        ).fetchone()
+        assert (row["mode"], row["status"]) == ("DRY_RUN", "QUEUED")
+        after_dry_run = _job_input_counts(server)
+        assert after_dry_run[0] == before[0] + 1 and after_dry_run[1] == before[1] + 1  # exactly one job, one input
+
+        claim = TestClient(server.app, base_url="https://testserver").post(
+            "/runner/jobs/claim", headers={"Authorization": f"Bearer {secret}"},
+            json={"protocol_version": 1, "app_version": "0.1.0"})
+        assert claim.status_code == 200, claim.text
+        assert claim.json()["job_id"] == job_id
+        assert claim.json()["mode"] == "DRY_RUN"
+
+        execution = employee.post(f"/jobs/{job_id}/executions", json={}, headers=emp_csrf)
+        assert execution.status_code == 503
+        assert execution.json()["error"] == "RUNNER_CONTROL_PLANE_UNAVAILABLE"
+        assert server.api_conn.execute(
+            "SELECT COUNT(*) AS n FROM automation_jobs WHERE mode = 'EXECUTE'"
+        ).fetchone()["n"] == 0
+        # The refused EXECUTE attempt wrote nothing further -- job/input
+        # counts are exactly what the DRY_RUN and the claim above produced.
+        assert _job_input_counts(server)[:2] == after_dry_run[:2]
 
 
-def test_agent_creation_stays_503_even_though_the_dispatch_endpoints_exist(tmp_path, launcher):
+def test_execute_creation_stays_503_even_though_the_dispatch_endpoints_exist(tmp_path, launcher):
     """Phase 1C-A adds /runner/jobs/claim|renew|release to the SAME
     runner_registry-gated block as enroll/heartbeat -- proving those routes
-    now exist and even WORK (a claim returns 204 with no eligible work,
-    since no job can exist while Agent creation itself is still refused) is
-    not enough: central Agent job CREATION must stay 503/
+    now exist and even WORK (a claim returns 204 with no eligible work) is
+    not enough: central EXECUTE job CREATION must stay 503/
     RUNNER_CONTROL_PLANE_UNAVAILABLE regardless, exactly like heartbeat
-    already does not turn it on."""
+    already does not turn it on. (DRY_RUN creation IS enabled centrally as
+    of Phase 1C-B -- see
+    test_dry_run_creation_succeeds_and_an_online_runner_can_claim_it_
+    while_execute_stays_503 above.)"""
     server = _server(tmp_path)
     _seed(server)
     with _client(server) as client:
@@ -126,11 +198,33 @@ def test_agent_creation_stays_503_even_though_the_dispatch_endpoints_exist(tmp_p
             json={"protocol_version": 1, "app_version": "0.1.0"})
         assert claim.status_code == 204                # the transport works: no eligible work exists
 
+        before = _job_input_counts(server)
         body = {"account_id": OUJDA, "typed_input": {"x": 1}, "idempotency_key": "k1"}
-        for path in ("/jobs/dry-runs", "/jobs/some-job/executions"):
-            response = client.post(path, json=body, headers=csrf)
-            assert response.status_code == 503 and response.json()["error"] == "RUNNER_CONTROL_PLANE_UNAVAILABLE"
-        assert server.api_conn.execute("SELECT COUNT(*) AS c FROM automation_jobs").fetchone()["c"] == 0
+        response = client.post("/jobs/some-job/executions", json=body, headers=csrf)
+        assert response.status_code == 503 and response.json()["error"] == "RUNNER_CONTROL_PLANE_UNAVAILABLE"
+        # No partial write of any kind -- not the job row, not an input,
+        # not an audit record, not an outbox event.
+        assert _job_input_counts(server) == before
+
+
+def test_mamda_dry_run_creation_remains_refused_centrally(tmp_path, launcher):
+    """DRY_RUN creation being enabled centrally must never loosen the
+    MAMDA read-only enforcement: an employee granted access to a MAMDA
+    account still cannot create a job against it."""
+    server = _server(tmp_path)
+    _seed(server)
+    server.api_conn.execute(
+        "INSERT INTO user_account_access (user_id, account_id, granted_at) VALUES ('emp-id', ?, 'now')",
+        (MAMDA_OUJDA,),
+    )
+    with _client(server) as client:
+        csrf = _login(client, "emp")
+        before = _job_input_counts(server)
+        body = {"account_id": MAMDA_OUJDA, "typed_input": _VALID_TYPED_INPUT, "idempotency_key": "mamda-1"}
+        response = client.post("/jobs/dry-runs", json=body, headers=csrf)
+        assert response.status_code == 403
+        assert response.json()["error"] == "MAMDA_ACCOUNT_NOT_WRITABLE"
+        assert _job_input_counts(server) == before
 
 
 def test_the_migration_ran_at_central_startup(tmp_path, launcher):

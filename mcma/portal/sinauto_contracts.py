@@ -153,6 +153,47 @@ NOTIFICATION_BODY_FIELDS: tuple[str, ...] = (
 )
 
 
+def identity_read_contracts(host: str = DEFAULT_SINAUTO_HOST, entity: str = "MCMA") -> tuple[RouteContract, ...]:
+    """Phase 1C-B release-blocker correction: the reviewed PRODUCTION
+    contract set for mcma.portal.capabilities.open_reader()'s read-only
+    mission-search identity gate (the workstation DRY_RUN check via
+    mcma.portal.workstation_sessions.perform_dry_run_identity_check).
+    Exactly two FIXED routes -- the search page and the search POST -- and
+    deliberately NOTHING for the mission-open route itself: a real
+    dossier's id_mission is not known in advance and RouteContract matching
+    is exact-string, never a pattern, so no fixed contract could ever name
+    it. That third, per-search, per-candidate contract is instead
+    constructed and authorized DYNAMICALLY, at runtime, by
+    ReadCapability.open() itself via a ReadOnlyMissionPolicyController
+    (mcma.portal.interception) when open_reader() is called with
+    dynamic_mission_authorization=True -- see that controller's own module
+    note for the full read-only staged policy (SEARCH_READ -> MISSION_READ,
+    with no write-activation method reachable on it at all).
+
+    Both routes below are the SAME two literals
+    mcma.portal.capabilities.ReadCapability already sends unconditionally
+    for every search (the landing page it navigates to before any
+    fetch-based read, and the fixed internal `_SEARCH_ROUTE` its search()
+    method posts to, regardless of which contracts are installed) --
+    nothing here is newly invented; this only names the PRODUCTION host
+    variant of the exact same already-established literals
+    mcma.portal.pilot_contracts.read_contracts() names for the mock, per
+    that module's own "bounded duplication over coupling" convention.
+    mcma.portal.pilot_contracts itself stays permanently mock-only (its own
+    pilot_allowed_host() refuses this host outright) -- production wiring
+    must use THIS function, never that one."""
+    host = sinauto_allowed_host(host)
+    base = portal_base_for(entity)
+    return (
+        _c(host, f"{base}/expertise/frontexpert", "GET", capability="read", operation_type="search_page"),
+        _c(
+            host, f"{base}/expertise/FrontExpert/listeMissions", "POST",
+            capability="read", operation_type="search",
+            content_type="application/x-www-form-urlencoded", body_fields=("Matricule", "ReferenceCie"),
+        ),
+    )
+
+
 def notification_contracts(host: str, category_codes, entity: str = "MCMA") -> tuple[RouteContract, ...]:
     """One contract per alert category, plus the same-origin landing page
     a reader must navigate to before any fetch-based read runs.

@@ -50,8 +50,11 @@ from mcma.portal.contracts import RouteContract
 from mcma.portal.final_endpoints import is_permanently_blocked
 from mcma.portal.identity import ObservedIdentity
 from mcma.portal.identity import observe_identity as _observe_identity
+from mcma.portal.interception import MISSION_OPEN_OPERATION_TYPE, ReadOnlyMissionPolicyController
 from mcma.portal.sinauto_contracts import NOTIFICATION_BODY_FIELDS
-from mcma.portal.session import open_guarded_context, open_guarded_context_for_login
+from mcma.portal.session import (
+    open_guarded_context, open_guarded_context_for_login, open_guarded_context_for_read_only_mission,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from playwright.async_api import Browser
@@ -650,6 +653,18 @@ _APPROVED_FIELD_SELECTORS = {
 }
 
 
+@runtime_checkable
+class _MissionPolicyControllerLike(Protocol):
+    """Structural: satisfied by
+    mcma.portal.interception.ReadOnlyMissionPolicyController without this
+    module importing its concrete type for the parameter annotation --
+    this module only ever calls this one method on whatever it is given."""
+
+    def authorize_exact_mission_route(
+        self, mission_route_contract: RouteContract, *, expected_route: str
+    ) -> None: ...
+
+
 class Candidate:
     """An opaque search result. Only mintable by ReadCapability.search() --
     every Candidate carries the owner_token of the specific ReadCapability
@@ -690,6 +705,33 @@ _SEARCH_ROUTE = "/SinAuto_MCMA/expertise/FrontExpert/listeMissions"
 _MISSION_DEEP_LINK_TEMPLATE = (
     "/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/{id_sinistre}/rubrique/gestionexpert-index"
 )
+
+# Phase 1C-B release-blocker correction: the bound for open()'s OPTIONAL
+# dynamic-mission-authorization mode (see ReadCapability.open() and
+# open_reader()'s dynamic_mission_authorization parameter). A real
+# id_mission is portal-assigned and small; this is a generous but FINITE
+# margin over any plausible real value -- never unbounded -- so an
+# absurd/hostile search-response value can never become an arbitrarily
+# long constructed route.
+_MAX_MISSION_ID = 999_999_999
+
+
+def _require_valid_bounded_mission_id(id_mission: object) -> int:
+    """Strict positive, BOUNDED integer only. bool is checked first since
+    bool is an int subclass in Python. `candidate.id_mission` is untrusted
+    external data (whatever the portal's own search response happened to
+    contain, via Candidate.__init__'s bare row.get('IdMission') -- never
+    validated until this call). The validated integer is later formatted
+    via plain str(int) -- never string-interpolating the raw value -- so
+    an encoded separator or traversal segment is structurally excluded
+    from the constructed route rather than merely screened for. The error
+    message never echoes the raw (possibly attacker/portal-supplied)
+    value."""
+    if isinstance(id_mission, bool) or not isinstance(id_mission, int):
+        raise ValueError("id_mission must be a strict positive bounded integer")
+    if not (0 < id_mission <= _MAX_MISSION_ID):
+        raise ValueError("id_mission must be a strict positive bounded integer")
+    return id_mission
 _ROW_LIST_ROUTES = {
     RepairWorkflow.MODE_NORMAL: "/SinAuto_MCMA/expertise/gestionExpert/listeRapportDefDet",
     RepairWorkflow.GARAGE_CONVENTIONNE: "/SinAuto_MCMA/expertise/gestiongarage/listeDevisDet",
@@ -885,13 +927,25 @@ class ReadCapability:
     makes every subsequent fetch same-origin, which needs no CORS headers
     at all."""
 
-    def __init__(self, context, page, allowed_host: str, portal_base: str = DEFAULT_PORTAL_BASE):
+    def __init__(
+        self, context, page, allowed_host: str, portal_base: str = DEFAULT_PORTAL_BASE,
+        *, mission_policy_controller: "_MissionPolicyControllerLike | None" = None,
+    ):
         self._context = context
         self._page = page
         self._allowed_host = allowed_host
         self._portal_base = portal_base
         self._closed = False
         self._capability_token = object()
+        # Phase 1C-B release-blocker correction: OPTIONAL, set only by
+        # open_reader(dynamic_mission_authorization=True) -- a
+        # ReadOnlyMissionPolicyController (mcma.portal.interception),
+        # accepted here purely structurally (this class never imports that
+        # module: it only ever calls .authorize_exact_mission_route() on
+        # whatever it was given). None (the default) leaves open()'s
+        # existing behavior completely unmodified -- every other caller
+        # (notification reading, etc.) is unaffected.
+        self._mission_policy_controller = mission_policy_controller
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -933,6 +987,36 @@ class ReadCapability:
             raise ValueError(
                 "open() only accepts a Candidate returned by this capability's own search()"
             )
+        if self._mission_policy_controller is not None:
+            # Phase 1C-B release-blocker correction: dynamic-mission-
+            # authorization mode. id_mission is untrusted (a portal search
+            # response value) until validated here as a strict positive
+            # bounded integer -- never coerced, never used to build a
+            # route before validation succeeds. The ONE resulting contract
+            # is constructed and authorized fresh, for THIS candidate
+            # only, through the controller's own SEARCH_READ ->
+            # MISSION_READ transition (usable at most once per session) --
+            # a forged/malformed candidate, a second authorization
+            # attempt, a foreign host, or a permanently-blocked route all
+            # raise there, before any navigation happens.
+            id_mission = _require_valid_bounded_mission_id(candidate.id_mission)
+            mission_route = _MISSION_DEEP_LINK_TEMPLATE.format(id_sinistre=str(id_mission))
+            mission_contract = RouteContract(
+                host=self._allowed_host,
+                route=mission_route,
+                method="GET",
+                query_fields=frozenset(),
+                content_type=None,
+                body_fields=frozenset(),
+                capability="read",
+                operation_type=MISSION_OPEN_OPERATION_TYPE,
+                workflow=None,
+            )
+            self._mission_policy_controller.authorize_exact_mission_route(
+                mission_contract, expected_route=mission_route,
+            )
+            await self._page.goto(self._absolute_url(mission_route))
+            return
         id_segment = quote(str(candidate.id_mission), safe="")
         path = _MISSION_DEEP_LINK_TEMPLATE.format(id_sinistre=id_segment)
         await self._page.goto(self._absolute_url(path))
@@ -1157,7 +1241,24 @@ async def open_reader(
     *,
     context_options: dict | None = None,
     portal_base: str = DEFAULT_PORTAL_BASE,
+    dynamic_mission_authorization: bool = False,
 ) -> ReadCapability:
+    """`dynamic_mission_authorization=False` (the default) is EXACTLY
+    today's behavior, unchanged: a static contract set installed once, and
+    ReadCapability.open() navigates without any further authorization
+    step. Every existing caller (notification reading, etc.) keeps this.
+
+    `dynamic_mission_authorization=True` (Phase 1C-B release-blocker
+    correction) is for the workstation DRY_RUN identity gate only:
+    `contracts` must then contain ONLY the search-page and search-request
+    routes (never a mission_open contract -- there is nothing fixed to
+    give it, since a real id_mission is not known until search returns).
+    A ReadOnlyMissionPolicyController is constructed, bound to the guard
+    via install_phased_portal_guard, and handed to the returned
+    ReadCapability so its OWN open() can construct and authorize the ONE
+    mission route a validated search Candidate resolves to, at runtime --
+    see ReadOnlyMissionPolicyController's own module note for the full
+    read-only staged policy and why it can never reach a write contract."""
     if not isinstance(lease_handle, LeaseHandle):
         raise TypeError("open_reader() requires a LeaseHandle")
     await lease_handle.assert_valid()
@@ -1166,11 +1267,20 @@ async def open_reader(
     search_page_route = _find_single_navigation_route(
         frozen_contracts, capability="read", operation_type=_SEARCH_PAGE_OPERATION_TYPE
     )
-    context = await open_guarded_context(browser, frozen_contracts, allowed_host, context_options)
+    mission_policy_controller = None
+    if dynamic_mission_authorization:
+        mission_policy_controller = ReadOnlyMissionPolicyController(frozen_contracts, allowed_host)
+        context = await open_guarded_context_for_read_only_mission(
+            browser, mission_policy_controller, allowed_host, context_options,
+        )
+    else:
+        context = await open_guarded_context(browser, frozen_contracts, allowed_host, context_options)
     try:
         page = await context.new_page()
         await page.goto(f"{portal_origin(allowed_host)}{search_page_route}")
     except Exception:
         await context.close()
         raise
-    return ReadCapability(context, page, allowed_host, portal_base)
+    return ReadCapability(
+        context, page, allowed_host, portal_base, mission_policy_controller=mission_policy_controller,
+    )

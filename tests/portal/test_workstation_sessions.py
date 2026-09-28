@@ -506,8 +506,17 @@ def test_verify_saved_session_applies_storage_state_only_via_in_memory_context_o
 
 
 def test_module_source_never_writes_a_file():
+    """Checks for the BUILTIN open() (an ast.Call whose func is a bare
+    ast.Name, never an ast.Attribute) -- Phase 1C-B's
+    perform_dry_run_identity_check() legitimately calls
+    ReadCapability.open() (a portal capability method, not a file open),
+    which a plain substring check on "open(" could not tell apart."""
     source = inspect.getsource(workstation_sessions)
-    for forbidden in ("open(", ".write(", "with open"):
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open":
+            pytest.fail("workstation_sessions.py calls the builtin open()")
+    for forbidden in (".write(", "with open"):
         assert forbidden not in source
 
 
@@ -552,3 +561,183 @@ def test_module_declares_no_forbidden_imports():
         assert not any(
             module_name == prefix or module_name.startswith(prefix + ".") for prefix in forbidden_prefixes
         ), module_name
+
+
+# --------------------------------------------------------------------- #
+# 16 -- perform_dry_run_identity_check (Phase 1C-B, item E's real
+# read-only portal operation)
+# --------------------------------------------------------------------- #
+
+from mcma.domain.values import IdSinistre, RegistrationPlate  # noqa: E402
+from mcma.portal.identity import ExpectedIdentity, IdentityMismatch  # noqa: E402
+from mcma.portal.capabilities import SearchIdentifiers  # noqa: E402
+from mcma.portal.workstation_sessions import DryRunIdentityCheckFailed, perform_dry_run_identity_check  # noqa: E402
+
+_EXPECTED_IDENTITY = ExpectedIdentity(registration=RegistrationPlate("77001-C-3"), id_sinistre=IdSinistre("699001"))
+_SEARCH_IDENTIFIERS = SearchIdentifiers(matricule="77001-C-3")
+
+_READ_SEARCH_PAGE_CONTRACT = RouteContract(
+    host=DEFAULT_SINAUTO_HOST, route="/SinAuto_MCMA/expertise/frontexpert", method="GET",
+    query_fields=frozenset(), content_type=None, body_fields=frozenset(),
+    capability="read", operation_type="search_page", workflow=None,
+)
+_READ_LIST_MISSIONS_CONTRACT = RouteContract(
+    host=DEFAULT_SINAUTO_HOST, route="/SinAuto_MCMA/expertise/FrontExpert/listeMissions", method="POST",
+    query_fields=frozenset(), content_type="application/x-www-form-urlencoded",
+    body_fields=frozenset({"Matricule", "ReferenceCie"}), capability="read", operation_type="search", workflow=None,
+)
+# Release-blocker correction: matches mcma.portal.sinauto_contracts.
+# identity_read_contracts()'s own shape exactly -- ONLY the fixed search-
+# page/search-request routes. No mission_page/mission_open contract here
+# at all: perform_dry_run_identity_check() now calls open_reader() with
+# dynamic_mission_authorization=True, so ReadCapability.open() constructs
+# and authorizes that ONE route itself, at runtime, from the candidate
+# search() actually returns -- see test_dynamic_mission_id below.
+_READ_CONTRACTS = (_READ_SEARCH_PAGE_CONTRACT, _READ_LIST_MISSIONS_CONTRACT)
+
+# A non-fixture mission id (an integer -- IdMission is portal-assigned and
+# numeric; ReadCapability._require_valid_bounded_mission_id rejects
+# anything else) that dynamic_mission_authorization must derive its ONE
+# authorized route from at runtime.
+_MISSION_ID = 987654
+_MATCHING_CANDIDATE_ROW = {"data": [
+    {"IdMission": _MISSION_ID, "Matricule": "77001-C-3", "ReferenceMission": "R1", "Societaire": "S1"}
+]}
+_MATCHING_OBSERVED_IDENTITY = {"registration": "77001-C-3", "id_sinistre": "699001"}
+_MISMATCHED_OBSERVED_IDENTITY = {"registration": "00000-Z-0", "id_sinistre": "000000"}
+
+
+def _run_check(browser, **overrides):
+    kwargs = dict(
+        account_id=OUJDA, storage_state=_storage_state(), expected_identity=_EXPECTED_IDENTITY,
+        search_identifiers=_SEARCH_IDENTIFIERS, contracts=_READ_CONTRACTS,
+    )
+    kwargs.update(overrides)
+    return run_async(perform_dry_run_identity_check(**kwargs))
+
+
+def test_dry_run_identity_check_returns_true_on_a_positive_match(monkeypatch):
+    page_factory = lambda: FakePage(evaluate_results=[_MATCHING_CANDIDATE_ROW, _MATCHING_OBSERVED_IDENTITY])
+    browser = _browser(page_factory=page_factory)
+    _patch_launch_browser(monkeypatch, browser)
+    assert _run_check(browser) is True
+
+
+def test_dry_run_identity_check_returns_false_on_identity_mismatch(monkeypatch):
+    page_factory = lambda: FakePage(evaluate_results=[_MATCHING_CANDIDATE_ROW, _MISMATCHED_OBSERVED_IDENTITY])
+    browser = _browser(page_factory=page_factory)
+    _patch_launch_browser(monkeypatch, browser)
+    assert _run_check(browser) is False
+
+
+def test_dry_run_identity_check_returns_false_on_no_candidates(monkeypatch):
+    page_factory = lambda: FakePage(evaluate_results=[{"data": []}])
+    browser = _browser(page_factory=page_factory)
+    _patch_launch_browser(monkeypatch, browser)
+    assert _run_check(browser) is False
+
+
+def test_dry_run_identity_check_returns_false_on_multiple_candidates_never_guessing(monkeypatch):
+    two_rows = {"data": [
+        {"IdMission": "M1", "Matricule": "77001-C-3", "ReferenceMission": "R1", "Societaire": "S1"},
+        {"IdMission": "M2", "Matricule": "77001-C-3", "ReferenceMission": "R2", "Societaire": "S2"},
+    ]}
+    page_factory = lambda: FakePage(evaluate_results=[two_rows])
+    browser = _browser(page_factory=page_factory)
+    _patch_launch_browser(monkeypatch, browser)
+    assert _run_check(browser) is False
+
+
+def test_dry_run_identity_check_raises_on_context_creation_failure(monkeypatch):
+    browser = _browser(route_exception=RuntimeError("guard install failed"))
+    _patch_launch_browser(monkeypatch, browser)
+    with pytest.raises(DryRunIdentityCheckFailed):
+        _run_check(browser)
+
+
+def test_dry_run_identity_check_raises_on_search_failure(monkeypatch):
+    page_factory = lambda: FakePage(evaluate_results=[RuntimeError("network error")])
+    browser = _browser(page_factory=page_factory)
+    _patch_launch_browser(monkeypatch, browser)
+    with pytest.raises(DryRunIdentityCheckFailed):
+        _run_check(browser)
+
+
+def test_dry_run_identity_check_raises_on_open_navigation_failure(monkeypatch):
+    def page_factory():
+        return FakePage(evaluate_results=[_MATCHING_CANDIDATE_ROW], goto_exception=RuntimeError("nav failed"))
+    browser = _browser(page_factory=page_factory)
+    _patch_launch_browser(monkeypatch, browser)
+    with pytest.raises(DryRunIdentityCheckFailed):
+        _run_check(browser)
+
+
+def test_dry_run_identity_check_closes_the_context_on_success(monkeypatch):
+    page_factory = lambda: FakePage(evaluate_results=[_MATCHING_CANDIDATE_ROW, _MATCHING_OBSERVED_IDENTITY])
+    browser = _browser(page_factory=page_factory)
+    _patch_launch_browser(monkeypatch, browser)
+    _run_check(browser)
+    assert browser.contexts_created[0].closed_count == 1
+
+
+def test_dry_run_identity_check_closes_the_context_on_no_match(monkeypatch):
+    page_factory = lambda: FakePage(evaluate_results=[{"data": []}])
+    browser = _browser(page_factory=page_factory)
+    _patch_launch_browser(monkeypatch, browser)
+    _run_check(browser)
+    assert browser.contexts_created[0].closed_count == 1
+
+
+def test_dry_run_identity_check_closes_the_context_on_operational_failure(monkeypatch):
+    page_factory = lambda: FakePage(evaluate_results=[RuntimeError("network error")])
+    browser = _browser(page_factory=page_factory)
+    _patch_launch_browser(monkeypatch, browser)
+    with pytest.raises(DryRunIdentityCheckFailed):
+        _run_check(browser)
+    assert browser.contexts_created[0].closed_count == 1
+
+
+def test_dry_run_identity_check_launches_headless(monkeypatch):
+    page_factory = lambda: FakePage(evaluate_results=[_MATCHING_CANDIDATE_ROW, _MATCHING_OBSERVED_IDENTITY])
+    browser = _browser(page_factory=page_factory)
+    recorder = _patch_launch_browser(monkeypatch, browser)
+    _run_check(browser)
+    assert recorder.headless_calls == [True]
+
+
+@pytest.mark.parametrize("bad_account", ["acct-mamda-oujda", "not-an-account", None])
+def test_dry_run_identity_check_rejects_unknown_or_mamda_account_before_launch(monkeypatch, bad_account):
+    browser = _browser()
+    recorder = _patch_launch_browser(monkeypatch, browser)
+    with pytest.raises(workstation_sessions.UnknownWorkstationAccount):
+        _run_check(browser, account_id=bad_account)
+    assert recorder.headless_calls == []  # never even launches a browser
+
+
+def test_dry_run_identity_check_rejects_a_non_dict_storage_state_before_launch(monkeypatch):
+    browser = _browser()
+    recorder = _patch_launch_browser(monkeypatch, browser)
+    with pytest.raises(workstation_sessions.InvalidWorkstationStorageState):
+        _run_check(browser, storage_state="not-a-dict")
+    assert recorder.headless_calls == []
+
+
+def test_dry_run_identity_check_propagates_cancellation(monkeypatch):
+    class _CancellingPage(FakePage):
+        async def evaluate(self, script, arg=None):
+            raise asyncio.CancelledError()
+
+    browser = _browser(page_factory=_CancellingPage)
+    _patch_launch_browser(monkeypatch, browser)
+    with pytest.raises(asyncio.CancelledError):
+        _run_check(browser)
+    assert browser.contexts_created[0].closed_count == 1
+
+
+def test_dry_run_identity_check_never_mutates_the_portal():
+    """No write-shaped method exists to call -- ReadCapability itself has
+    none (search/open/scrape/read_rows/observe_identity/close only), and
+    this module imports no writer at all."""
+    source = inspect.getsource(workstation_sessions)
+    for forbidden in ("VerifiedMissionWriter", "open_verified_writer", "add_normal_row", "edit_conventionne_row"):
+        assert forbidden not in source

@@ -220,6 +220,19 @@ def enqueue_execute(
 # --------------------------------------------------------------------- #
 
 
+class TransitionRequiresActiveTransaction(RuntimeError):
+    """Raised by transition(in_transaction=True) when `conn` reports no
+    transaction is actually active (Phase 1C-B transaction-helper
+    hardening). `in_transaction=True` exists ONLY so a caller that already
+    holds a BEGIN IMMEDIATE can combine this job-status transition with
+    another table's write in one atomic commit -- it is not a general
+    "skip transaction management" escape hatch, and must never silently
+    autocommit a job-status change when a caller passes it incorrectly
+    (with no transaction actually open). This signals a PROGRAMMING error
+    at the call site, never a runtime/business condition, and is never
+    caught anywhere in this codebase."""
+
+
 class JobPreconditionMismatch(JobAuthorizationError):
     """Raised by transition() when `expected_from_statuses` is given and
     the job's FRESHLY re-read status (inside the transaction) is no
@@ -246,6 +259,7 @@ def transition(
     audit_actor_user_id: Optional[str] = None,
     audit_action: Optional[str] = None,
     expected_from_statuses: Optional[frozenset] = None,
+    in_transaction: bool = False,
 ) -> None:
     """`audit_actor_user_id`/`audit_action` are optional (correction batch,
     human browser handoff, section G): when `audit_action` is given, an
@@ -265,13 +279,30 @@ def transition(
     observe the same stale status and both successfully commit a
     transition; the second to acquire the lock sees the FIRST one's
     already-applied change and raises JobPreconditionMismatch instead of
-    silently overwriting it."""
+    silently overwriting it.
+
+    `in_transaction=True` (Phase 1C-B): skips this function's own BEGIN
+    IMMEDIATE/COMMIT/ROLLBACK -- the caller already holds one (SQLite does
+    not support nesting one BEGIN IMMEDIATE inside another) and must roll
+    it back itself on any exception from here. Used only by
+    mcma.app.runners.dispatch's start_job()/finish_job(), which must
+    combine this job-status transition with the SAME workstation_job_
+    dispatch row write in ONE atomic commit -- never a caller that could
+    otherwise just call transition() normally."""
     jobs_repo = AutomationJobsRepository(conn)
     row = jobs_repo.get(job_id)
     if row is None:
         raise ValueError("no such job_id")
     account_id = row["account_id"]
-    conn.execute("BEGIN IMMEDIATE")
+    if not in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    elif not getattr(conn, "in_transaction", False):
+        # Fail closed rather than silently autocommitting each statement
+        # below as its own separate, non-atomic write -- see
+        # TransitionRequiresActiveTransaction's own docstring.
+        raise TransitionRequiresActiveTransaction(
+            "transition(in_transaction=True) requires an already-active transaction on `conn`"
+        )
     try:
         if expected_from_statuses is not None:
             fresh_status = jobs_repo.get(job_id)["status"]
@@ -310,9 +341,11 @@ def transition(
                 account_id=account_id,
                 job_id=job_id,
             )
-        conn.execute("COMMIT")
+        if not in_transaction:
+            conn.execute("COMMIT")
     except Exception:
-        conn.execute("ROLLBACK")
+        if not in_transaction:
+            conn.execute("ROLLBACK")
         raise
 
 
@@ -661,7 +694,9 @@ async def _run_write_phase(
     return failed_status
 
 
-def fail_closed_on_runner_exception(conn, job_id: str, reason_code: str) -> Optional[str]:
+def fail_closed_on_runner_exception(
+    conn, job_id: str, reason_code: str, *, in_transaction: bool = False,
+) -> Optional[str]:
     """Last-resort truthful landing for an unexpected exception escaping
     the runner (pilot-runner correction, requirement 2). A job must never
     be left sitting at QUEUED/PLANNING/PLANNED after portal work has in
@@ -675,7 +710,14 @@ def fail_closed_on_runner_exception(conn, job_id: str, reason_code: str) -> Opti
     HUMAN_REVIEW -- the same status a genuine mid-write interruption
     already uses, because that is exactly what this is. A job already in
     human handoff or already terminal is left alone and None is returned:
-    an outcome has been recorded and nothing here may overwrite it."""
+    an outcome has been recorded and nothing here may overwrite it.
+
+    `in_transaction=True` (Phase 1C-B release-blocker correction): passed
+    straight through to transition() -- the caller already holds a BEGIN
+    IMMEDIATE (mcma.app.runners.dispatch's RUNNING-expiry fencing, which
+    must commit the automation_jobs transition and the dispatch row's own
+    EXPIRED write together, atomically) and is responsible for its own
+    commit/rollback."""
     row = AutomationJobsRepository(conn).get(job_id)
     if row is None:
         return None
@@ -689,7 +731,7 @@ def fail_closed_on_runner_exception(conn, job_id: str, reason_code: str) -> Opti
     try:
         transition(
             conn, job_id, new_status, reason_code=reason_code, finished_at=_utcnow_iso(),
-            expected_from_statuses=frozenset({status}),
+            expected_from_statuses=frozenset({status}), in_transaction=in_transaction,
         )
     except JobPreconditionMismatch:
         return None

@@ -14,6 +14,9 @@ from capabilities_test_support import (
     AUTH_LOGIN_CONTRACT,
     FailingNewPageContext,
     FakeBrowser,
+    FakeContext,
+    FakeRequest,
+    FakeRoute,
     READ_LIST_MISSIONS_CONTRACT,
     READ_NORMAL_ROWS_CONTRACT,
     READ_PEC_ROWS_CONTRACT,
@@ -29,6 +32,12 @@ from mcma.portal.capabilities import (
     ReadCapability,
     SearchIdentifiers,
     open_reader,
+)
+from mcma.portal.contracts import RouteContract
+from mcma.portal.interception import (
+    PolicyPhaseError,
+    ReadOnlyMissionPolicyController,
+    install_phased_portal_guard,
 )
 
 ALL_CONTRACTS = (
@@ -413,3 +422,184 @@ def test_read_capability_source_never_references_write_or_final_endpoints():
     )
     for token in forbidden:
         assert token not in source, token
+
+
+# --------------------------------------------------------------------- #
+# Phase 1C-B release-blocker correction: dynamic_mission_authorization --
+# a real (non-mock-fixture) mission id, authorized at runtime from a
+# validated search Candidate, with no wildcard route and no client/dossier
+# value ever used directly as a URL. Contracts deliberately carry ONLY the
+# search-page/search-request routes -- no mission_page/mission_open
+# contract exists anywhere in this initial set, since none could: the
+# mission id is not known until search() returns.
+# --------------------------------------------------------------------- #
+
+IDENTITY_READ_CONTRACTS = (READ_SEARCH_PAGE_CONTRACT, READ_LIST_MISSIONS_CONTRACT)
+
+MISSION_ID = 987654  # a non-fixture id -- neither mock mission (612001/532805) nor MISSION_CONTRACT's 532805
+MISSION_ROUTE = f"/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/{MISSION_ID}/rubrique/gestionexpert-index"
+OTHER_MISSION_ROUTE = "/SinAuto_MCMA/expertise/gestionExpert/getSinistre/idSinistre/111111/rubrique/gestionexpert-index"
+
+
+def _mission_contract(route: str) -> RouteContract:
+    return RouteContract(
+        host=ALLOWED_HOST, route=route, method="GET", query_fields=frozenset(), content_type=None,
+        body_fields=frozenset(), capability="read", operation_type="mission_open", workflow=None,
+    )
+
+
+def _open_dynamic(browser=None, lease=None, contracts=IDENTITY_READ_CONTRACTS):
+    browser = browser or FakeBrowser()
+    lease = lease or SyntheticLeaseHandle()
+    reader = run_async(
+        open_reader(browser, lease, contracts, ALLOWED_HOST, dynamic_mission_authorization=True)
+    )
+    return browser, reader
+
+
+def _found_candidate(reader, page, id_mission) -> Candidate:
+    page._evaluate_results = [
+        {"data": [{"IdMission": id_mission, "Matricule": "X", "ReferenceMission": "Y", "Societaire": "Z"}]}
+    ]
+    (candidate,) = run_async(reader.search(SearchIdentifiers(matricule="X")))
+    return candidate
+
+
+def test_open_reader_with_no_dynamic_authorization_is_completely_unchanged():
+    """The default (dynamic_mission_authorization=False, unspecified) --
+    every OTHER caller of open_reader (notification reading, etc.) keeps
+    today's exact static-contract behavior."""
+    browser, reader = _open(contracts=ALL_CONTRACTS)
+    assert reader._mission_policy_controller is None
+
+
+def test_dynamic_mission_authorization_permits_the_exact_searched_route():
+    browser, reader = _open_dynamic()
+    page = browser.contexts_created[0].pages_created[0]
+    candidate = _found_candidate(reader, page, MISSION_ID)
+    run_async(reader.open(candidate))
+    assert page.goto_calls[-1] == f"http://{ALLOWED_HOST}{MISSION_ROUTE}"
+
+
+def test_dynamic_mission_authorization_refuses_a_second_open_for_a_different_mission():
+    """SEARCH_READ -> MISSION_READ is usable at most once per session --
+    a second candidate (a genuinely different mission id) is refused, not
+    silently re-authorized."""
+    browser, reader = _open_dynamic()
+    page = browser.contexts_created[0].pages_created[0]
+    first = _found_candidate(reader, page, MISSION_ID)
+    run_async(reader.open(first))
+    other = Candidate(id_mission=111111, matricule="X", reference_mission="Y", societaire="Z", owner_token=reader._capability_token)
+    with pytest.raises(PolicyPhaseError):
+        run_async(reader.open(other))
+
+
+@pytest.mark.parametrize("bad_id", ["987654", "987654; DROP TABLE", "../../gestiongarage/garageModifierValDevis", None, 1.5, True])
+def test_dynamic_mission_authorization_refuses_a_forged_or_malformed_mission_id(bad_id):
+    browser, reader = _open_dynamic()
+    forged = Candidate(id_mission=bad_id, matricule="X", reference_mission="Y", societaire="Z", owner_token=reader._capability_token)
+    with pytest.raises(ValueError):
+        run_async(reader.open(forged))
+
+
+@pytest.mark.parametrize("bad_id", [-1, 0, 10 ** 12])
+def test_dynamic_mission_authorization_refuses_a_negative_zero_or_unbounded_mission_id(bad_id):
+    browser, reader = _open_dynamic()
+    candidate = Candidate(id_mission=bad_id, matricule="X", reference_mission="Y", societaire="Z", owner_token=reader._capability_token)
+    with pytest.raises(ValueError):
+        run_async(reader.open(candidate))
+
+
+def test_dynamic_mission_authorization_still_rejects_the_wrong_owner_token():
+    browser, reader = _open_dynamic()
+    forged = Candidate(id_mission=MISSION_ID, matricule="X", reference_mission="Y", societaire="Z", owner_token=object())
+    with pytest.raises(ValueError):
+        run_async(reader.open(forged))
+
+
+def test_dynamic_mission_authorization_still_rejects_a_plain_string_url():
+    browser, reader = _open_dynamic()
+    with pytest.raises(TypeError):
+        run_async(reader.open("http://evil.example.com/expertise/gestiongarage/garageModifierValDevis"))
+
+
+def test_only_read_operations_remain_reachable_from_the_read_only_controller():
+    """No write-shaped method exists anywhere on ReadOnlyMissionPolicyController
+    -- structurally, not merely by convention -- and ReadCapability itself
+    still exposes none either."""
+    controller_methods = {name for name in dir(ReadOnlyMissionPolicyController) if not name.startswith("_")}
+    assert controller_methods == {"phase", "contracts", "authorize_exact_mission_route"}
+    assert not hasattr(ReadOnlyMissionPolicyController, "activate_write_once")
+    reader_methods = {name for name in dir(ReadCapability) if not name.startswith("_")}
+    assert reader_methods == {"search", "open", "scrape", "observe_identity", "discover_notification_categories", "observe_session_state", "read_notifications", "read_rows", "close"}
+
+
+def test_guard_permits_exactly_the_authorized_route_and_denies_a_different_one():
+    """The actual interception decision (mcma.portal.interception.
+    evaluate_request, via the installed phased handler) -- not just the
+    controller's own bookkeeping."""
+    controller = ReadOnlyMissionPolicyController(IDENTITY_READ_CONTRACTS, ALLOWED_HOST)
+    controller.authorize_exact_mission_route(_mission_contract(MISSION_ROUTE), expected_route=MISSION_ROUTE)
+
+    async def scenario():
+        context = FakeContext()
+        await install_phased_portal_guard(context, controller, ALLOWED_HOST)
+        _pattern, handler = context.route_calls[0]
+
+        allowed = FakeRoute(FakeRequest(url=f"http://{ALLOWED_HOST}{MISSION_ROUTE}", method="GET"))
+        await handler(allowed)
+        assert allowed.continued == 1 and allowed.aborted == 0
+
+        denied = FakeRoute(FakeRequest(url=f"http://{ALLOWED_HOST}{OTHER_MISSION_ROUTE}", method="GET"))
+        await handler(denied)
+        assert denied.aborted == 1 and denied.continued == 0
+
+    run_async(scenario())
+
+
+def test_guard_refuses_authorizing_a_second_mission_route_entirely():
+    controller = ReadOnlyMissionPolicyController(IDENTITY_READ_CONTRACTS, ALLOWED_HOST)
+    controller.authorize_exact_mission_route(_mission_contract(MISSION_ROUTE), expected_route=MISSION_ROUTE)
+    with pytest.raises(PolicyPhaseError):
+        controller.authorize_exact_mission_route(_mission_contract(OTHER_MISSION_ROUTE), expected_route=OTHER_MISSION_ROUTE)
+
+
+def test_guard_refuses_a_foreign_host_contract():
+    controller = ReadOnlyMissionPolicyController(IDENTITY_READ_CONTRACTS, ALLOWED_HOST)
+    forged = RouteContract(
+        host="evil.example.com", route=MISSION_ROUTE, method="GET", query_fields=frozenset(),
+        content_type=None, body_fields=frozenset(), capability="read", operation_type="mission_open", workflow=None,
+    )
+    with pytest.raises(ValueError):
+        controller.authorize_exact_mission_route(forged, expected_route=MISSION_ROUTE)
+
+
+def test_guard_refuses_a_write_shaped_contract():
+    controller = ReadOnlyMissionPolicyController(IDENTITY_READ_CONTRACTS, ALLOWED_HOST)
+    forged = RouteContract(
+        host=ALLOWED_HOST, route=MISSION_ROUTE, method="POST", query_fields=frozenset(),
+        content_type="application/x-www-form-urlencoded", body_fields=frozenset({"x"}),
+        capability="row_write", operation_type="add_row", workflow=None,
+    )
+    with pytest.raises(ValueError):
+        controller.authorize_exact_mission_route(forged, expected_route=MISSION_ROUTE)
+
+
+def test_guard_refuses_a_permanently_blocked_route():
+    blocked_route = "/SinAuto_MCMA/expertise/gestiongarage/garageModifierValDevis"
+    controller = ReadOnlyMissionPolicyController(IDENTITY_READ_CONTRACTS, ALLOWED_HOST)
+    forged = RouteContract(
+        host=ALLOWED_HOST, route=blocked_route, method="GET", query_fields=frozenset(),
+        content_type=None, body_fields=frozenset(), capability="read", operation_type="mission_open", workflow=None,
+    )
+    with pytest.raises(ValueError):
+        controller.authorize_exact_mission_route(forged, expected_route=blocked_route)
+
+
+def test_guard_refuses_a_mismatched_route_field():
+    """expected_route (computed by the caller from the SAME validated
+    integer) must match the contract's own route exactly -- a contract for
+    a DIFFERENT route than what was actually validated is refused."""
+    controller = ReadOnlyMissionPolicyController(IDENTITY_READ_CONTRACTS, ALLOWED_HOST)
+    with pytest.raises(ValueError):
+        controller.authorize_exact_mission_route(_mission_contract(MISSION_ROUTE), expected_route=OTHER_MISSION_ROUTE)

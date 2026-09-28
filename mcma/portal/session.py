@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Sequence
 
 from mcma.portal.contracts import RouteContract
 from mcma.portal.interception import (
+    PhasedPolicyController,
     WriterPolicyController,
     hardened_context_options,
     install_login_guard,
@@ -74,6 +75,28 @@ async def open_guarded_context_for_writer(
     complete row_write/native_recalc contract tuple to be validated and
     frozen before any BrowserContext is created. `open_guarded_context`
     above is completely unaffected by this addition."""
+    options = hardened_context_options(context_options)
+    context = await browser.new_context(**options)
+    await install_phased_portal_guard(context, controller, allowed_host)
+    return context
+
+
+async def open_guarded_context_for_read_only_mission(
+    browser: "Browser",
+    controller: PhasedPolicyController,
+    allowed_host: str,
+    context_options: dict | None = None,
+) -> "BrowserContext":
+    """Phase 1C-B release-blocker correction: opens one BrowserContext for
+    mcma.portal.capabilities.ReadCapability's OPTIONAL dynamic-mission-
+    authorization mode, hardens its creation options, and installs the
+    SAME phased (explicit-state-machine) guard writer.py uses, bound to an
+    already-constructed ReadOnlyMissionPolicyController -- a structurally
+    narrower controller than WriterPolicyController with no write-
+    activation method reachable on it at all (see that class's own
+    docstring). `open_guarded_context` above (the default, static-contract
+    path every other ReadCapability caller keeps using unchanged) is
+    completely unaffected by this addition."""
     options = hardened_context_options(context_options)
     context = await browser.new_context(**options)
     await install_phased_portal_guard(context, controller, allowed_host)

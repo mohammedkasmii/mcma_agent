@@ -11,12 +11,14 @@ import httpx
 import pytest
 
 from dispatch_test_support import (  # noqa: F401
-    MAMDA_OUJDA, NADOR, OUJDA, conn, create_job, create_runner, create_user, db_path, encryptor, grant_access,
-    principal, revoke_access, set_ready,
+    MAMDA_OUJDA, NADOR, NEEDS_REVIEW_TYPED_INPUT, OUJDA, VALID_TYPED_INPUT, VALID_WORKFLOW_NAME, conn, create_job,
+    create_runner, create_user, db_path, encryptor, grant_access, principal, revoke_access, set_ready,
 )
 from mcma.app.auth.users import UserInputError
 from mcma.app.runners import dispatch
 from mcma.execution.inputs import TestOnlyPlaintextEncryptor
+from mcma.mapping.wexia import parse_wexia
+from mcma.planning.registry import default_registry
 
 T0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -113,7 +115,11 @@ def test_an_employee_who_lost_execute_permission_yields_no_job(conn, encryptor):
 
 @pytest.mark.parametrize("mode,status,should_claim", [
     ("DRY_RUN", "QUEUED", True),
-    ("EXECUTE", "PLANNED", True),
+    # EXECUTE-PLANNED is a structurally dispatchable (mode, status) pair,
+    # but Phase 1C-B's EXECUTE_DISPATCH_ENABLED gate (item C) refuses it
+    # regardless -- see test_execute_is_never_claimed_while_the_gate_is_off
+    # below for the dedicated, explicit proof of that gate.
+    ("EXECUTE", "PLANNED", False),
     ("DRY_RUN", "PLANNED", False),
     ("EXECUTE", "QUEUED", False),
     ("DRY_RUN", "PLANNING", False),
@@ -128,6 +134,20 @@ def test_only_the_exact_dispatchable_mode_status_pairs_are_claimed(conn, encrypt
         conn, principal(conn, runner), protocol_version=1, app_version="1.0.0", encryptor=encryptor, now=T0,
     )
     assert (envelope is not None) is should_claim
+
+
+def test_execute_is_never_claimed_while_the_gate_is_off(conn, encryptor):
+    """Phase 1C-B item C: an explicit, server-owned capability gate --
+    EXECUTE_DISPATCH_ENABLED is False everywhere in this codebase today,
+    and the client cannot override it (the claim request carries only
+    protocol_version/app_version -- no mode field exists to request)."""
+    assert dispatch.EXECUTE_DISPATCH_ENABLED is False
+    user, runner = _world(conn)
+    create_job(conn, "job-1", account_id=OUJDA, user_id=user, mode="EXECUTE", status="PLANNED", encryptor=encryptor)
+    envelope = dispatch.claim_job(
+        conn, principal(conn, runner), protocol_version=1, app_version="1.0.0", encryptor=encryptor, now=T0,
+    )
+    assert envelope is None
 
 
 def test_a_runner_already_holding_an_active_job_gets_no_second_one(conn, encryptor):
@@ -690,3 +710,781 @@ def test_a_real_server_produced_envelope_is_accepted_by_the_windows_client(conn,
     assert result.job_id == envelope.job_id
     assert result.claim_token == envelope.claim_token
     assert result.typed_input == envelope.typed_input
+
+
+# --------------------------------------------------------------------- #
+# Phase 1C-B -- server-owned DRY_RUN lifecycle: start_job / finish_job
+# --------------------------------------------------------------------- #
+
+REGISTRY = default_registry()
+
+
+def _claim_valid(conn, encryptor, *, user, runner, job_id="job-1", typed_input=None):
+    create_job(
+        conn, job_id, account_id=OUJDA, user_id=user, workflow_name=VALID_WORKFLOW_NAME,
+        typed_input=typed_input if typed_input is not None else VALID_TYPED_INPUT, encryptor=encryptor,
+    )
+    return dispatch.claim_job(
+        conn, principal(conn, runner), protocol_version=1, app_version="1.0.0", encryptor=encryptor, now=T0,
+    )
+
+
+def _start(conn, p, envelope, encryptor, *, now=T0):
+    return dispatch.start_job(
+        conn, p, job_id=envelope.job_id, claim_token=envelope.claim_token, generation=envelope.generation,
+        workflow_registry=REGISTRY, encryptor=encryptor, now=now,
+    )
+
+
+def test_start_moves_a_planned_dry_run_to_running_and_read_only_identity_check(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+    result = _start(conn, p, envelope, encryptor)
+    assert result["status"] == "RUNNING"
+    assert result["job_status"] == "READ_ONLY_IDENTITY_CHECK"
+    assert "plan_hash" in result and result["plan_hash"]
+    row = conn.execute("SELECT status, started_at FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert row["status"] == "RUNNING"
+    assert row["started_at"] is not None
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "READ_ONLY_IDENTITY_CHECK"
+
+
+def test_start_returns_the_same_plan_hash_a_local_rebuild_would_produce(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+    result = _start(conn, p, envelope, encryptor)
+    local_plan = REGISTRY.get(VALID_WORKFLOW_NAME)(parse_wexia(VALID_TYPED_INPUT))
+    assert result["plan_hash"] == local_plan.provenance.plan_hash
+
+
+def test_start_lands_needs_review_without_moving_to_running(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner, typed_input=NEEDS_REVIEW_TYPED_INPUT)
+    p = principal(conn, runner)
+    result = _start(conn, p, envelope, encryptor)
+    assert result["status"] == "NEEDS_REVIEW"
+    assert "plan_hash" not in result
+    row = conn.execute("SELECT status, outcome_code, started_at FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert row["status"] == "SUCCEEDED"
+    assert row["outcome_code"] == "NEEDS_REVIEW_NO_BROWSER"
+    assert row["started_at"] is None
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "NEEDS_REVIEW"
+
+
+def test_start_fences_the_job_from_further_claims_before_returning(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+    _start(conn, p, envelope, encryptor)
+    # The job is now READ_ONLY_IDENTITY_CHECK, not QUEUED -- claim_job's own
+    # candidate query cannot select it, with or without an active dispatch row.
+    again = dispatch.claim_job(conn, p, protocol_version=1, app_version="1.0.0", encryptor=encryptor, now=T0)
+    assert again is None
+
+
+def test_two_concurrent_starts_for_the_same_claim_never_both_succeed(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+    results = {}
+
+    def _do(name):
+        try:
+            results[name] = _start(conn, p, envelope, encryptor)
+        except UserInputError as exc:
+            results[name] = exc
+
+    t1 = threading.Thread(target=_do, args=("a",))
+    t2 = threading.Thread(target=_do, args=("b",))
+    t1.start(); t2.start()
+    t1.join(); t2.join()
+
+    successes = [v for v in results.values() if isinstance(v, dict)]
+    failures = [v for v in results.values() if isinstance(v, UserInputError)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    row = conn.execute("SELECT status FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert row["status"] == "RUNNING"
+
+
+def test_start_requires_a_claimed_assignment_not_already_running(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+    _start(conn, p, envelope, encryptor)
+    with pytest.raises(UserInputError) as exc_info:
+        _start(conn, p, envelope, encryptor)
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+
+
+def test_start_rejects_a_job_that_is_not_dry_run_queued(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    conn.execute("UPDATE automation_jobs SET status = 'PLANNING' WHERE job_id = ?", (envelope.job_id,))
+    p = principal(conn, runner)
+    with pytest.raises(UserInputError) as exc_info:
+        _start(conn, p, envelope, encryptor)
+    assert exc_info.value.code == "JOB_NOT_STARTABLE"
+
+
+def test_execute_can_never_be_started_even_with_a_direct_claimed_row(conn, encryptor):
+    """Defense in depth: EXECUTE can never even be CLAIMED (the dispatch
+    gate), but start_job's own mode check is exercised directly here by
+    seeding a CLAIMED row for an EXECUTE job as if the gate had somehow
+    been bypassed."""
+    user, runner = _world(conn)
+    create_job(conn, "job-1", account_id=OUJDA, user_id=user, mode="EXECUTE", status="PLANNED",
+               workflow_name=VALID_WORKFLOW_NAME, typed_input=VALID_TYPED_INPUT, encryptor=encryptor)
+    claim_token = dispatch.new_claim_token()
+    conn.execute(
+        "INSERT INTO workstation_job_dispatch (assignment_id, job_id, runner_id, generation, claim_token_digest, "
+        "status, claimed_at, lease_expires_at) VALUES ('a1', 'job-1', ?, 1, ?, 'CLAIMED', "
+        "'2026-01-01T00:00:00+00:00', '2026-01-01T00:02:00+00:00')",
+        (runner, dispatch.digest_token(claim_token)),
+    )
+    p = principal(conn, runner)
+    with pytest.raises(UserInputError) as exc_info:
+        dispatch.start_job(conn, p, job_id="job-1", claim_token=claim_token, generation=1,
+                            workflow_registry=REGISTRY, encryptor=encryptor, now=T0)
+    assert exc_info.value.code == "JOB_NOT_STARTABLE"
+
+
+def test_start_is_refused_immediately_once_the_runner_is_revoked(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    conn.execute("UPDATE runners SET status = 'REVOKED', revoked_at = ? WHERE runner_id = ?", (dispatch._iso(T0), runner))
+    p = principal(conn, runner)
+    with pytest.raises(UserInputError) as exc_info:
+        _start(conn, p, envelope, encryptor)
+    assert exc_info.value.status == 401
+
+
+def test_start_is_refused_once_access_to_the_exact_claimed_account_is_removed(conn, encryptor):
+    user, runner = _world(conn)
+    grant_access(conn, user, NADOR)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    revoke_access(conn, user, OUJDA)
+    p = principal(conn, runner)
+    with pytest.raises(UserInputError) as exc_info:
+        _start(conn, p, envelope, encryptor)
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+
+
+def test_start_is_refused_once_the_session_is_no_longer_ready(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    set_ready(conn, runner, OUJDA, state="ERROR")
+    p = principal(conn, runner)
+    with pytest.raises(UserInputError) as exc_info:
+        _start(conn, p, envelope, encryptor)
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+
+
+def test_start_fails_closed_on_unverifiable_input(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    conn.execute("UPDATE automation_jobs SET input_hash = 'tampered' || input_hash WHERE job_id = ?", (envelope.job_id,))
+    p = principal(conn, runner)
+    with pytest.raises(UserInputError) as exc_info:
+        _start(conn, p, envelope, encryptor)
+    assert exc_info.value.code == "JOB_NOT_STARTABLE"
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "ERROR"
+    # Dispatch correction (issue 3): the CLAIMED row must land on FAILED/
+    # PLANNING_FAILED in the SAME transaction as the job's ERROR -- never
+    # left CLAIMED (which would strand the assignment until lease expiry).
+    row = conn.execute(
+        "SELECT status, outcome_code, finished_at FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)
+    ).fetchone()
+    assert row["status"] == "FAILED"
+    assert row["outcome_code"] == "PLANNING_FAILED"
+    assert row["finished_at"] is not None
+
+
+# --------------------------------------------------------------------- #
+# Dispatch correction: plan-build failure must never strand an active
+# claim on a job already landed on ERROR -- the CLAIMED->FAILED assignment
+# transition commits atomically with the job's ERROR transition, in the
+# SAME transaction, so the runner is immediately free for other work.
+# --------------------------------------------------------------------- #
+
+
+def test_plan_build_failure_frees_the_runner_for_another_job(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    conn.execute("UPDATE automation_jobs SET input_hash = 'tampered' || input_hash WHERE job_id = ?", (envelope.job_id,))
+    p = principal(conn, runner)
+    with pytest.raises(UserInputError):
+        _start(conn, p, envelope, encryptor)
+
+    active = conn.execute(
+        "SELECT 1 FROM workstation_job_dispatch WHERE runner_id = ? AND status IN ('CLAIMED', 'RUNNING')", (runner,)
+    ).fetchone()
+    assert active is None  # never stranded -- no active assignment remains
+
+    create_job(conn, "job-2", account_id=OUJDA, user_id=user, workflow_name=VALID_WORKFLOW_NAME,
+               typed_input=VALID_TYPED_INPUT, encryptor=encryptor, created_at="2026-01-01T00:05:00+00:00")
+    envelope2 = dispatch.claim_job(conn, p, protocol_version=1, app_version="1.0.0", encryptor=encryptor, now=T0)
+    assert envelope2 is not None
+    assert envelope2.job_id == "job-2"  # the SAME runner can claim other work immediately, not after lease expiry
+
+
+def test_plan_build_failure_transaction_rolls_back_both_halves_on_injected_crash(conn, encryptor, monkeypatch):
+    """An injected failure between landing the job's ERROR and the
+    dispatch row's FAILED write must roll back BOTH -- never leave ERROR
+    committed alone with the assignment still CLAIMED."""
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    conn.execute("UPDATE automation_jobs SET input_hash = 'tampered' || input_hash WHERE job_id = ?", (envelope.job_id,))
+    p = principal(conn, runner)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated crash between the two writes")
+
+    monkeypatch.setattr(dispatch, "fail_closed_on_runner_exception", _boom)
+    with pytest.raises(RuntimeError):
+        _start(conn, p, envelope, encryptor)
+
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "QUEUED"  # rolled back -- never landed ERROR alone
+    row = conn.execute("SELECT status FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert row["status"] == "CLAIMED"  # rolled back -- never landed FAILED alone
+
+
+def test_stale_generation_cannot_close_a_newer_assignment_on_plan_failure(conn, encryptor):
+    """If the claim this attempt started with is released and the job
+    re-claimed under a NEW generation WHILE planning is under way, and the
+    plan build then fails, the stale attempt's failure handling must
+    refuse generically -- never touching the newer assignment or mutating
+    the job out from under it."""
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+    newer = {}
+
+    def _release_and_reclaim_then_fail():
+        dispatch.release_job(
+            conn, p, job_id=envelope.job_id, claim_token=envelope.claim_token, generation=envelope.generation,
+            reason_code="RUNNER_SHUTDOWN", now=T0,
+        )
+        newer["envelope"] = dispatch.claim_job(
+            conn, p, protocol_version=1, app_version="1.0.0", encryptor=encryptor, now=T0,
+        )
+        raise RuntimeError("simulated plan-build failure after a concurrent release+reclaim")
+
+    with pytest.raises(UserInputError) as exc_info:
+        _start_with_side_effect(conn, p, envelope, encryptor, _release_and_reclaim_then_fail)
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"  # the STALE (generation 1) attempt, refused generically
+
+    newer_envelope = newer["envelope"]
+    assert newer_envelope is not None
+    assert newer_envelope.generation == envelope.generation + 1
+    newer_row = conn.execute(
+        "SELECT generation, status FROM workstation_job_dispatch WHERE job_id = ? ORDER BY generation DESC LIMIT 1",
+        (envelope.job_id,),
+    ).fetchone()
+    assert newer_row["generation"] == envelope.generation + 1
+    assert newer_row["status"] == "CLAIMED"  # the newer assignment is completely untouched
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "QUEUED"  # never moved to ERROR by the stale attempt
+
+
+# --------------------------------------------------------------------- #
+# Dispatch correction (issue 2): start_job must use a genuinely fresh
+# server time taken AFTER planning, never the entry-time value, for the
+# second fencing pass, the final lease check, eligibility, and every
+# timestamp it persists.
+# --------------------------------------------------------------------- #
+
+
+def test_start_uses_fresh_server_time_after_planning_a_lease_expiring_mid_plan_is_refused(conn, encryptor, monkeypatch):
+    """Simulated via a monkeypatched dispatch.utcnow returning two distinct
+    values -- the first (valid at entry) lets the up-front checks and
+    planning proceed; the second (already past the lease deadline) proves
+    the post-planning fencing pass genuinely re-evaluates against real
+    elapsed time rather than reusing the stale entry-time value. Every
+    OTHER test in this module injects `now=` explicitly and is unaffected
+    by this change -- only the `now=None` (production) path ever calls
+    dispatch.utcnow at all."""
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+    t_entry = T0
+    t_after_planning = T0 + timedelta(seconds=dispatch.DEFAULT_LEASE_TTL_SECONDS + 1)
+    times = iter([t_entry, t_after_planning])
+    monkeypatch.setattr(dispatch, "utcnow", lambda: next(times))
+
+    with pytest.raises(UserInputError) as exc_info:
+        dispatch.start_job(
+            conn, p, job_id=envelope.job_id, claim_token=envelope.claim_token, generation=envelope.generation,
+            workflow_registry=REGISTRY, encryptor=encryptor, now=None,
+        )
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+
+    row = conn.execute("SELECT status FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert row["status"] == "EXPIRED"  # fenced by the post-planning pass -- never left dangling as CLAIMED
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "QUEUED"  # no browser admission -- never PLANNING/PLANNED/READ_ONLY_IDENTITY_CHECK
+
+
+# --------------------------------------------------------------------- #
+# finish_job
+# --------------------------------------------------------------------- #
+
+
+def _running(conn, encryptor, *, user, runner, job_id="job-1", typed_input=None):
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner, job_id=job_id, typed_input=typed_input)
+    p = principal(conn, runner)
+    _start(conn, p, envelope, encryptor)
+    return envelope, p
+
+
+def _finish(conn, p, envelope, result, *, now=T0):
+    return dispatch.finish_job(
+        conn, p, job_id=envelope.job_id, claim_token=envelope.claim_token, generation=envelope.generation,
+        result=result, now=now,
+    )
+
+
+def test_finish_identity_matched_lands_dry_run_verified_and_succeeded(conn, encryptor):
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    result = _finish(conn, p, envelope, "IDENTITY_MATCHED")
+    assert result["status"] == "SUCCEEDED"
+    assert result["job_status"] == "DRY_RUN_VERIFIED"
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "DRY_RUN_VERIFIED"
+    row = conn.execute("SELECT status, outcome_code FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert row["status"] == "SUCCEEDED"
+    assert row["outcome_code"] == "IDENTITY_MATCHED"
+
+
+@pytest.mark.parametrize("result", ["IDENTITY_NOT_MATCHED", "SESSION_UNAVAILABLE", "PORTAL_READ_FAILED", "RUNNER_CANCELLED"])
+def test_finish_every_non_match_result_lands_identity_failed_and_failed(conn, encryptor, result):
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    response = _finish(conn, p, envelope, result)
+    assert response["status"] == "FAILED"
+    assert response["job_status"] == "IDENTITY_FAILED"
+    job = conn.execute("SELECT status, reason_code FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "IDENTITY_FAILED"
+    assert job["reason_code"] == result
+    row = conn.execute("SELECT status, outcome_code FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert row["status"] == "FAILED"
+    assert row["outcome_code"] == result
+
+
+def test_finish_requires_running_not_merely_claimed(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+    with pytest.raises(UserInputError) as exc_info:
+        _finish(conn, p, envelope, "IDENTITY_MATCHED")
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+
+
+def test_finish_rejects_an_arbitrary_result_value(conn, encryptor):
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    with pytest.raises(UserInputError):
+        _finish(conn, p, envelope, "SOMETHING_MADE_UP")
+    row = conn.execute("SELECT status FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert row["status"] == "RUNNING"  # unaffected by the rejected attempt
+
+
+def test_duplicate_identical_finish_is_idempotent(conn, encryptor):
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    first = _finish(conn, p, envelope, "IDENTITY_MATCHED")
+    second = _finish(conn, p, envelope, "IDENTITY_MATCHED")
+    assert second == first
+
+
+def test_conflicting_finish_is_refused_generically(conn, encryptor):
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    _finish(conn, p, envelope, "IDENTITY_MATCHED")
+    with pytest.raises(UserInputError) as exc_info:
+        _finish(conn, p, envelope, "IDENTITY_NOT_MATCHED")
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+    # the first outcome is untouched by the conflicting retry
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "DRY_RUN_VERIFIED"
+
+
+def test_finish_is_refused_once_access_to_the_exact_claimed_account_is_removed(conn, encryptor):
+    """P1 correction 4: Oujda and Nador both granted; the RUNNING claim is
+    on Oujda; ONLY Oujda access is removed (Nador remains) -- the OLD
+    "generally eligible" check alone would still pass (Nador keeps them
+    >= 1 MCMA account); finish must recheck the job's own exact account."""
+    user, runner = _world(conn)
+    grant_access(conn, user, NADOR)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    revoke_access(conn, user, OUJDA)
+    with pytest.raises(UserInputError) as exc_info:
+        _finish(conn, p, envelope, "IDENTITY_MATCHED")
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+
+
+@pytest.mark.parametrize("new_state", ["LOGIN_REQUIRED", "ERROR"])
+def test_finish_is_refused_once_the_exact_account_is_no_longer_ready(conn, encryptor, new_state):
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    set_ready(conn, runner, OUJDA, state=new_state)
+    with pytest.raises(UserInputError) as exc_info:
+        _finish(conn, p, envelope, "IDENTITY_MATCHED")
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+
+
+def test_finish_is_refused_once_the_exact_account_capability_row_is_missing(conn, encryptor):
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    conn.execute("DELETE FROM runner_account_capabilities WHERE runner_id = ? AND account_id = ?", (runner, OUJDA))
+    with pytest.raises(UserInputError) as exc_info:
+        _finish(conn, p, envelope, "IDENTITY_MATCHED")
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+
+
+def test_unrelated_nador_removal_does_not_block_a_valid_oujda_finish(conn, encryptor):
+    user, runner = _world(conn)
+    grant_access(conn, user, NADOR)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    revoke_access(conn, user, NADOR)
+    result = _finish(conn, p, envelope, "IDENTITY_MATCHED")
+    assert result["status"] == "SUCCEEDED"
+
+
+def test_finish_is_refused_once_the_runner_is_revoked(conn, encryptor):
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    conn.execute("UPDATE runners SET status = 'REVOKED', revoked_at = ? WHERE runner_id = ?", (dispatch._iso(T0), runner))
+    with pytest.raises(UserInputError) as exc_info:
+        _finish(conn, p, envelope, "IDENTITY_MATCHED")
+    assert exc_info.value.status == 401
+
+
+def test_finish_is_refused_once_the_runner_is_offline(conn, encryptor):
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    way_later = T0 + timedelta(hours=1)
+    with pytest.raises(UserInputError) as exc_info:
+        _finish(conn, p, envelope, "IDENTITY_MATCHED", now=way_later)
+    # expire_stale_assignments (called first, with the SAME server time)
+    # will have already fenced this RUNNING assignment as LEASE_EXPIRED by
+    # the time offline-ness would otherwise be checked -- either way, the
+    # refusal is the same generic CLAIM_NOT_FOUND.
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+
+
+def test_refused_finish_leaves_job_and_dispatch_completely_unchanged(conn, encryptor):
+    """Except for LEGITIMATE server-side expiry fencing (exercised
+    separately), a refused finish() must never mutate either table."""
+    user, runner = _world(conn)
+    grant_access(conn, user, NADOR)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    revoke_access(conn, user, OUJDA)
+    with pytest.raises(UserInputError):
+        _finish(conn, p, envelope, "IDENTITY_MATCHED")
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "READ_ONLY_IDENTITY_CHECK"
+    row = conn.execute("SELECT status FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert row["status"] == "RUNNING"
+
+
+def test_a_wrong_runners_bearer_cannot_finish_this_job(conn, encryptor):
+    user, runner = _world(conn)
+    envelope, _p = _running(conn, encryptor, user=user, runner=runner)
+    other_user = create_user(conn)
+    other_runner = create_runner(conn, other_user)
+    with pytest.raises(UserInputError) as exc_info:
+        _finish(conn, principal(conn, other_runner), envelope, "IDENTITY_MATCHED")
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+
+
+def test_finish_is_atomic_job_status_and_dispatch_state_agree(conn, encryptor):
+    """Never a terminal job with an active dispatch row, or a terminal
+    dispatch row with a job still mid-check."""
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    _finish(conn, p, envelope, "IDENTITY_MATCHED")
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    dispatch_row = conn.execute("SELECT status FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    job_is_terminal = job["status"] in ("DRY_RUN_VERIFIED", "IDENTITY_FAILED")
+    dispatch_is_terminal = dispatch_row["status"] in ("SUCCEEDED", "FAILED")
+    assert job_is_terminal == dispatch_is_terminal
+
+
+def test_finish_error_bodies_and_state_contain_no_sensitive_marker(conn, encryptor):
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    with pytest.raises(UserInputError) as exc_info:
+        _finish(conn, p, envelope, "SOMETHING_MADE_UP")
+    assert envelope.claim_token not in str(exc_info.value)
+    with pytest.raises(UserInputError) as exc_info:
+        dispatch.finish_job(conn, p, job_id=envelope.job_id, claim_token="mcma_ct_" + "z" * 40,
+                             generation=envelope.generation, result="IDENTITY_MATCHED", now=T0)
+    assert envelope.claim_token not in str(exc_info.value)
+
+
+# --------------------------------------------------------------------- #
+# P1 correction 2 -- start_job planning and dispatch admission are atomic:
+# a state change occurring BETWEEN plan construction and final admission
+# (revocation, exact-account removal, release, expiry) must never strand
+# the job at PLANNING/PLANNED with no matching dispatch outcome.
+# --------------------------------------------------------------------- #
+
+
+class _SideEffectRegistry:
+    """A workflow_registry stand-in whose builder performs a caller-given
+    side effect (simulating a state change that happens WHILE start_job is
+    mid-plan-construction) before returning the SAME real plan the genuine
+    registry would have built. Lets these tests reproduce the exact race
+    window deterministically, with no real threading."""
+
+    def __init__(self, side_effect):
+        self._side_effect = side_effect
+
+    def get(self, name):
+        real_builder = REGISTRY.get(name)
+
+        def _build(typed_input):
+            self._side_effect()
+            return real_builder(typed_input)
+
+        return _build
+
+
+def _start_with_side_effect(conn, p, envelope, encryptor, side_effect, *, now=T0):
+    return dispatch.start_job(
+        conn, p, job_id=envelope.job_id, claim_token=envelope.claim_token, generation=envelope.generation,
+        workflow_registry=_SideEffectRegistry(side_effect), encryptor=encryptor, now=now,
+    )
+
+
+def _job_row(conn, job_id):
+    return conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (job_id,)).fetchone()
+
+
+def test_runner_revoked_during_planning_never_strands_the_job(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+
+    def _revoke():
+        conn.execute("UPDATE runners SET status = 'REVOKED', revoked_at = ? WHERE runner_id = ?", (dispatch._iso(T0), runner))
+
+    with pytest.raises(UserInputError) as exc_info:
+        _start_with_side_effect(conn, p, envelope, encryptor, _revoke)
+    assert exc_info.value.status == 401
+    assert _job_row(conn, envelope.job_id)["status"] == "QUEUED"  # never stranded at PLANNING/PLANNED
+
+
+def test_exact_account_removed_during_planning_never_strands_the_job(conn, encryptor):
+    user, runner = _world(conn)
+    grant_access(conn, user, NADOR)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+
+    def _remove_oujda():
+        revoke_access(conn, user, OUJDA)
+
+    with pytest.raises(UserInputError) as exc_info:
+        _start_with_side_effect(conn, p, envelope, encryptor, _remove_oujda)
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+    assert _job_row(conn, envelope.job_id)["status"] == "QUEUED"
+
+
+def test_claim_released_during_planning_never_strands_the_job(conn, encryptor):
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+
+    def _release():
+        dispatch.release_job(
+            conn, p, job_id=envelope.job_id, claim_token=envelope.claim_token, generation=envelope.generation,
+            reason_code="RUNNER_SHUTDOWN", now=T0,
+        )
+
+    with pytest.raises(UserInputError) as exc_info:
+        _start_with_side_effect(conn, p, envelope, encryptor, _release)
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+    assert _job_row(conn, envelope.job_id)["status"] == "QUEUED"
+
+
+def test_claim_expiring_during_planning_never_strands_the_job(conn, encryptor):
+    """The lease is comfortably valid when start_job BEGINS (its own
+    up-front expire_stale_assignments pass sees a live claim) but is made
+    to look expired -- relative to the SAME fixed `now` -- while planning
+    is under way, proving the SECOND expiry-fencing pass (added by this
+    correction, right after planning and before the final transaction)
+    genuinely fences it rather than trusting the earlier, now-stale
+    check."""
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+    mid_lease = T0 + timedelta(seconds=60)  # well within the original 120s lease
+    conn.execute("UPDATE runners SET last_seen_at = ? WHERE runner_id = ?", (dispatch._iso(mid_lease), runner))
+
+    def _shrink_lease_to_already_expired():
+        conn.execute(
+            "UPDATE workstation_job_dispatch SET lease_expires_at = ? WHERE job_id = ?",
+            (dispatch._iso(T0 + timedelta(seconds=30)), envelope.job_id),
+        )
+
+    with pytest.raises(UserInputError) as exc_info:
+        _start_with_side_effect(conn, p, envelope, encryptor, _shrink_lease_to_already_expired, now=mid_lease)
+    assert exc_info.value.code == "CLAIM_NOT_FOUND"
+    assert _job_row(conn, envelope.job_id)["status"] == "QUEUED"
+    row = conn.execute("SELECT status, outcome_code FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert row["status"] == "EXPIRED"
+    assert row["outcome_code"] == "LEASE_EXPIRED"
+
+
+def test_a_job_that_survives_planning_unaffected_still_starts_normally(conn, encryptor):
+    """Positive control: with no interference, start_job succeeds exactly
+    as before this correction."""
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+    result = _start_with_side_effect(conn, p, envelope, encryptor, side_effect=lambda: None)
+    assert result["status"] == "RUNNING"
+    assert _job_row(conn, envelope.job_id)["status"] == "READ_ONLY_IDENTITY_CHECK"
+
+
+def test_running_expiry_is_atomic_an_injected_failure_commits_neither_half(conn, encryptor, monkeypatch):
+    """P1 correction 3: for a RUNNING expiry, the dispatch row's own
+    EXPIRED write and the automation_jobs fail-closed transition must
+    commit together, in ONE transaction. An injected failure between them
+    (simulated by making fail_closed_on_runner_exception itself raise)
+    must roll back EVERYTHING -- never leave dispatch=EXPIRED paired with
+    a job still at READ_ONLY_IDENTITY_CHECK that no future scan could
+    repair."""
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    conn.execute(
+        "UPDATE workstation_job_dispatch SET lease_expires_at = ? WHERE job_id = ?",
+        (dispatch._iso(T0), envelope.job_id),
+    )
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated crash between the two writes")
+
+    monkeypatch.setattr(dispatch, "fail_closed_on_runner_exception", _boom)
+    later = T0 + timedelta(seconds=1)
+    with pytest.raises(RuntimeError):
+        dispatch.expire_stale_assignments(conn, now=later)
+
+    row = conn.execute("SELECT status FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert row["status"] == "RUNNING"  # the dispatch-side write was rolled back too
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "READ_ONLY_IDENTITY_CHECK"
+
+
+def test_repeated_expiry_scans_never_strand_an_inconsistent_row(conn, encryptor):
+    """A 'restart' re-running expire_stale_assignments over an
+    already-expired RUNNING assignment must be a safe no-op: no further
+    mutation, no duplicate fail-closed transition, no exception."""
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    conn.execute(
+        "UPDATE workstation_job_dispatch SET lease_expires_at = ? WHERE job_id = ?",
+        (dispatch._iso(T0), envelope.job_id),
+    )
+    later = T0 + timedelta(seconds=1)
+
+    count1 = dispatch.expire_stale_assignments(conn, now=later)
+    assert count1 == 1
+    row = conn.execute("SELECT status, outcome_code FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert row["status"] == "EXPIRED" and row["outcome_code"] == "LEASE_EXPIRED"
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "INTERRUPTED_NEEDS_HUMAN_REVIEW"
+
+    count2 = dispatch.expire_stale_assignments(conn, now=later + timedelta(seconds=1))
+    assert count2 == 0
+    row2 = conn.execute("SELECT status, outcome_code FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert (row2["status"], row2["outcome_code"]) == (row["status"], row["outcome_code"])
+    job2 = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job2["status"] == "INTERRUPTED_NEEDS_HUMAN_REVIEW"
+
+
+def test_claimed_expiry_still_batches_without_touching_automation_jobs(conn, encryptor):
+    """Unaffected by this correction: a CLAIMED (never-started) expiry
+    still leaves the job untouched and safely re-claimable."""
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    way_later = T0 + timedelta(seconds=dispatch.DEFAULT_LEASE_TTL_SECONDS + 1)
+    count = dispatch.expire_stale_assignments(conn, now=way_later)
+    assert count == 1
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "QUEUED"
+
+
+def test_running_expiry_does_not_defeat_a_concurrent_renewal(conn, encryptor):
+    """Dispatch correction (issue 1): the per-assignment RUNNING-expiry
+    UPDATE must re-check the lease deadline INSIDE its own transaction, not
+    just trust the earlier, unlocked SELECT that discovered the candidate.
+    A lease renewed in the window between that SELECT and this
+    assignment's own conditional UPDATE (here, a renewal spliced in right
+    after the SELECT runs, simulating a concurrent renew_job() landing in
+    that exact window) must leave the row completely untouched -- neither
+    the dispatch row nor its job may be expired."""
+    user, runner = _world(conn)
+    envelope, p = _running(conn, encryptor, user=user, runner=runner)
+    conn.execute(
+        "UPDATE workstation_job_dispatch SET lease_expires_at = ? WHERE job_id = ?",
+        (dispatch._iso(T0), envelope.job_id),
+    )
+    later = T0 + timedelta(seconds=1)
+    renewed_lease = later + timedelta(seconds=dispatch.DEFAULT_LEASE_TTL_SECONDS)
+
+    real_execute = conn.execute
+    renewed = {"done": False}
+
+    def _execute_with_race(sql, parameters=()):
+        result = real_execute(sql, parameters)
+        if not renewed["done"] and "WHERE status = 'RUNNING' AND lease_expires_at" in sql:
+            # A concurrent renew_job() committing exactly between this scan
+            # and the per-assignment UPDATE below.
+            renewed["done"] = True
+            real_execute(
+                "UPDATE workstation_job_dispatch SET lease_expires_at = ?, last_renewed_at = ? WHERE job_id = ?",
+                (dispatch._iso(renewed_lease), dispatch._iso(later), envelope.job_id),
+            )
+        return result
+
+    conn.execute = _execute_with_race
+    try:
+        count = dispatch.expire_stale_assignments(conn, now=later)
+    finally:
+        conn.execute = real_execute
+
+    assert count == 0
+    row = conn.execute(
+        "SELECT status, lease_expires_at FROM workstation_job_dispatch WHERE job_id = ?", (envelope.job_id,)
+    ).fetchone()
+    assert row["status"] == "RUNNING"  # never expired -- the renewal fenced it
+    assert row["lease_expires_at"] == dispatch._iso(renewed_lease)
+    job = conn.execute("SELECT status FROM automation_jobs WHERE job_id = ?", (envelope.job_id,)).fetchone()
+    assert job["status"] == "READ_ONLY_IDENTITY_CHECK"  # untouched -- neither dispatch nor job expired
+
+
+def test_a_rejected_start_after_planning_never_leaves_planning_or_planned(conn, encryptor):
+    """Direct proof of the exact invariant: whatever REASON start_job
+    refuses for, automation_jobs is never observed at PLANNING or PLANNED
+    afterward -- only QUEUED (untouched) or, for a genuine plan-build
+    failure, ERROR (truthfully landed)."""
+    user, runner = _world(conn)
+    envelope = _claim_valid(conn, encryptor, user=user, runner=runner)
+    p = principal(conn, runner)
+
+    def _revoke():
+        conn.execute("UPDATE runners SET status = 'REVOKED', revoked_at = ? WHERE runner_id = ?", (dispatch._iso(T0), runner))
+
+    with pytest.raises(UserInputError):
+        _start_with_side_effect(conn, p, envelope, encryptor, _revoke)
+    status = _job_row(conn, envelope.job_id)["status"]
+    assert status not in ("PLANNING", "PLANNED")

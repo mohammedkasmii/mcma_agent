@@ -19,10 +19,12 @@ from typing import Callable
 from mcma.app.workstation_runner.browser_worker import BrowserSessionWorker
 from mcma.app.workstation_runner.config import ConfigError, RunnerConfig, build_config
 from mcma.app.workstation_runner.controller import RunnerController
+from mcma.app.workstation_runner.dry_run_executor import run_dry_run_check
 from mcma.app.workstation_runner.gui import RunnerApp
 from mcma.app.workstation_runner.heartbeat import HeartbeatLifecycle
 from mcma.app.workstation_runner.http_client import RegistryHttpClient
 from mcma.app.workstation_runner.identity import IdentityStore, default_identity_path, select_production_crypto_backend
+from mcma.app.workstation_runner.job_worker import JobPollingLifecycle
 from mcma.app.workstation_runner.logging_setup import configure_logging, log_event
 from mcma.app.workstation_runner.session_store import (
     WorkstationSessionStore, default_sessions_dir,
@@ -30,7 +32,13 @@ from mcma.app.workstation_runner.session_store import (
 )
 from mcma.app.workstation_runner.sessions import VerificationScheduler, WorkstationSessionManager
 from mcma.core.mutex import MutexAcquisitionError, create_single_instance_mutex
-from mcma.portal.workstation_sessions import perform_manual_login, verify_saved_session
+from mcma.planning.registry import default_registry
+from mcma.portal.capabilities import SearchIdentifiers
+from mcma.portal.identity import ExpectedIdentity as PortalExpectedIdentity
+from mcma.portal.sinauto_contracts import DEFAULT_SINAUTO_HOST, identity_read_contracts
+from mcma.portal.workstation_sessions import (
+    perform_dry_run_identity_check, perform_manual_login, verify_saved_session,
+)
 
 _MUTEX_BASE_NAME = "MCMA_WorkstationRunner"
 
@@ -287,6 +295,46 @@ def _run_with_mutex_held(config: RunnerConfig | None) -> int:
     def client_factory(config: RunnerConfig) -> RegistryHttpClient:
         return RegistryHttpClient(config.server_origin, ca_cert_path=config.ca_cert_path)
 
+    # Phase 1C-B: the DRY_RUN executor's injected read-only portal
+    # operation. Converts the lightweight executor's planning-layer
+    # ExpectedIdentity + matricule into the portal-layer types
+    # perform_dry_run_identity_check requires -- exactly mirroring
+    # mcma.execution.runner's own _to_portal_expected_identity/
+    # _search_identifiers_for conversion, performed here instead because
+    # this composition root, not the lightweight executor, is the one
+    # module in this package allowed to import mcma.portal.
+    #
+    # Release-blocker correction: PRODUCTION contracts, from
+    # mcma.portal.sinauto_contracts.identity_read_contracts -- never
+    # mcma.portal.pilot_contracts (permanently mock-only). Only the fixed
+    # search-page/search-request routes are named here; the one mission-
+    # open route a real dossier resolves to is constructed and authorized
+    # DYNAMICALLY, per search, by ReadCapability.open() itself (see
+    # perform_dry_run_identity_check's own docstring and
+    # mcma.portal.interception.ReadOnlyMissionPolicyController) -- no
+    # wildcard route, no regex allowlist, and no client/dossier value is
+    # ever used directly as a URL.
+    _read_contracts = identity_read_contracts(DEFAULT_SINAUTO_HOST)
+
+    async def _check_identity_read_only(account_id, storage_state, expected_identity, matricule):
+        portal_identity = PortalExpectedIdentity(
+            registration=expected_identity.registration,
+            insurer_reference=expected_identity.insurer_reference,
+            id_sinistre=expected_identity.id_sinistre,
+        )
+        identifiers = SearchIdentifiers(matricule=matricule)
+        return await perform_dry_run_identity_check(
+            account_id, storage_state, portal_identity, identifiers, _read_contracts,
+        )
+
+    _workflow_registry = default_registry()
+
+    async def _run_dry_run_check(claimed_job, plan_hash: str) -> str:
+        return await run_dry_run_check(
+            claimed_job, expected_plan_hash=plan_hash, session_store=session_store,
+            workflow_registry=_workflow_registry, check_identity_read_only=_check_identity_read_only,
+        )
+
     gui_app = RunnerApp()
     if resolved_config.server_origin:
         gui_app.prefill_form(resolved_config)
@@ -307,11 +355,18 @@ def _run_with_mutex_held(config: RunnerConfig | None) -> int:
             on_allowed_accounts=controller._handle_allowed_accounts,
         )
 
+    def job_lifecycle_factory(client):
+        return JobPollingLifecycle(
+            client, _run_dry_run_check, is_ready=controller._job_worker_is_ready,
+            on_event=controller._handle_job_event,
+        )
+
     controller = RunnerController(
         resolved_config, identity_store, client_factory, lifecycle_factory, gui_app._enqueue_status,
         on_config_saved=save_config_defaults, on_log=lambda event: log_event(logger, event),
         session_manager=session_manager, session_store=session_store, browser_worker=browser_worker,
         verification_scheduler=verification_scheduler, on_accounts_changed=gui_app._enqueue_accounts,
+        job_lifecycle_factory=job_lifecycle_factory, on_job_status=gui_app._enqueue_job_status,
     )
     gui_app.bind_controller(controller)
     gui_app.run()
