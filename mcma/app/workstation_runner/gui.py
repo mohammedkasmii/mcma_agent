@@ -18,12 +18,50 @@ from tkinter import ttk
 
 from mcma.app.workstation_runner.config import ConfigError, build_config
 from mcma.app.workstation_runner.controller import ControllerState, RunnerController, StatusMessage
+from mcma.app.workstation_runner.sessions import AccountState
 
 _CONFIG_INVALID_TEXT = "URL du serveur, certificat CA ou nom du poste invalide."
 _CLOSING_TEXT = "Fermeture…"
 
 _POLL_INTERVAL_MS = 150
 _QUEUE_MAXSIZE = 64
+
+# Only these two -- MAMDA accounts are notification-only and never appear
+# here, and this fixed dict is the only place a workstation account_id maps
+# to a display label. Order also fixes the row display order.
+_ACCOUNT_LABELS = {
+    "acct-mcma-oujda": "MCMA Oujda",
+    "acct-mcma-nador": "MCMA Nador",
+}
+
+_ACCOUNT_STATE_TEXT = {
+    AccountState.NOT_CONFIGURED: "Connexion requise",
+    AccountState.PENDING_VERIFICATION: "Vérification…",
+    AccountState.LOGIN_REQUIRED: "Connexion requise",
+    AccountState.READY: "Prêt",
+    AccountState.ERROR: "Erreur de vérification",
+}
+
+# None means "no action button for this state" (PENDING_VERIFICATION is
+# already self-resolving; nothing for the employee to click).
+_ACCOUNT_BUTTON_TEXT = {
+    AccountState.NOT_CONFIGURED: "Se connecter",
+    AccountState.PENDING_VERIFICATION: None,
+    AccountState.LOGIN_REQUIRED: "Se connecter",
+    AccountState.READY: "Reconnecter",
+    AccountState.ERROR: "Reconnecter",
+}
+
+# Bounded fallback re-enable for an account's action button after it is
+# clicked: the browser worker's own update callback fires only once a
+# command's result is actually applied, so if the employee closes the
+# login window or abandons it without ever completing, no update EVER
+# arrives to re-enable the button through the normal path (see
+# browser_worker.py: a login ATTEMPT that does not succeed leaves state
+# untouched on purpose, so no callback fires). This bound guarantees the
+# button is never stuck disabled forever regardless -- a real update (via
+# _render_accounts) still re-enables it sooner if one arrives first.
+_ACCOUNT_BUTTON_REENABLE_MS = 60_000
 
 # RELEASE BLOCKER 4: shutdown is polled, never a single long blocking call.
 # Each poll bounds controller.shutdown() to this many seconds -- short
@@ -54,6 +92,11 @@ class RunnerApp:
         self._controller: RunnerController | None = None
         self._closing_ui = False  # RELEASE BLOCKER 4: on_close starts closing only once
         self._queue: "queue.Queue[StatusMessage]" = queue.Queue(maxsize=_QUEUE_MAXSIZE)
+        # A SEPARATE bounded queue for account snapshots -- controller/worker
+        # callbacks (which may run on the heartbeat or browser-worker
+        # thread) only ever put_nowait() here; only the Tk polling loop
+        # (_poll_accounts) ever reads it and touches a widget.
+        self._accounts_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=_QUEUE_MAXSIZE)
         self._root = root if root is not None else tk.Tk()
         self._root.title("MCMA — Poste agent")
         self._root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -85,10 +128,24 @@ class RunnerApp:
 
         self._paired_frame = ttk.Frame(self._root)
         ttk.Label(self._paired_frame, text="Comptes MCMA").pack(anchor="w")
-        self._accounts_var = tk.StringVar(
-            master=self._root, value="acct-mcma-oujda: NOT_CONFIGURED\nacct-mcma-nador: NOT_CONFIGURED",
-        )
-        ttk.Label(self._paired_frame, textvariable=self._accounts_var).pack(anchor="w")
+
+        # One row PER FIXED ALLOWED ACCOUNT, built once and toggled
+        # visible/hidden by _render_accounts() -- never dynamically
+        # created/destroyed. Hidden by default: a row only appears once the
+        # account is actually present in a WorkstationSessionManager
+        # snapshot (i.e. server-authorized), matching "removed accounts
+        # disappear" and "only currently authorized accounts are shown".
+        self._account_rows: dict[str, dict] = {}
+        for account_id, label in _ACCOUNT_LABELS.items():
+            row = ttk.Frame(self._paired_frame)
+            ttk.Label(row, text=label, width=14, anchor="w").pack(side="left")
+            status_var = tk.StringVar(master=self._root, value="")
+            ttk.Label(row, textvariable=status_var, width=22, anchor="w").pack(side="left")
+            button = ttk.Button(
+                row, text="", command=lambda a=account_id: self._on_account_button_clicked(a),
+            )
+            button.pack(side="left")
+            self._account_rows[account_id] = {"frame": row, "status_var": status_var, "button": button}
 
     def bind_controller(self, controller: RunnerController) -> None:
         self._controller = controller
@@ -167,6 +224,73 @@ class RunnerApp:
             self._pairing_frame.pack_forget()
             self._paired_frame.pack(padx=16, pady=8, fill="x")
 
+    def _enqueue_accounts(self, snapshot: tuple) -> None:
+        """The controller's ONLY entry point into the GUI for account state
+        -- called from whatever thread the controller itself runs on
+        (heartbeat worker, browser worker, or the Tk thread during
+        _handle_lifecycle_event's UNAUTHORIZED branch). Never touches a
+        widget directly; only ever puts the already-frozen snapshot tuple
+        onto this bounded queue."""
+        try:
+            self._accounts_queue.put_nowait(snapshot)
+        except queue.Full:
+            pass  # a full queue means a stale snapshot; the next poll drains the newest we could keep
+
+    def _poll_accounts(self) -> None:
+        try:
+            while True:
+                snapshot = self._accounts_queue.get_nowait()
+                self._render_accounts(snapshot)
+        except queue.Empty:
+            pass
+        self._root.after(_POLL_INTERVAL_MS, self._poll_accounts)
+
+    def _render_accounts(self, snapshot: tuple) -> None:
+        if self._closing_ui:
+            return  # same guard as _render(): never touch a widget once closing has begun
+        present = {view.account_id: view.state for view in snapshot}
+        for account_id, widgets in self._account_rows.items():
+            if account_id not in present:
+                widgets["frame"].pack_forget()  # removed accounts disappear
+                continue
+            state = present[account_id]
+            widgets["status_var"].set(_ACCOUNT_STATE_TEXT.get(state, ""))
+            button_text = _ACCOUNT_BUTTON_TEXT.get(state)
+            if button_text is None:
+                widgets["button"].pack_forget()
+            else:
+                widgets["button"].configure(text=button_text)
+                widgets["button"].pack(side="left")
+                # A real update always reflects the CURRENT state fresh --
+                # PENDING_VERIFICATION is the only state whose own action is
+                # already running automatically, so it is the only state
+                # that keeps the button disabled here. The click handler's
+                # own bounded fallback (_ACCOUNT_BUTTON_REENABLE_MS) is what
+                # protects the case where no update ever arrives at all.
+                widgets["button"].state(["!disabled"])
+            widgets["frame"].pack(anchor="w", pady=(4, 0))
+
+    def _on_account_button_clicked(self, account_id: str) -> None:
+        """Never performs browser/Playwright work itself, and never accepts
+        or displays a credential/OTP -- those are typed directly into the
+        visible Playwright browser window BrowserSessionWorker opens on its
+        own thread. This method only forwards the request and, on
+        acceptance, disables the button until a real update arrives (or the
+        bounded fallback below fires)."""
+        assert self._controller is not None, "bind_controller() must be called before use"
+        widgets = self._account_rows.get(account_id)
+        accepted = self._controller.request_login(account_id)
+        if accepted and widgets is not None:
+            widgets["button"].state(["disabled"])
+            self._root.after(_ACCOUNT_BUTTON_REENABLE_MS, lambda: self._reenable_account_button(account_id))
+
+    def _reenable_account_button(self, account_id: str) -> None:
+        if self._closing_ui:
+            return
+        widgets = self._account_rows.get(account_id)
+        if widgets is not None:
+            widgets["button"].state(["!disabled"])
+
     def on_close(self) -> None:
         """RELEASE BLOCKER 4: repeated WM_DELETE_WINDOW events (or a second
         call from anywhere) must be harmless -- closing starts only once.
@@ -179,6 +303,8 @@ class RunnerApp:
             return
         self._closing_ui = True
         self._associate_button.state(["disabled"])
+        for widgets in self._account_rows.values():
+            widgets["button"].state(["disabled"])
         self._status_var.set(_CLOSING_TEXT)
         if self._controller is None:
             self._root.destroy()
@@ -195,5 +321,6 @@ class RunnerApp:
     def run(self) -> None:
         assert self._controller is not None, "bind_controller() must be called before run()"
         self._root.after(_POLL_INTERVAL_MS, self._poll_queue)
+        self._root.after(_POLL_INTERVAL_MS, self._poll_accounts)
         self._controller.start()
         self._root.mainloop()

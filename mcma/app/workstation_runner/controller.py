@@ -11,9 +11,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
 
+from mcma.app.workstation_runner.browser_worker import BrowserSessionWorker
 from mcma.app.workstation_runner.config import RunnerConfig
 from mcma.app.workstation_runner.heartbeat import HeartbeatWorker, LifecycleEvent
 from mcma.app.workstation_runner.http_client import RegistryConnectionError, RegistryProtocolError
+from mcma.app.workstation_runner.sessions import VerificationScheduler, WorkstationSessionManager
 
 
 class ControllerState(Enum):
@@ -58,6 +60,11 @@ class RunnerController:
         *,
         on_config_saved: Callable[[RunnerConfig], None] | None = None,
         on_log: Callable[[str], None] | None = None,
+        session_manager: WorkstationSessionManager,
+        session_store,
+        browser_worker: BrowserSessionWorker,
+        verification_scheduler: VerificationScheduler,
+        on_accounts_changed: Callable[[tuple], None] | None = None,
     ) -> None:
         self._config = config
         self._identity_store = identity_store
@@ -75,6 +82,15 @@ class RunnerController:
         # extra locking.
         self._closing = threading.Event()
 
+        # Phase 1B-B integration: browser-session ownership. All four are
+        # injected, already-reviewed objects -- this controller composes
+        # them, it does not construct or re-review their behavior.
+        self._session_manager = session_manager
+        self._session_store = session_store
+        self._browser_worker = browser_worker
+        self._verification_scheduler = verification_scheduler
+        self._on_accounts_changed = on_accounts_changed
+
     def _emit(self, state: ControllerState, text: str | None = None) -> None:
         self._on_status(StatusMessage(state, text if text is not None else _TEXT[state]))
 
@@ -85,11 +101,86 @@ class RunnerController:
             self._on_log(event)
 
     def start(self) -> None:
+        # Started exactly once here, regardless of pairing outcome:
+        # BrowserSessionWorker.start() is itself idempotent (at most one
+        # thread ever, across any number of calls), so relying on that
+        # already-reviewed guarantee is simpler and no less correct than a
+        # second "started" flag here. The worker being up before any
+        # accounts exist is harmless -- request_login/request_verification
+        # both refuse until WorkstationSessionManager actually authorizes
+        # an account, which only happens once a heartbeat reconciles one.
+        self._browser_worker.start()
         identity = self._identity_store.load(expected_server_origin=self._config.server_origin)
         if identity is None:
             self._emit(ControllerState.PAIRING_IDLE)
             return
         self._start_heartbeat(identity.runner_secret)
+
+    def request_login(self, account_id: str) -> bool:
+        """The GUI's only browser-session entry point. Never touches
+        Playwright/portal code directly -- forwards to the already-owned
+        BrowserSessionWorker, which does everything on its own thread."""
+        return self._browser_worker.request_login(account_id)
+
+    def _current_sessions(self) -> tuple:
+        """sessions_provider for HeartbeatLifecycle -- recomputed fresh on
+        every call, straight from WorkstationSessionManager. Never cached
+        here; see heartbeat.py's own docstring for why."""
+        return self._session_manager.heartbeat_sessions()
+
+    def _handle_allowed_accounts(self, allowed_account_ids: tuple) -> None:
+        """on_allowed_accounts for HeartbeatLifecycle -- called after EVERY
+        successful heartbeat (including the ACCOUNT_NOT_ALLOWED retry),
+        from the heartbeat worker's own thread. Reconciles
+        WorkstationSessionManager against the server's authoritative
+        answer, then acts on what changed:
+          * newly allowed accounts already got NOT_CONFIGURED or
+            PENDING_VERIFICATION assigned by reconcile_allowed_accounts()
+            itself -- this only needs to actually REQUEST the immediate
+            verification for the ones that need it;
+          * removed accounts are cancelled first (invalidating any queued
+            or in-flight browser work AND acting as a persistence barrier
+            -- see BrowserSessionWorker.cancel_account), then their local
+            encrypted session is cleared. reconcile_allowed_accounts()
+            already dropped them from tracking as part of computing this
+            same result, so no stale result can ever resurrect one."""
+        result = self._session_manager.reconcile_allowed_accounts(allowed_account_ids)
+        for account_id in result.removed:
+            self._browser_worker.cancel_account(account_id)
+            self._verification_scheduler.forget(account_id)
+            try:
+                self._session_store.clear(account_id)
+            except Exception:
+                pass  # best-effort -- never crash the heartbeat thread over this
+        for account_id in result.added_needing_verification:
+            self._verification_scheduler.mark_verified(account_id)
+            self._browser_worker.request_verification(account_id)
+        self._publish_accounts_snapshot()
+
+    def _run_periodic_verification(self) -> None:
+        """Driven off every CONNECTED heartbeat tick (see
+        _handle_lifecycle_event) -- never a second timer thread. Testable
+        without real waiting via VerificationScheduler's own injectable
+        clock."""
+        tracked = self._session_manager.tracked_account_ids()
+        for account_id in self._verification_scheduler.due_accounts(tracked):
+            self._verification_scheduler.mark_verified(account_id)
+            self._browser_worker.request_verification(account_id)
+
+    def _handle_worker_update(self) -> None:
+        """on_update for BrowserSessionWorker -- payload-free by design
+        (see browser_worker.py's own docstring for why). Reacts by reading
+        a FRESH, authoritative snapshot from WorkstationSessionManager and
+        publishing THAT to the GUI -- never a captured account_id/state
+        pair from the moment the worker's command happened to finish."""
+        self._publish_accounts_snapshot()
+
+    def _publish_accounts_snapshot(self) -> None:
+        if self._on_accounts_changed is not None:
+            try:
+                self._on_accounts_changed(self._session_manager.snapshot())
+            except Exception:
+                pass  # a GUI callback failure must never break the caller's thread
 
     def submit_pairing(self, pairing_code: str, *, config: RunnerConfig | None = None) -> None:
         """`config`, when given, REPLACES the controller's current config
@@ -252,6 +343,7 @@ class RunnerController:
         # record.
         if event is LifecycleEvent.CONNECTED:
             self._emit(ControllerState.PAIRED_CONNECTED)
+            self._run_periodic_verification()
         elif event is LifecycleEvent.CONNECTION_FAILED:
             self._log("heartbeat_connection_failed")
             self._emit(ControllerState.PAIRED_DISCONNECTED)
@@ -264,12 +356,31 @@ class RunnerController:
             # event, not folded into the same "cleared" event a real
             # success gets, and is caught broadly so it can never propagate
             # back into (and kill) the calling heartbeat thread.
+            #
+            # Browser-session cleanup happens FIRST, before the identity
+            # itself is touched: cancel every tracked account's browser
+            # work (this also acts as a persistence barrier -- see
+            # BrowserSessionWorker.cancel_account), forget their
+            # verification schedule, clear every encrypted local session,
+            # and reset WorkstationSessionManager -- so no stale command
+            # from before this revocation can ever recreate a session for
+            # an account this employee no longer has access to.
+            tracked = self._session_manager.tracked_account_ids()
+            for account_id in tracked:
+                self._browser_worker.cancel_account(account_id)
+                self._verification_scheduler.forget(account_id)
+            try:
+                self._session_store.clear_all()
+            except Exception:
+                pass
+            self._session_manager.reset()
             try:
                 self._identity_store.clear()
                 self._log("heartbeat_unauthorized_cleared")
             except Exception:
                 self._log("heartbeat_unauthorized_clear_failed")
             self._emit(ControllerState.PAIRING_IDLE)
+            self._publish_accounts_snapshot()
 
     def shutdown(self, timeout: float = 5.0) -> bool:
         """RELEASE BLOCKER 4: a single BOUNDED attempt -- never a long
@@ -286,12 +397,18 @@ class RunnerController:
         called), and only does work that is still outstanding.
 
         Ordering: the pairing thread is joined/checked FIRST, THEN the
-        heartbeat worker -- never the reverse. If a pairing attempt already
-        in flight succeeds while shutdown() is being polled, its identity
-        is persisted but _finish_successful_pairing() skips starting a new
-        heartbeat once closing has begun (see there) -- so by the time this
-        method observes the pairing thread has finished, self._heartbeat_worker
-        can no longer change underneath it, and checking it after is safe."""
+        heartbeat worker, THEN the browser session worker -- never any
+        other order. If a pairing attempt already in flight succeeds while
+        shutdown() is being polled, its identity is persisted but
+        _finish_successful_pairing() skips starting a new heartbeat once
+        closing has begun (see there) -- so by the time this method
+        observes the pairing thread has finished, self._heartbeat_worker
+        can no longer change underneath it, and checking it after is safe.
+        The browser session worker is always owned (never None) and its
+        own stop() is itself bounded, idempotent, and safe even if it was
+        never started -- so it is always the final step here, and this
+        method returns True only once every one of the three non-daemon
+        workers it owns has actually finished."""
         self._closing.set()
         pairing_done = self._pairing_thread is None or not self._pairing_thread.is_alive()
         if not pairing_done:
@@ -299,8 +416,10 @@ class RunnerController:
             pairing_done = not self._pairing_thread.is_alive()
         if not pairing_done:
             return False
-        if self._heartbeat_worker is None:
-            return True
-        if self._heartbeat_worker.is_alive():
+        heartbeat_done = self._heartbeat_worker is None or not self._heartbeat_worker.is_alive()
+        if not heartbeat_done:
             self._heartbeat_worker.stop(timeout=timeout)
-        return not self._heartbeat_worker.is_alive()
+            heartbeat_done = not self._heartbeat_worker.is_alive()
+        if not heartbeat_done:
+            return False
+        return self._browser_worker.stop(timeout=timeout)

@@ -332,6 +332,55 @@ _SESSION_STATE_JS = """() => {
     };
 }"""
 
+
+def _classify_session_state(state: object) -> str:
+    """The pure classification half of session-state observation, kept in
+    exactly one place: given whatever _SESSION_STATE_JS's evaluation
+    returned, decide AUTHENTICATED / LOGGED_OUT / INDETERMINATE. Never
+    raises -- a malformed (non-dict) result is itself just more
+    contradictory evidence and maps to INDETERMINATE, same as before this
+    was factored out of observe_session_state()."""
+    if not isinstance(state, dict):
+        return "INDETERMINATE"
+    logged_in = bool(state.get("logged_in"))
+    logged_out = bool(state.get("logged_out"))
+    if logged_out and not logged_in:
+        return "LOGGED_OUT"
+    if logged_in and not logged_out:
+        return "AUTHENTICATED"
+    return "INDETERMINATE"
+
+
+async def _observe_session_state(page, *, strict: bool = False) -> str:
+    """Shared session-state observation used by ReadCapability.observe_
+    session_state() AND (in strict mode only) mcma.portal.workstation_
+    sessions.verify_saved_session(). Runs the one fixed _SESSION_STATE_JS
+    script and classifies it via _classify_session_state -- the script and
+    the classification logic each stay in exactly one place, used both
+    ways.
+
+    Two callers, two different answers to "the probe itself failed":
+      * non-strict (the default, ReadCapability's own unchanged behavior):
+        a page.evaluate() exception is itself evidence of nothing -- an
+        unreachable/mid-navigation page says nothing about whether the
+        session is valid -- and maps to INDETERMINATE, exactly as before
+        this helper existed.
+      * strict=True (workstation_sessions only): the exception is NOT
+        swallowed. It propagates, so that caller can tell a successfully
+        evaluated but ambiguous page (a genuine INDETERMINATE) apart from
+        an operational probe/browser failure, and map only the latter to
+        its own ERROR-bound exception."""
+    try:
+        state = await page.evaluate(_SESSION_STATE_JS)
+    except Exception:
+        if strict:
+            raise
+        # A page that cannot even be probed says nothing about whether
+        # the session is valid.
+        return "INDETERMINATE"
+    return _classify_session_state(state)
+
+
 _LOGGED_IN_MARKER_JS = """(selectors) => selectors.some(sel => document.querySelector(sel) !== null)"""
 LOGGED_IN_MARKERS = ("#formRecherche", "#ReferenceCie", "a[href*='logout']", "#listeAlertes")
 
@@ -996,23 +1045,15 @@ class ReadCapability:
         side. Guessing AUTHENTICATED would hide an expired session;
         guessing LOGGED_OUT would revoke a working one and force a
         pointless re-login. Neither is worth a guess, and the caller
-        treats INDETERMINATE as "cannot tell, change nothing"."""
+        treats INDETERMINATE as "cannot tell, change nothing".
+
+        Delegates to _observe_session_state in its default (non-strict)
+        mode: an evaluation exception is itself evidence of nothing here
+        and maps to INDETERMINATE, exactly as before this method was
+        factored out -- this behavior is unchanged for every existing
+        (notification) caller."""
         self._ensure_open()
-        try:
-            state = await self._page.evaluate(_SESSION_STATE_JS)
-        except Exception:
-            # A page that cannot even be probed says nothing about whether
-            # the session is valid.
-            return "INDETERMINATE"
-        if not isinstance(state, dict):
-            return "INDETERMINATE"
-        logged_in = bool(state.get("logged_in"))
-        logged_out = bool(state.get("logged_out"))
-        if logged_out and not logged_in:
-            return "LOGGED_OUT"
-        if logged_in and not logged_out:
-            return "AUTHENTICATED"
-        return "INDETERMINATE"
+        return await _observe_session_state(self._page)
 
     def _notification_surface_route(self) -> str:
         return f"{self._portal_base}/expertise/notification/alerte"

@@ -23,8 +23,54 @@ from mcma.app.workstation_runner.config import RunnerConfig
 from mcma.app.workstation_runner.controller import ControllerState, RunnerController, StatusMessage
 from mcma.app.workstation_runner.gui import RunnerApp
 from mcma.app.workstation_runner.http_client import RegistryConnectionError
+from mcma.app.workstation_runner.sessions import VerificationScheduler, WorkstationSessionManager
 
 ORIGIN = "https://central.example.local"
+
+
+class _NullSessionStore:
+    def has_saved_session(self, account_id):
+        return False
+
+    def load(self, account_id):
+        return None
+
+    def save(self, account_id, storage_state):
+        pass
+
+    def clear(self, account_id):
+        pass
+
+    def clear_all(self):
+        pass
+
+
+class _NullBrowserWorker:
+    def start(self):
+        pass
+
+    def request_login(self, account_id):
+        return False
+
+    def request_verification(self, account_id):
+        return False
+
+    def cancel_account(self, account_id):
+        pass
+
+    def stop(self, timeout):
+        return True
+
+    def is_alive(self):
+        return False
+
+
+def _browser_session_kwargs():
+    return dict(
+        session_manager=WorkstationSessionManager(has_saved_session=lambda a: False),
+        session_store=_NullSessionStore(), browser_worker=_NullBrowserWorker(),
+        verification_scheduler=VerificationScheduler(),
+    )
 
 
 class _FakeIdentityStore:
@@ -75,6 +121,7 @@ def gui_app(monkeypatch, tk_root):
         controller = RunnerController(
             RunnerConfig(server_origin=ORIGIN, ca_cert_path=None, workstation_label="Poste-1"),
             _FakeIdentityStore(), client_factory, lambda client: _NullLifecycle(), app._enqueue_status,
+            **_browser_session_kwargs(),
         )
         app.bind_controller(controller)
 

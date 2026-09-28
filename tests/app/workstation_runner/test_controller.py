@@ -5,13 +5,110 @@ from mcma.app.workstation_runner.config import RunnerConfig
 from mcma.app.workstation_runner.controller import ControllerState, RunnerController
 from mcma.app.workstation_runner.heartbeat import LifecycleEvent
 from mcma.app.workstation_runner.http_client import EnrollResult, RegistryConnectionError
+from mcma.app.workstation_runner.sessions import VerificationScheduler, WorkstationSessionManager
 
 ORIGIN = "https://central.example.local"
 OTHER_ORIGIN = "https://other.example.local"
 
+OUJDA = "acct-mcma-oujda"
+NADOR = "acct-mcma-nador"
+
 
 def _config(origin=ORIGIN):
     return RunnerConfig(server_origin=origin, ca_cert_path=None, workstation_label="Poste-1")
+
+
+def _session_manager(saved=()):
+    saved = set(saved)
+    return WorkstationSessionManager(has_saved_session=lambda a: a in saved)
+
+
+class _FakeSessionStore:
+    def __init__(self, initial=None):
+        self._data = dict(initial or {})
+        self.clear_calls = []
+        self.clear_all_calls = 0
+
+    def load(self, account_id):
+        return self._data.get(account_id)
+
+    def has_saved_session(self, account_id):
+        return account_id in self._data
+
+    def save(self, account_id, storage_state):
+        self._data[account_id] = storage_state
+
+    def clear(self, account_id):
+        self.clear_calls.append(account_id)
+        self._data.pop(account_id, None)
+
+    def clear_all(self):
+        self.clear_all_calls += 1
+        self._data.clear()
+
+
+class _FakeBrowserWorker:
+    """A deterministic stand-in -- no real thread/event loop. Records every
+    call so pairing/heartbeat-only tests (the vast majority) can ignore it
+    entirely while browser-session-focused tests inspect it directly."""
+
+    def __init__(self):
+        self.start_calls = 0
+        self.stop_calls = []
+        self.login_requests = []
+        self.verification_requests = []
+        self.cancelled = []
+
+    @property
+    def started(self):
+        return self.start_calls > 0
+
+    def start(self):
+        self.start_calls += 1
+
+    def request_login(self, account_id):
+        self.login_requests.append(account_id)
+        return True
+
+    def request_verification(self, account_id):
+        self.verification_requests.append(account_id)
+        return True
+
+    def cancel_account(self, account_id):
+        self.cancelled.append(account_id)
+
+    def stop(self, timeout):
+        self.stop_calls.append(timeout)
+        return True
+
+    def is_alive(self):
+        return False
+
+
+_DEFAULT_POSITIONAL = (
+    lambda: _config(),
+    lambda: _FakeIdentityStore(),
+    lambda: (lambda config: _FakeClient()),
+    lambda: (lambda client: _NullLifecycle()),
+    lambda: (lambda status: None),
+)
+
+
+def _new_controller(*args, **kwargs):
+    """Thin factory used throughout this file in place of calling
+    RunnerController(...) directly: fills in safe, inert fakes for the
+    four browser-session params the Phase 1B-B integration added (and,
+    when a browser-session-focused test cares about none of the
+    pairing/heartbeat positional args, safe defaults for those too), so
+    every pre-existing pairing/heartbeat test keeps exercising EXACTLY the
+    same behavior it always did, with no risk of a shared/leaked fake
+    between tests (a fresh one is built on every call)."""
+    args = tuple(args) + tuple(factory() for factory in _DEFAULT_POSITIONAL[len(args):])
+    kwargs.setdefault("session_manager", _session_manager())
+    kwargs.setdefault("session_store", _FakeSessionStore())
+    kwargs.setdefault("browser_worker", _FakeBrowserWorker())
+    kwargs.setdefault("verification_scheduler", VerificationScheduler())
+    return RunnerController(*args, **kwargs)
 
 
 class _FakeIdentityStore:
@@ -80,7 +177,7 @@ class _ShutdownGuard:
 
 def test_start_with_no_saved_identity_goes_to_pairing_idle():
     statuses = []
-    controller = RunnerController(
+    controller = _new_controller(
         _config(), _FakeIdentityStore(existing=None), lambda config: _FakeClient(),
         lambda client: _NullLifecycle(), statuses.append,
     )
@@ -96,7 +193,7 @@ def test_successful_pairing_saves_identity_and_starts_heartbeat():
         runner_id="a" * 32, runner_secret="mcma_rs_" + "b" * 40, runner_label="Poste-1",
         allowed_account_ids=("acct-mcma-oujda",), heartbeat_interval_seconds=10, offline_after_seconds=30,
     )
-    controller = RunnerController(_config(), store, lambda config: _FakeClient(enroll_result=result), lambda client: _NullLifecycle(), statuses.append)
+    controller = _new_controller(_config(), store, lambda config: _FakeClient(enroll_result=result), lambda client: _NullLifecycle(), statuses.append)
     with _ShutdownGuard(controller):
         controller.start()
         controller.submit_pairing("mcma_pc_x")
@@ -133,7 +230,7 @@ def test_submit_pairing_with_a_new_config_is_used_for_the_client_and_enroll_call
         ))
 
     new_config = RunnerConfig(server_origin=OTHER_ORIGIN, ca_cert_path=None, workstation_label="Poste-Nouveau")
-    controller = RunnerController(
+    controller = _new_controller(
         _config(origin=ORIGIN), _FakeIdentityStore(), client_factory_recording, lambda client: _NullLifecycle(), lambda s: None,
     )
     with _ShutdownGuard(controller):
@@ -157,7 +254,7 @@ def test_successful_pairing_with_a_new_config_calls_on_config_saved():
         allowed_account_ids=(), heartbeat_interval_seconds=10, offline_after_seconds=30,
     )
     new_config = RunnerConfig(server_origin=OTHER_ORIGIN, ca_cert_path=None, workstation_label="Poste-Nouveau")
-    controller = RunnerController(
+    controller = _new_controller(
         _config(), _FakeIdentityStore(), lambda config: _FakeClient(enroll_result=result), lambda client: _NullLifecycle(),
         lambda s: None, on_config_saved=saved_configs.append,
     )
@@ -188,7 +285,7 @@ def test_config_is_persisted_before_enroll_is_ever_called():
     def on_config_saved(config):
         events.append("config_saved")
 
-    controller = RunnerController(
+    controller = _new_controller(
         _config(), _FakeIdentityStore(), lambda config: _RecordingClient(), lambda client: _NullLifecycle(),
         lambda s: None, on_config_saved=on_config_saved,
     )
@@ -219,7 +316,7 @@ def test_config_persistence_failure_never_consumes_the_pairing_code():
         raise OSError("simulated disk full")
 
     statuses = []
-    controller = RunnerController(
+    controller = _new_controller(
         _config(), _FakeIdentityStore(), lambda config: _RecordingClient(), lambda client: _NullLifecycle(),
         statuses.append, on_config_saved=failing_on_config_saved,
     )
@@ -249,7 +346,7 @@ def test_identity_persistence_failure_after_successful_enroll_shows_fixed_messag
             raise OSError("simulated disk full")
 
     statuses = []
-    controller = RunnerController(
+    controller = _new_controller(
         _config(), _FailingIdentityStore(), lambda config: _FakeClient(enroll_result=result),
         lambda client: _NullLifecycle(), statuses.append,
     )
@@ -274,7 +371,7 @@ def test_identity_persistence_dpapi_failure_after_successful_enroll_is_handled_t
             raise DpapiUnavailable("simulated DPAPI failure")
 
     statuses = []
-    controller = RunnerController(
+    controller = _new_controller(
         _config(), _DpapiFailingIdentityStore(), lambda config: _FakeClient(enroll_result=result),
         lambda client: _NullLifecycle(), statuses.append,
     )
@@ -302,7 +399,7 @@ def test_successful_durable_persistence_starts_heartbeat_only_after_identity_sav
             order.append("heartbeat_started")
             super().run_once_loop(secret, stop_event, sessions=sessions)
 
-    controller = RunnerController(
+    controller = _new_controller(
         _config(), _RecordingIdentityStore(), lambda config: _FakeClient(enroll_result=result),
         lambda client: _RecordingLifecycle(), lambda s: None,
     )
@@ -314,7 +411,7 @@ def test_successful_durable_persistence_starts_heartbeat_only_after_identity_sav
 
 def test_pairing_failure_stays_in_pairing_idle_with_fixed_message():
     statuses = []
-    controller = RunnerController(
+    controller = _new_controller(
         _config(), _FakeIdentityStore(), lambda config: _FakeClient(enroll_error=RegistryConnectionError("x")),
         lambda client: _NullLifecycle(), statuses.append,
     )
@@ -335,7 +432,7 @@ def test_client_construction_failure_does_not_leave_pairing_stuck_forever():
     def failing_client_factory(config):
         raise ValueError("simulated bad CA certificate file")
 
-    controller = RunnerController(_config(), _FakeIdentityStore(), failing_client_factory, lambda client: _NullLifecycle(), statuses.append)
+    controller = _new_controller(_config(), _FakeIdentityStore(), failing_client_factory, lambda client: _NullLifecycle(), statuses.append)
     with _ShutdownGuard(controller):
         controller.start()
         controller.submit_pairing("mcma_pc_x")
@@ -358,7 +455,7 @@ def test_duplicate_concurrent_pairing_attempts_are_ignored():
         def close(self):
             pass
 
-    controller = RunnerController(_config(), _FakeIdentityStore(), lambda config: _SlowClient(), lambda client: _NullLifecycle(), lambda s: None)
+    controller = _new_controller(_config(), _FakeIdentityStore(), lambda config: _SlowClient(), lambda client: _NullLifecycle(), lambda s: None)
     try:
         with _ShutdownGuard(controller):
             controller.start()
@@ -380,7 +477,7 @@ def test_start_with_saved_identity_resumes_heartbeat_without_reenrolling():
         runner_secret="mcma_rs_" + "b" * 40, allowed_account_ids=("acct-mcma-oujda",),
     )
     statuses = []
-    controller = RunnerController(_config(), _FakeIdentityStore(existing=existing), lambda config: _FakeClient(), lambda client: _NullLifecycle(), statuses.append)
+    controller = _new_controller(_config(), _FakeIdentityStore(existing=existing), lambda config: _FakeClient(), lambda client: _NullLifecycle(), statuses.append)
     with _ShutdownGuard(controller):
         controller.start()
         assert _wait_until(lambda: statuses[-1].state == ControllerState.PAIRED_CONNECTING)
@@ -403,7 +500,7 @@ def test_start_heartbeat_construction_failure_does_not_crash_start():
     def failing_client_factory(config):
         raise ValueError("simulated bad CA certificate file")
 
-    controller = RunnerController(_config(), _FakeIdentityStore(existing=existing), failing_client_factory, lambda client: _NullLifecycle(), statuses.append)
+    controller = _new_controller(_config(), _FakeIdentityStore(existing=existing), failing_client_factory, lambda client: _NullLifecycle(), statuses.append)
     controller.start()  # must not raise
     assert statuses[-1].state == ControllerState.PAIRED_DISCONNECTED
 
@@ -422,7 +519,7 @@ def test_unauthorized_event_returns_controller_to_pairing_idle():
         runner_secret="mcma_rs_" + "b" * 40, allowed_account_ids=(),
     )
     store = _FakeIdentityStore(existing=existing)
-    controller = RunnerController(_config(), store, lambda config: _FakeClient(), lambda client: _UnauthorizingLifecycle(), statuses.append)
+    controller = _new_controller(_config(), store, lambda config: _FakeClient(), lambda client: _UnauthorizingLifecycle(), statuses.append)
     with _ShutdownGuard(controller):
         controller.start()
         assert _wait_until(lambda: statuses[-1].state == ControllerState.PAIRING_IDLE)
@@ -457,7 +554,7 @@ def test_paired_connecting_is_emitted_before_the_heartbeat_worker_exists(monkeyp
         format_version=IDENTITY_FORMAT_VERSION, server_origin=ORIGIN, runner_id="a" * 32,
         runner_secret="mcma_rs_" + "b" * 40, allowed_account_ids=(),
     )
-    controller = RunnerController(_config(), _FakeIdentityStore(existing=existing), lambda config: _FakeClient(), lambda client: _NullLifecycle(), on_status)
+    controller = _new_controller(_config(), _FakeIdentityStore(existing=existing), lambda config: _FakeClient(), lambda client: _NullLifecycle(), on_status)
     with _ShutdownGuard(controller):
         controller.start()
         assert events == ["status_connecting", "worker_started"]
@@ -478,7 +575,7 @@ def test_shutdown_reports_incomplete_while_a_thread_is_still_running_and_complet
         def close(self):
             pass
 
-    controller = RunnerController(_config(), _FakeIdentityStore(), lambda config: _SlowClient(), lambda client: _NullLifecycle(), lambda s: None)
+    controller = _new_controller(_config(), _FakeIdentityStore(), lambda config: _SlowClient(), lambda client: _NullLifecycle(), lambda s: None)
     try:
         controller.start()
         controller.submit_pairing("mcma_pc_x")
@@ -505,7 +602,7 @@ def test_no_pairing_attempt_is_accepted_once_shutdown_has_started():
         def close(self):
             pass
 
-    controller = RunnerController(_config(), _FakeIdentityStore(), lambda config: _RecordingClient(), lambda client: _NullLifecycle(), lambda s: None)
+    controller = _new_controller(_config(), _FakeIdentityStore(), lambda config: _RecordingClient(), lambda client: _NullLifecycle(), lambda s: None)
     controller.start()
     assert controller.shutdown(timeout=0.05) is True  # nothing running yet -- also starts closing
     controller.submit_pairing("mcma_pc_after_close")
@@ -533,7 +630,7 @@ def test_pairing_that_succeeds_during_shutdown_persists_identity_but_never_start
             pass
 
     store = _FakeIdentityStore()
-    controller = RunnerController(_config(), store, lambda config: _SlowSuccessClient(), lambda client: _NullLifecycle(), lambda s: None)
+    controller = _new_controller(_config(), store, lambda config: _SlowSuccessClient(), lambda client: _NullLifecycle(), lambda s: None)
     try:
         controller.start()
         controller.submit_pairing("mcma_pc_x")
@@ -548,7 +645,7 @@ def test_pairing_that_succeeds_during_shutdown_persists_identity_but_never_start
 
 
 def test_repeated_shutdown_calls_with_nothing_running_are_always_safe():
-    controller = RunnerController(_config(), _FakeIdentityStore(), lambda config: _FakeClient(), lambda client: _NullLifecycle(), lambda s: None)
+    controller = _new_controller(_config(), _FakeIdentityStore(), lambda config: _FakeClient(), lambda client: _NullLifecycle(), lambda s: None)
     controller.start()
     for _ in range(5):
         assert controller.shutdown(timeout=0.05) is True
@@ -565,7 +662,7 @@ def test_shutdown_is_safe_during_pairing_in_progress():
         def close(self):
             pass
 
-    controller = RunnerController(_config(), _FakeIdentityStore(), lambda config: _SlowClient(), lambda client: _NullLifecycle(), lambda s: None)
+    controller = _new_controller(_config(), _FakeIdentityStore(), lambda config: _SlowClient(), lambda client: _NullLifecycle(), lambda s: None)
     try:
         controller.start()
         controller.submit_pairing("mcma_pc_x")
@@ -582,7 +679,7 @@ def test_on_log_receives_fixed_event_names_for_key_transitions():
     transitions and safe error categories'). Never a secret or a raw
     exception -- only fixed, safe event-name strings."""
     events = []
-    controller = RunnerController(
+    controller = _new_controller(
         _config(), _FakeIdentityStore(), lambda config: _FakeClient(enroll_error=RegistryConnectionError("x")),
         lambda client: _NullLifecycle(), lambda s: None, on_log=events.append,
     )
@@ -616,7 +713,7 @@ def test_unauthorized_clear_failure_is_logged_distinctly_and_does_not_crash():
         runner_secret="mcma_rs_" + "b" * 40, allowed_account_ids=(),
     )
     events = []
-    controller = RunnerController(
+    controller = _new_controller(
         _config(), _FailingClearStore(existing=existing), lambda config: _FakeClient(),
         lambda client: _UnauthorizingLifecycle(), lambda s: None, on_log=events.append,
     )
@@ -655,7 +752,7 @@ def test_shutdown_started_pairing_succeeds_without_ever_constructing_a_heartbeat
         return _NullLifecycle()
 
     store = _FakeIdentityStore()
-    controller = RunnerController(_config(), store, lambda config: _SlowSuccessClient(), lifecycle_factory, lambda s: None)
+    controller = _new_controller(_config(), store, lambda config: _SlowSuccessClient(), lifecycle_factory, lambda s: None)
     try:
         # Begin a pairing request that remains blocked.
         controller.start()
@@ -688,3 +785,139 @@ def test_shutdown_started_pairing_succeeds_without_ever_constructing_a_heartbeat
         assert controller.shutdown(timeout=0.05) is True
     finally:
         gate.set()
+
+
+# ======================================================================= #
+# Phase 1B-B integration -- browser-session ownership
+# ======================================================================= #
+
+
+def test_browser_worker_is_started_exactly_once_by_controller_start():
+    browser_worker = _FakeBrowserWorker()
+    controller = _new_controller(browser_worker=browser_worker)
+    controller.start()
+    assert browser_worker.start_calls == 1
+
+
+def test_request_login_delegates_to_browser_worker():
+    browser_worker = _FakeBrowserWorker()
+    controller = _new_controller(browser_worker=browser_worker)
+    assert controller.request_login(OUJDA) is True
+    assert browser_worker.login_requests == [OUJDA]
+
+
+def test_allowed_account_reconciliation_forwards_to_session_manager():
+    session_manager = _session_manager()
+    controller = _new_controller(session_manager=session_manager)
+    controller._handle_allowed_accounts((OUJDA,))
+    assert session_manager.is_authorized(OUJDA) is True
+    assert session_manager.is_authorized(NADOR) is False
+
+
+def test_newly_allowed_account_without_saved_session_is_not_configured_and_never_verified():
+    from mcma.app.workstation_runner.sessions import AccountState
+
+    session_manager = _session_manager()  # nothing saved for OUJDA
+    browser_worker = _FakeBrowserWorker()
+    controller = _new_controller(session_manager=session_manager, browser_worker=browser_worker)
+    controller._handle_allowed_accounts((OUJDA,))
+    assert session_manager.state_of(OUJDA) is AccountState.NOT_CONFIGURED
+    assert browser_worker.verification_requests == []
+
+
+def test_newly_allowed_account_with_saved_session_requests_immediate_verification():
+    from mcma.app.workstation_runner.sessions import AccountState
+
+    session_manager = _session_manager(saved=(OUJDA,))
+    browser_worker = _FakeBrowserWorker()
+    controller = _new_controller(session_manager=session_manager, browser_worker=browser_worker)
+    controller._handle_allowed_accounts((OUJDA,))
+    assert session_manager.state_of(OUJDA) is AccountState.PENDING_VERIFICATION
+    assert browser_worker.verification_requests == [OUJDA]
+
+
+def test_removed_account_is_cancelled_and_its_encrypted_session_cleared():
+    session_manager = _session_manager(saved=(OUJDA,))
+    browser_worker = _FakeBrowserWorker()
+    session_store = _FakeSessionStore({OUJDA: {"cookies": [], "origins": []}})
+    controller = _new_controller(session_manager=session_manager, browser_worker=browser_worker, session_store=session_store)
+    controller._handle_allowed_accounts((OUJDA,))
+    controller._handle_allowed_accounts(())  # OUJDA removed on the next heartbeat
+    assert browser_worker.cancelled == [OUJDA]
+    assert session_store.clear_calls == [OUJDA]
+    assert session_manager.is_authorized(OUJDA) is False
+
+
+def test_worker_update_publishes_a_fresh_manager_snapshot_never_a_stale_payload():
+    session_manager = _session_manager()
+    snapshots = []
+    controller = _new_controller(session_manager=session_manager, on_accounts_changed=snapshots.append)
+    session_manager.reconcile_allowed_accounts((OUJDA,))
+    controller._handle_worker_update()  # the worker's own callback is payload-free
+    assert len(snapshots) == 1
+    assert snapshots[0] == session_manager.snapshot()
+
+
+def test_periodic_verification_is_driven_by_connected_ticks_without_real_sleeping():
+    from tests.app.workstation_runner._fakes import FakeClock
+
+    clock = FakeClock()
+    scheduler = VerificationScheduler(interval_seconds=300.0, clock=clock)
+    session_manager = _session_manager(saved=(OUJDA,))
+    session_manager.reconcile_allowed_accounts((OUJDA,))
+    browser_worker = _FakeBrowserWorker()
+    controller = _new_controller(
+        session_manager=session_manager, browser_worker=browser_worker, verification_scheduler=scheduler,
+    )
+    controller._handle_lifecycle_event(LifecycleEvent.CONNECTED)
+    assert browser_worker.verification_requests == [OUJDA]  # never verified before -> immediately due
+    browser_worker.verification_requests.clear()
+
+    controller._handle_lifecycle_event(LifecycleEvent.CONNECTED)
+    assert browser_worker.verification_requests == []  # not due yet -- no real sleeping needed
+
+    clock.advance(300.0)
+    controller._handle_lifecycle_event(LifecycleEvent.CONNECTED)
+    assert browser_worker.verification_requests == [OUJDA]
+
+
+def test_unauthorized_cleanup_cancels_browser_work_clears_all_sessions_and_resets_manager():
+    session_manager = _session_manager(saved=(OUJDA, NADOR))
+    session_manager.reconcile_allowed_accounts((OUJDA, NADOR))
+    browser_worker = _FakeBrowserWorker()
+    session_store = _FakeSessionStore({OUJDA: {"cookies": [], "origins": []}, NADOR: {"cookies": [], "origins": []}})
+    identity_store = _FakeIdentityStore()
+    snapshots = []
+    controller = _new_controller(
+        _config(), identity_store, lambda c: _FakeClient(), lambda c: _NullLifecycle(), lambda s: None,
+        session_manager=session_manager, browser_worker=browser_worker, session_store=session_store,
+        on_accounts_changed=snapshots.append,
+    )
+    controller._handle_lifecycle_event(LifecycleEvent.UNAUTHORIZED)
+    assert sorted(browser_worker.cancelled) == [NADOR, OUJDA]
+    assert session_store.clear_all_calls == 1
+    assert session_manager.tracked_account_ids() == ()
+    assert identity_store.cleared is True
+    assert snapshots[-1] == ()
+
+
+def test_shutdown_stops_the_browser_worker_too():
+    browser_worker = _FakeBrowserWorker()
+    controller = _new_controller(browser_worker=browser_worker)
+    controller.start()
+    assert controller.shutdown(timeout=1.0) is True
+    assert browser_worker.stop_calls == [1.0]
+
+
+def test_shutdown_never_reports_done_while_the_browser_worker_is_still_alive():
+    class _SlowBrowserWorker(_FakeBrowserWorker):
+        def is_alive(self):
+            return True
+
+        def stop(self, timeout):
+            self.stop_calls.append(timeout)
+            return False  # still winding down
+
+    controller = _new_controller(browser_worker=_SlowBrowserWorker())
+    controller.start()
+    assert controller.shutdown(timeout=0.05) is False

@@ -42,6 +42,20 @@ class RegistryProtocolError(Exception):
     never carries the response body."""
 
 
+class RegistryAccountNotAllowed(RegistryProtocolError):
+    """The server rejected a heartbeat's `sessions` with HTTP 400 and the
+    fixed error code ACCOUNT_NOT_ALLOWED: an administrator removed one of
+    the reported accounts before this runner learned about it. A stable,
+    typed subtype of RegistryProtocolError so existing generic handling
+    still catches it, but the caller (HeartbeatLifecycle) can also match
+    it specifically to retry once with an empty sessions claim. Fixed
+    message only -- the response body is inspected for exactly this ONE
+    field and is never logged, retained, or otherwise exposed."""
+
+    def __init__(self) -> None:
+        super().__init__("account not allowed")
+
+
 @dataclass(frozen=True)
 class EnrollResult:
     runner_id: str
@@ -177,6 +191,17 @@ class RegistryHttpClient:
             self._client.cookies.clear()  # never let a Set-Cookie survive to the next call
         if response.status_code == 401:
             raise RegistryUnauthorized("credential rejected")
+        if response.status_code == 400:
+            # Detect ONLY this one fixed error field -- never inspect,
+            # log, or otherwise expose anything else in the body. Any
+            # other 400 shape falls straight through to the generic
+            # protocol-error path below, unchanged.
+            try:
+                error_body = response.json()
+            except ValueError:
+                error_body = None
+            if isinstance(error_body, dict) and error_body.get("error") == "ACCOUNT_NOT_ALLOWED":
+                raise RegistryAccountNotAllowed()
         if response.status_code not in (200, 201):
             raise RegistryProtocolError(f"unexpected status {response.status_code}")
         try:

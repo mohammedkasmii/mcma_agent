@@ -293,6 +293,38 @@ def test_observe_identity_fails_after_close_without_touching_the_page():
 
 
 # --------------------------------------------------------------------- #
+# observe_session_state(): non-strict by construction -- an evaluation
+# exception maps to INDETERMINATE, never propagates. This is the exact
+# behavior mcma.portal.workstation_sessions relies on being UNCHANGED
+# while it separately calls the same underlying helper in strict mode.
+# --------------------------------------------------------------------- #
+
+
+def test_observe_session_state_maps_evaluation_exception_to_indeterminate():
+    browser, reader = _open()
+    page = browser.contexts_created[0].pages_created[0]
+    page._evaluate_results = [RuntimeError("boom")]
+    state = run_async(reader.observe_session_state())
+    assert state == "INDETERMINATE"
+
+
+def test_observe_session_state_maps_authenticated_marker():
+    browser, reader = _open()
+    page = browser.contexts_created[0].pages_created[0]
+    page._evaluate_results = [{"logged_in": True, "logged_out": False}]
+    state = run_async(reader.observe_session_state())
+    assert state == "AUTHENTICATED"
+
+
+def test_observe_session_state_maps_logged_out_marker():
+    browser, reader = _open()
+    page = browser.contexts_created[0].pages_created[0]
+    page._evaluate_results = [{"logged_in": False, "logged_out": True}]
+    state = run_async(reader.observe_session_state())
+    assert state == "LOGGED_OUT"
+
+
+# --------------------------------------------------------------------- #
 # Lifecycle: fail after close without touching the page; idempotent close
 # --------------------------------------------------------------------- #
 

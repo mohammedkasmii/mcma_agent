@@ -1,7 +1,11 @@
 """mcma.app.workstation_runner.app -- composition root. Builds real
-backends (DPAPI, httpx, Tkinter), acquires the single-instance mutex, and
-runs the GUI. The only place in this package that constructs
-DpapiCurrentUserBackend / RegistryHttpClient / RunnerApp together."""
+backends (DPAPI, httpx, Tkinter, and -- Phase 1B-B -- the reviewed
+mcma.portal.workstation_sessions functions), acquires the single-instance
+mutex, and runs the GUI. The only place in this package that constructs
+DpapiCurrentUserBackend / RegistryHttpClient / RunnerApp / BrowserSessionWorker
+together, and the ONLY lightweight-layer module allowed to import
+mcma.portal (see tests/app/workstation_runner/test_import_isolation.py's
+"full" check, and pyproject.toml's allow_indirect_imports=true note)."""
 
 from __future__ import annotations
 
@@ -12,6 +16,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
+from mcma.app.workstation_runner.browser_worker import BrowserSessionWorker
 from mcma.app.workstation_runner.config import ConfigError, RunnerConfig, build_config
 from mcma.app.workstation_runner.controller import RunnerController
 from mcma.app.workstation_runner.gui import RunnerApp
@@ -19,7 +24,13 @@ from mcma.app.workstation_runner.heartbeat import HeartbeatLifecycle
 from mcma.app.workstation_runner.http_client import RegistryHttpClient
 from mcma.app.workstation_runner.identity import IdentityStore, default_identity_path, select_production_crypto_backend
 from mcma.app.workstation_runner.logging_setup import configure_logging, log_event
+from mcma.app.workstation_runner.session_store import (
+    WorkstationSessionStore, default_sessions_dir,
+    select_production_crypto_backend as select_session_crypto_backend,
+)
+from mcma.app.workstation_runner.sessions import VerificationScheduler, WorkstationSessionManager
 from mcma.core.mutex import MutexAcquisitionError, create_single_instance_mutex
+from mcma.portal.workstation_sessions import perform_manual_login, verify_saved_session
 
 _MUTEX_BASE_NAME = "MCMA_WorkstationRunner"
 
@@ -262,6 +273,17 @@ def _run_with_mutex_held(config: RunnerConfig | None) -> int:
     )
     identity_store = IdentityStore(default_identity_path(), select_production_crypto_backend())
 
+    # Phase 1B-B: the workstation portal-session stack. session_store is a
+    # SEPARATE encrypted file per MCMA account under its own subdirectory
+    # (never the runner identity file, never the server's notification
+    # vault -- see session_store.py's own docstring). perform_manual_login/
+    # verify_saved_session are the reviewed mcma.portal functions, used
+    # completely unchanged; this composition root injects them into the
+    # browser worker as plain callables and never calls Playwright itself.
+    session_store = WorkstationSessionStore(default_sessions_dir(), select_session_crypto_backend())
+    session_manager = WorkstationSessionManager(has_saved_session=session_store.has_saved_session)
+    verification_scheduler = VerificationScheduler()
+
     def client_factory(config: RunnerConfig) -> RegistryHttpClient:
         return RegistryHttpClient(config.server_origin, ca_cert_path=config.ca_cert_path)
 
@@ -269,12 +291,27 @@ def _run_with_mutex_held(config: RunnerConfig | None) -> int:
     if resolved_config.server_origin:
         gui_app.prefill_form(resolved_config)
 
+    def on_worker_update() -> None:
+        controller._handle_worker_update()
+
+    browser_worker = BrowserSessionWorker(
+        session_manager=session_manager, session_store=session_store,
+        perform_manual_login=perform_manual_login, verify_saved_session=verify_saved_session,
+        on_update=on_worker_update,
+    )
+
     def lifecycle_factory(client):
-        return HeartbeatLifecycle(client, controller._handle_lifecycle_event)
+        return HeartbeatLifecycle(
+            client, controller._handle_lifecycle_event,
+            sessions_provider=controller._current_sessions,
+            on_allowed_accounts=controller._handle_allowed_accounts,
+        )
 
     controller = RunnerController(
         resolved_config, identity_store, client_factory, lifecycle_factory, gui_app._enqueue_status,
         on_config_saved=save_config_defaults, on_log=lambda event: log_event(logger, event),
+        session_manager=session_manager, session_store=session_store, browser_worker=browser_worker,
+        verification_scheduler=verification_scheduler, on_accounts_changed=gui_app._enqueue_accounts,
     )
     gui_app.bind_controller(controller)
     gui_app.run()
