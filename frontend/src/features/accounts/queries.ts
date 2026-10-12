@@ -1,8 +1,17 @@
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { AccountsLoadState, PortalAccount } from "@shared/types";
 import type { ApiError } from "@shared/types";
-import { fetchAccounts, refreshNotifications, startPortalLogin } from "@shared/api/accounts";
+import {
+  cancelPortalLogin,
+  fetchAccounts,
+  fetchLoginStatus,
+  refreshNotifications,
+  startPortalLogin,
+} from "@shared/api/accounts";
+import { isLoginActive } from "@shared/api/adapters/accounts";
+import type { LoginStatus } from "@shared/api/adapters/accounts";
 import { claimsQueryKey } from "@features/work-queue/queries";
 import { ApiRequestError } from "@shared/api/client";
 import { responseShapeError } from "@shared/api/errors";
@@ -65,22 +74,67 @@ export function useAccountResolution(accountId: string | undefined): AccountReso
   return account === undefined ? { status: "unknown" } : { status: "resolved", account };
 }
 
+/** Bounded progress poll: only while a request is in flight, never faster than this. */
+export const LOGIN_STATUS_POLL_MS = 2000;
+
+export const loginStatusQueryKey = (accountId: string) => ["login-status", accountId] as const;
+
 /**
- * Opening the portal login window for one account.
+ * Connecting one account.
  *
- * No credentials cross this boundary — the mutation carries only the account
- * in the path. On success the account list is refetched: the connection state
- * shown to the employee is whatever the backend then reports, never a locally
- * assumed CONNECTED.
+ * No credentials cross this boundary -- the mutation carries only the account
+ * in the path. Two server behaviours exist:
+ *  - local Windows: the POST is synchronous and the account list is refetched;
+ *  - central: the POST queues a request for the employee's workstation and
+ *    returns a status view. Progress is then polled -- only while the request
+ *    is active -- and "connected" is shown only after the SERVER reports
+ *    SUCCEEDED and the account list has been refetched.
  */
-export function useStartLogin(accountId: string) {
+export function useAccountLogin(accountId: string) {
   const queryClient = useQueryClient();
-  return useMutation({
+  const [engaged, setEngaged] = useState(false);
+  const key = loginStatusQueryKey(accountId);
+
+  const start = useMutation({
     mutationFn: () => startPortalLogin(accountId),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
+      if (result.kind === "onboarding") {
+        queryClient.setQueryData(key, result.status);
+        setEngaged(true);
+        return;
+      }
       await queryClient.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY });
     },
   });
+
+  const statusQuery = useQuery({
+    queryKey: key,
+    queryFn: ({ signal }) => fetchLoginStatus(accountId, signal),
+    enabled: engaged,
+    retry: false,
+    staleTime: 0,
+    refetchInterval: (query) =>
+      query.state.status !== "error" && isLoginActive(query.state.data?.state) ? LOGIN_STATUS_POLL_MS : false,
+  });
+
+  const cancel = useMutation({
+    mutationFn: () => cancelPortalLogin(accountId),
+    onSuccess: (status) => {
+      queryClient.setQueryData(key, status);
+    },
+  });
+
+  const status: LoginStatus | undefined = engaged ? statusQuery.data : undefined;
+  const active = isLoginActive(status?.state);
+  const requestId = status?.requestId ?? null;
+  const succeeded = status?.state === "SUCCEEDED";
+
+  useEffect(() => {
+    // The server confirmed the stored session: refetch what it now reports.
+    if (succeeded) void queryClient.invalidateQueries({ queryKey: ACCOUNTS_QUERY_KEY });
+  }, [succeeded, requestId, queryClient]);
+
+  return { start, cancel, status, active, statusError: engaged && statusQuery.isError ? statusQuery.error : null };
 }
 
 /**

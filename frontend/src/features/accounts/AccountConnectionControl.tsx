@@ -1,6 +1,7 @@
 import type { PortalAccount } from "@shared/types";
 import { Button } from "@shared/ui";
-import { toApiError, useRefreshNotifications, useStartLogin } from "./queries";
+import { toApiError, useAccountLogin, useRefreshNotifications } from "./queries";
+import { loginProgressMessage } from "./loginProgress";
 import styles from "./AccountConnectionControl.module.css";
 
 interface AccountConnectionControlProps {
@@ -24,7 +25,8 @@ interface AccountConnectionControlProps {
  * list and render whatever the backend then reports.
  */
 export function AccountConnectionControl({ account }: AccountConnectionControlProps) {
-  const login = useStartLogin(account.accountId);
+  const onboarding = useAccountLogin(account.accountId);
+  const login = onboarding.start;
   const refresh = useRefreshNotifications(account.accountId);
 
   const state = account.connectionState;
@@ -50,7 +52,9 @@ export function AccountConnectionControl({ account }: AccountConnectionControlPr
       ? "Vérification…"
       : "Connexion…";
 
-  const busy = login.isPending || refresh.isPending;
+  const busy = login.isPending || refresh.isPending || onboarding.active;
+  const progress = onboarding.status !== undefined ? loginProgressMessage(onboarding.status) : null;
+  const loginInFlight = login.isPending || onboarding.active;
 
   return (
     <div className={styles.control}>
@@ -61,18 +65,46 @@ export function AccountConnectionControl({ account }: AccountConnectionControlPr
         disabled={busy}
         onClick={() => primary.mutate()}
       >
-        {primary.isPending ? primaryPendingLabel : primaryLabel}
+        {primary.isPending || (primary === login && onboarding.active) ? primaryPendingLabel : primaryLabel}
       </Button>
 
       {unverified ? (
         <Button className={styles.secondary} disabled={busy} onClick={() => login.mutate()}>
-          {login.isPending ? "Connexion…" : "Reconnecter"}
+          {loginInFlight ? "Connexion…" : "Reconnecter"}
         </Button>
       ) : null}
 
       {unverified && !busy ? (
         <p className={styles.hint}>
           Une session est enregistrée pour ce compte, sans confirmation qu'elle est encore valide.
+        </p>
+      ) : null}
+
+      {onboarding.active ? (
+        <Button
+          className={styles.secondary}
+          disabled={onboarding.cancel.isPending}
+          onClick={() => onboarding.cancel.mutate()}
+        >
+          Annuler
+        </Button>
+      ) : null}
+
+      {progress !== null && progress.tone !== "error" ? (
+        <p className={styles.hint} role="status">
+          {progress.text}
+        </p>
+      ) : null}
+
+      {progress !== null && progress.tone === "error" ? (
+        <p className={styles.error} role="alert">
+          {progress.text}
+        </p>
+      ) : null}
+
+      {onboarding.statusError !== null ? (
+        <p className={styles.error} role="alert">
+          {toApiError(onboarding.statusError).message}
         </p>
       ) : null}
 
@@ -89,9 +121,9 @@ export function AccountConnectionControl({ account }: AccountConnectionControlPr
         </p>
       ) : null}
 
-      {login.isError || refresh.isError ? (
+      {login.isError || refresh.isError || onboarding.cancel.isError ? (
         <p className={styles.error} role="alert">
-          {toApiError(login.error ?? refresh.error).message}
+          {toApiError(login.error ?? refresh.error ?? onboarding.cancel.error).message}
         </p>
       ) : null}
     </div>

@@ -17,7 +17,11 @@ not merely switched off, and tests/app/test_central_server.py pins them:
     mcma.notifications.service.NotificationService;
   * no mock portal, and no execution target: RunnerConfig is never built,
     so allowed_host (the loopback mock in local mode) is never used;
-  * no interactive portal login (it would need a display) and no
+  * no interactive portal login on the server (it would need a display):
+    POST /accounts/{id}/login is served by the injected notification-
+    onboarding control plane, which only queues a request for the
+    employee's own workstation runner (portal_login_enabled stays False);
+    and no
     loopback-only bootstrap/onboarding sub-apps -- behind a reverse proxy
     on the same host every request looks like loopback, so those apps are
     not mounted at all;
@@ -62,6 +66,7 @@ from mcma.app.browser_supervisor import BrowserSupervisor
 from mcma.app.connection_state import ConnectionStateTracker
 from mcma.app.composition import build_app, build_tls_config, make_session_observer
 from mcma.app.provisioning import ensure_canonical_accounts
+from mcma.app.runners.notification_onboarding import NotificationOnboardingService
 from mcma.app.serve import TlsConfig, build_ssl_context, serve
 from mcma.core.central_config import CentralConfigurationError, load_central_settings, validate_central_settings
 from mcma.core.config import Settings
@@ -70,7 +75,7 @@ from mcma.core.mutex import create_single_instance_mutex
 from mcma.execution.inputs import AesGcmInputEncryptor
 from mcma.notifications.service import NotificationService
 from mcma.persistence.db import open_database
-from mcma.portal.vault import AesGcmSessionVaultBackend, PosixVaultDirectoryVerifier
+from mcma.portal.vault import AesGcmSessionVaultBackend, PosixVaultDirectoryVerifier, get_acl_verifier
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +203,16 @@ def create_central_server(
             on_browser_lost=supervisor.mark_notification_lost,
         )
         lifecycle = _Lifecycle()
+        # The control plane behind POST /accounts/{id}/login on THIS headless
+        # server: it only queues a durable request that an employee's
+        # workstation runner turns into a visible login window there, then
+        # stores the uploaded session through the already-loaded AES backend.
+        # It owns no browser; portal_login_enabled stays False below.
+        onboarding = NotificationOnboardingService(
+            api_conn, vault_dir=Path(settings.vault_dir), instance_id=settings.instance_id,
+            crypto_backend=crypto_backend, acl_verifier=get_acl_verifier(), portal_host=settings.portal_host,
+            connection_tracker=tracker,
+        )
 
         @contextlib.asynccontextmanager
         async def _lifespan(_app):
@@ -236,6 +251,7 @@ def create_central_server(
             # revocation): DB rows and HTTP only. No browser, no background
             # thread -- online/offline is derived from server time on read.
             runner_registry_enabled=True,
+            notification_onboarding=onboarding,
             server_state_provider=lambda: {
                 "notifications": service.state.value,
                 "shutting_down": lifecycle.shutting_down,

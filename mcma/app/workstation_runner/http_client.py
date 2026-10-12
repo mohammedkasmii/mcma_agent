@@ -7,6 +7,8 @@ exceptions and decide what (fixed, French) text to show."""
 
 from __future__ import annotations
 
+import json
+import re
 import ssl
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,9 +19,10 @@ import httpx
 
 from mcma.app.workstation_runner.protocol import (
     APP_VERSION, CLAIM_TOKEN_PREFIX, EXECUTE_FINISH_RESULTS, FINISH_RESULTS, JOB_MODES, MAX_CLAIM_RESPONSE_BYTES,
-    MAX_CLAIM_TOKEN_LENGTH, MAX_HEARTBEAT_INTERVAL_SECONDS, MAX_OFFLINE_AFTER_SECONDS, MAX_RUNNER_SECRET_LENGTH,
-    MAX_TYPED_INPUT_DEPTH, MIN_HEARTBEAT_INTERVAL_SECONDS, MIN_OFFLINE_AFTER_SECONDS, PROTOCOL_VERSION,
-    RELEASE_REASONS, RUNNER_ACCOUNT_IDS, RUNNER_SECRET_PREFIX, SESSION_STATES,
+    MAX_CLAIM_TOKEN_LENGTH, MAX_HEARTBEAT_INTERVAL_SECONDS, MAX_OFFLINE_AFTER_SECONDS, MAX_ONBOARDING_UPLOAD_BYTES,
+    MAX_RUNNER_SECRET_LENGTH, MAX_TYPED_INPUT_DEPTH, MIN_HEARTBEAT_INTERVAL_SECONDS, MIN_OFFLINE_AFTER_SECONDS,
+    NOTIFICATION_ONBOARDING_ACCOUNT_IDS, ONBOARDING_CLAIM_TOKEN_PREFIX, ONBOARDING_FAIL_REASONS, ONBOARDING_PHASES,
+    PROTOCOL_VERSION, RELEASE_REASONS, RUNNER_ACCOUNT_IDS, RUNNER_SECRET_PREFIX, SESSION_STATES,
 )
 
 _CONNECT_TIMEOUT = 5.0
@@ -72,6 +75,24 @@ class RegistryClaimNotFound(RegistryProtocolError):
         super().__init__("claim not found")
 
 
+class RegistryAccountBusy(RegistryProtocolError):
+    """/complete answered 409 ACCOUNT_BUSY: the account lease is held right
+    now (a notification poll or a dossier job). Retryable, bounded by the
+    caller. Fixed message; the body is inspected for this one code only."""
+
+    def __init__(self) -> None:
+        super().__init__("account busy")
+
+
+class RegistrySessionRejected(RegistryProtocolError):
+    """/complete answered 422 SESSION_REJECTED: the server refused the
+    uploaded storage state (and closed the request). Never retried. Fixed
+    message; carries nothing from the body."""
+
+    def __init__(self) -> None:
+        super().__init__("session rejected")
+
+
 @dataclass(frozen=True)
 class EnrollResult:
     runner_id: str
@@ -107,6 +128,39 @@ class ClaimedJob:
     lease_expires_at: str
     claim_token: str = field(repr=False)
     typed_input: dict = field(repr=False)
+
+
+@dataclass(frozen=True)
+class ClaimedOnboarding:
+    """A claimed notification-onboarding request. `claim_token` is
+    repr=False so logging/formatting this object can never leak it."""
+
+    request_id: str
+    account_id: str
+    generation: int
+    lease_expires_at: str
+    expires_at: str
+    server_time: str
+    claim_token: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class OnboardingRenewResult:
+    lease_expires_at: str
+    server_time: str
+    cancel_requested: bool
+
+
+@dataclass(frozen=True)
+class OnboardingCompleteResult:
+    status: str
+    server_time: str
+
+
+@dataclass(frozen=True)
+class OnboardingFailResult:
+    status: str
+    server_time: str
 
 
 @dataclass(frozen=True)
@@ -219,6 +273,25 @@ def _valid_claim_token(value: object) -> bool:
         isinstance(value, str)
         and value.startswith(CLAIM_TOKEN_PREFIX)
         and len(CLAIM_TOKEN_PREFIX) < len(value) <= MAX_CLAIM_TOKEN_LENGTH
+    )
+
+
+_ONBOARDING_REQUEST_ID_RE = re.compile(r"[0-9a-f]{32}")
+_ONBOARDING_BASE = "/runner/notification-onboarding"
+_ONBOARDING_CLAIM_FIELDS = frozenset({
+    "request_id", "account_id", "generation", "claim_token", "lease_expires_at", "expires_at", "server_time",
+})
+
+
+def _valid_onboarding_request_id(value: object) -> bool:
+    return isinstance(value, str) and _ONBOARDING_REQUEST_ID_RE.fullmatch(value) is not None
+
+
+def _valid_onboarding_token(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and value.startswith(ONBOARDING_CLAIM_TOKEN_PREFIX)
+        and len(ONBOARDING_CLAIM_TOKEN_PREFIX) < len(value) <= MAX_CLAIM_TOKEN_LENGTH
     )
 
 
@@ -335,10 +408,16 @@ class RegistryHttpClient:
         self.close()
 
     def _post(
-        self, path: str, *, json_body: dict, headers: dict | None = None, allow_no_content: bool = False,
+        self, path: str, *, json_body: dict | None = None, headers: dict | None = None,
+        allow_no_content: bool = False, raw_body: bytes | None = None,
     ) -> dict | None:
         try:
-            response = self._client.post(path, json=json_body, headers=headers or {})
+            if raw_body is not None:
+                response = self._client.post(
+                    path, content=raw_body, headers={**(headers or {}), "Content-Type": "application/json"},
+                )
+            else:
+                response = self._client.post(path, json=json_body, headers=headers or {})
         except httpx.HTTPError:
             raise RegistryConnectionError("unreachable") from None
         finally:
@@ -368,6 +447,18 @@ class RegistryHttpClient:
                 error_body = None
             if isinstance(error_body, dict) and error_body.get("error") == "CLAIM_NOT_FOUND":
                 raise RegistryClaimNotFound()
+        if response.status_code in (409, 422):
+            # Notification-onboarding /complete only: the two fixed codes,
+            # inspected as exactly that one field and nothing else.
+            try:
+                error_body = response.json()
+            except ValueError:
+                error_body = None
+            code = error_body.get("error") if isinstance(error_body, dict) else None
+            if response.status_code == 409 and code == "ACCOUNT_BUSY":
+                raise RegistryAccountBusy()
+            if response.status_code == 422 and code == "SESSION_REJECTED":
+                raise RegistrySessionRejected()
         if allow_no_content and response.status_code == 204:
             return None
         if response.status_code not in (200, 201):
@@ -606,3 +697,110 @@ class RegistryHttpClient:
         ):
             raise RegistryProtocolError("browser-closed response failed validation")
         return BrowserClosedResult(status=body["status"], server_time=body["server_time"])
+
+    # ------------------- notification onboarding (central) ------------------- #
+    # Bearer-only machine endpoints; the request chooses nothing but its own
+    # claim proof. The storage state travels once, in the /complete body,
+    # over this same verified-HTTPS client -- it is serialized exactly once
+    # here, never logged, never written anywhere, and never echoed in an
+    # error.
+
+    @staticmethod
+    def _onboarding_path(request_id: str, action: str) -> str:
+        if not _valid_onboarding_request_id(request_id):
+            raise ValueError("request_id is not a valid onboarding request id")
+        return f"{_ONBOARDING_BASE}/{request_id}/{action}"
+
+    def claim_notification_onboarding(self, runner_secret: str) -> ClaimedOnboarding | None:
+        body = self._post(
+            f"{_ONBOARDING_BASE}/claim",
+            json_body={"protocol_version": PROTOCOL_VERSION, "app_version": APP_VERSION},
+            headers={"Authorization": f"Bearer {runner_secret}"},
+            allow_no_content=True,
+        )
+        if body is None:
+            return None
+        if (
+            set(body) != _ONBOARDING_CLAIM_FIELDS
+            or not _valid_onboarding_request_id(body.get("request_id"))
+            or body.get("account_id") not in NOTIFICATION_ONBOARDING_ACCOUNT_IDS
+            or not _valid_generation(body.get("generation"))
+            or not _valid_onboarding_token(body.get("claim_token"))
+            or not _valid_bounded_str(body.get("lease_expires_at"), _MAX_TIMESTAMP_LENGTH)
+            or not _valid_bounded_str(body.get("expires_at"), _MAX_TIMESTAMP_LENGTH)
+            or not _valid_bounded_str(body.get("server_time"), _MAX_TIMESTAMP_LENGTH)
+        ):
+            raise RegistryProtocolError("onboarding claim response failed validation")
+        return ClaimedOnboarding(
+            request_id=body["request_id"], account_id=body["account_id"], generation=body["generation"],
+            lease_expires_at=body["lease_expires_at"], expires_at=body["expires_at"],
+            server_time=body["server_time"], claim_token=body["claim_token"],
+        )
+
+    def renew_notification_onboarding(
+        self, runner_secret: str, *, request_id: str, claim_token: str, generation: int, phase: str,
+    ) -> OnboardingRenewResult:
+        if phase not in ONBOARDING_PHASES:
+            raise ValueError("phase must be one of ONBOARDING_PHASES")
+        body = self._post(
+            self._onboarding_path(request_id, "renew"),
+            json_body={"claim_token": claim_token, "generation": generation, "phase": phase},
+            headers={"Authorization": f"Bearer {runner_secret}"},
+        )
+        assert body is not None
+        if (
+            set(body) != {"lease_expires_at", "server_time", "cancel_requested"}
+            or not _valid_bounded_str(body.get("lease_expires_at"), _MAX_TIMESTAMP_LENGTH)
+            or not _valid_bounded_str(body.get("server_time"), _MAX_TIMESTAMP_LENGTH)
+            or not isinstance(body.get("cancel_requested"), bool)
+        ):
+            raise RegistryProtocolError("onboarding renew response failed validation")
+        return OnboardingRenewResult(
+            lease_expires_at=body["lease_expires_at"], server_time=body["server_time"],
+            cancel_requested=body["cancel_requested"],
+        )
+
+    def complete_notification_onboarding(
+        self, runner_secret: str, *, request_id: str, claim_token: str, generation: int, storage_state: dict,
+    ) -> OnboardingCompleteResult:
+        path = self._onboarding_path(request_id, "complete")
+        if not isinstance(storage_state, dict):
+            raise RegistryProtocolError("storage state is not an object")
+        try:
+            raw = json.dumps(
+                {"claim_token": claim_token, "generation": generation, "storage_state": storage_state},
+                allow_nan=False, separators=(",", ":"), ensure_ascii=False,
+            ).encode("utf-8")
+        except (ValueError, TypeError, RecursionError):
+            # Never the original text: it can quote cookie/storage values.
+            raise RegistryProtocolError("storage state is not serializable") from None
+        if len(raw) > MAX_ONBOARDING_UPLOAD_BYTES:
+            raise RegistryProtocolError("storage state too large")
+        body = self._post(path, raw_body=raw, headers={"Authorization": f"Bearer {runner_secret}"})
+        assert body is not None
+        if (
+            set(body) != {"status", "server_time"}
+            or body.get("status") != "SUCCEEDED"
+            or not _valid_bounded_str(body.get("server_time"), _MAX_TIMESTAMP_LENGTH)
+        ):
+            raise RegistryProtocolError("onboarding complete response failed validation")
+        return OnboardingCompleteResult(status=body["status"], server_time=body["server_time"])
+
+    def fail_notification_onboarding(
+        self, runner_secret: str, *, request_id: str, claim_token: str, generation: int, reason_code: str,
+    ) -> OnboardingFailResult:
+        if reason_code not in ONBOARDING_FAIL_REASONS:
+            raise ValueError("reason_code must be one of ONBOARDING_FAIL_REASONS")
+        body = self._post(
+            self._onboarding_path(request_id, "fail"),
+            json_body={"claim_token": claim_token, "generation": generation, "reason_code": reason_code},
+            headers={"Authorization": f"Bearer {runner_secret}"},
+        )
+        assert body is not None
+        if (
+            set(body) != {"status", "server_time"}
+            or body.get("status") not in ("FAILED", "CANCELLED")
+            or not _valid_bounded_str(body.get("server_time"), _MAX_TIMESTAMP_LENGTH)
+        ):
+            raise RegistryProtocolError("onboarding fail response failed validation")
+        return OnboardingFailResult(status=body["status"], server_time=body["server_time"])

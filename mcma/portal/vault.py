@@ -29,6 +29,7 @@ from mcma.core import dpapi
 from mcma.core.aead import AeadEnvelope, load_key_file
 import uuid
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Protocol
 
@@ -345,33 +346,98 @@ def store_session(
     # revocation would not reliably force re-login. One explicit
     # transaction makes the row-level swap atomic, matching the
     # already-atomic file replacement above.
-    session_id = uuid.uuid4().hex
     conn.execute("BEGIN IMMEDIATE")
     try:
-        previous = conn.execute(
-            "SELECT session_id, storage_ref FROM portal_sessions WHERE account_id = ? AND status = 'ACTIVE' "
-            "ORDER BY rowid DESC LIMIT 1",
-            (account_id,),
-        ).fetchone()
-        if previous is not None:
-            conn.execute(
-                "UPDATE portal_sessions SET status = 'REVOKED' WHERE session_id = ?", (previous["session_id"],)
-            )
-        conn.execute(
-            "INSERT INTO portal_sessions (session_id, account_id, storage_ref, status, last_validated_at, "
-            "opened_identity_fingerprint) VALUES (?, ?, ?, 'ACTIVE', ?, ?)",
-            (session_id, account_id, storage_ref, _utcnow_iso(), identity_fingerprint),
-        )
+        session_id, previous = swap_active_session_row(conn, account_id, storage_ref, identity_fingerprint)
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
         raise
 
     if previous is not None:
-        old_path = vault_dir / f"{previous['storage_ref']}.session"
+        old_path = vault_dir / f"{previous}.session"
         old_path.unlink(missing_ok=True)
 
     return session_id
+
+
+def swap_active_session_row(conn, account_id: str, storage_ref: str, identity_fingerprint: Optional[str] = None) -> tuple:
+    """The row-level half of a session replacement: revoke the previous
+    ACTIVE row, insert the new one. The CALLER owns the transaction, so
+    the swap can commit or roll back together with other writes. Returns
+    (session_id, previous storage_ref or None)."""
+    previous = conn.execute(
+        "SELECT session_id, storage_ref FROM portal_sessions WHERE account_id = ? AND status = 'ACTIVE' "
+        "ORDER BY rowid DESC LIMIT 1",
+        (account_id,),
+    ).fetchone()
+    if previous is not None:
+        conn.execute("UPDATE portal_sessions SET status = 'REVOKED' WHERE session_id = ?", (previous["session_id"],))
+    session_id = uuid.uuid4().hex
+    conn.execute(
+        "INSERT INTO portal_sessions (session_id, account_id, storage_ref, status, last_validated_at, "
+        "opened_identity_fingerprint) VALUES (?, ?, ?, 'ACTIVE', ?, ?)",
+        (session_id, account_id, storage_ref, _utcnow_iso(), identity_fingerprint),
+    )
+    return session_id, (previous["storage_ref"] if previous is not None else None)
+
+
+@dataclass(frozen=True)
+class StagedSession:
+    """An encrypted session on disk that NO portal_sessions row references
+    yet, so no reader can load it. It becomes the account's session only
+    through activate_staged_session(), inside the caller's transaction."""
+
+    storage_ref: str
+    staged_path: Path
+    final_path: Path
+
+
+def stage_session(
+    account_id: str, storage_state: bytes, *, vault_dir: Path, backend: CryptoBackend, acl_verifier: AclVerifier,
+) -> StagedSession:
+    """Encrypts and writes the session WITHOUT activating it. Same ACL
+    precondition and per-account binding as store_session; the previous
+    active session and its file are not touched."""
+    vault_dir = Path(vault_dir)
+    vault_dir.mkdir(parents=True, exist_ok=True)
+    if not acl_verifier.verify_restrictive(vault_dir):
+        raise VaultAclPreconditionFailed(
+            f"service-account-only NTFS ACL could not be verified on {vault_dir}; refusing to store"
+        )
+    ciphertext = _backend_for_account(backend, account_id).encrypt(storage_state)
+    storage_ref = uuid.uuid4().hex
+    staged = StagedSession(storage_ref, vault_dir / f".{storage_ref}.session.staged", vault_dir / f"{storage_ref}.session")
+    staged.staged_path.write_bytes(ciphertext)
+    return staged
+
+
+def activate_staged_session(conn, staged: StagedSession, account_id: str) -> tuple:
+    """Call INSIDE the caller's write transaction. Renames the staged file
+    to its final (still unreferenced) name, then swaps the ACTIVE row.
+    Returns (session_id, previous storage_ref). On any exception the caller
+    rolls back and calls discard_staged_session(); the previous session is
+    never touched here (its file is removed only by cleanup_replaced_session
+    AFTER the commit)."""
+    os.replace(staged.staged_path, staged.final_path)
+    return swap_active_session_row(conn, account_id, staged.storage_ref)
+
+
+def discard_staged_session(staged: StagedSession) -> None:
+    for path in (staged.staged_path, staged.final_path):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def cleanup_replaced_session(vault_dir: Path, previous_storage_ref: Optional[str]) -> None:
+    """Best-effort, after a successful commit: the old file is inactive."""
+    if previous_storage_ref:
+        try:
+            (Path(vault_dir) / f"{previous_storage_ref}.session").unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def load_and_verify_session(

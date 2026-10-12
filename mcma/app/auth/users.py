@@ -147,18 +147,30 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _rollback_quietly(conn) -> None:
+    """Best effort. A failed or pointless ROLLBACK (no transaction left, or
+    the database is gone) must never replace the error that got us here."""
+    try:
+        conn.execute("ROLLBACK")
+    except Exception:
+        pass
+
+
 @contextmanager
 def write_transaction(conn):
-    """BEGIN IMMEDIATE ... COMMIT, ROLLBACK on any exception. The connection
-    holds its lock for the whole transaction (SerializedConnection)."""
+    """BEGIN IMMEDIATE ... COMMIT; ROLLBACK on any exception, including one
+    raised by COMMIT itself. The ORIGINAL body/commit exception always
+    propagates (a secondary rollback error is swallowed), BaseException
+    (cancellation, interrupt) still rolls back, and a BEGIN failure
+    propagates untouched. The connection holds its lock for the whole
+    transaction (SerializedConnection)."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield
-    except BaseException:
-        conn.execute("ROLLBACK")
-        raise
-    else:
         conn.execute("COMMIT")
+    except BaseException:
+        _rollback_quietly(conn)
+        raise
 
 
 def _audit(conn, action: str, actor_user_id: Optional[str], summary: str) -> None:

@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
+from mcma.app.workstation_runner.browser_gate import OWNER_JOB, BrowserOperationGate
 from mcma.app.workstation_runner.execution_permit import ExecutionPermit
 
 _INITIAL_BACKOFF_SECONDS = 2.0
@@ -213,7 +214,13 @@ class JobPollingLifecycle:
         poll_interval_seconds: float = _DEFAULT_POLL_INTERVAL_SECONDS,
         renew_interval_seconds: float = _DEFAULT_RENEW_INTERVAL_SECONDS,
         shutdown_poll_interval_seconds: float = _SHUTDOWN_POLL_INTERVAL_SECONDS,
+        gate: Optional[BrowserOperationGate] = None,
     ) -> None:
+        # The runner-wide browser gate (see browser_gate.py): when given,
+        # this lifecycle claims nothing while another browser owner (the
+        # saved-session worker or notification onboarding) holds it, and
+        # holds it itself only from the claim until the job is finished.
+        self._gate = gate
         self._client = client
         self._run_dry_run_check = run_dry_run_check
         self._run_execute_check = run_execute_check
@@ -234,9 +241,16 @@ class JobPollingLifecycle:
                     if self._wait(stop_event, self._poll_interval_seconds):
                         return
                     continue
+                if self._gate is not None and not self._gate.try_acquire(OWNER_JOB):
+                    # Another browser operation owns the runner right now:
+                    # never claim (so the claim cannot expire unworked).
+                    if self._wait(stop_event, self._poll_interval_seconds):
+                        return
+                    continue
                 try:
                     claimed = self._client.claim_job(runner_secret)
                 except Exception:
+                    self._release_gate()
                     # Any transport/protocol failure (connection,
                     # unauthorized, malformed envelope -- this module never
                     # inspects which) is bounded backoff, never a busy
@@ -249,6 +263,7 @@ class JobPollingLifecycle:
                     continue
                 backoff = _INITIAL_BACKOFF_SECONDS
                 if claimed is None:
+                    self._release_gate()
                     if self._wait(stop_event, self._poll_interval_seconds):
                         return
                     continue
@@ -258,13 +273,21 @@ class JobPollingLifecycle:
                     # release it (CLAIMED-only, never RUNNING) rather than
                     # starting new work after shutdown has begun.
                     self._safe_release(runner_secret, claimed)
+                    self._release_gate()
                     return
-                self._run_one_job(runner_secret, claimed, stop_event)
+                try:
+                    self._run_one_job(runner_secret, claimed, stop_event)
+                finally:
+                    self._release_gate()
         finally:
             try:
                 self._client.close()
             except Exception:
                 pass
+
+    def _release_gate(self) -> None:
+        if self._gate is not None:
+            self._gate.release(OWNER_JOB)
 
     def _safe_release(self, runner_secret: str, claimed: ClaimedJobLike) -> None:
         try:

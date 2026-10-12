@@ -1,7 +1,7 @@
 import type { PortalAccount } from "@shared/types";
 import { apiGet, apiSend } from "./client";
-import { toPortalAccounts, toRefreshOutcome } from "./adapters/accounts";
-import type { RefreshOutcome } from "./adapters/accounts";
+import { isOnboardingBody, toLoginStatus, toPortalAccounts, toRefreshOutcome } from "./adapters/accounts";
+import type { LoginStatus, RefreshOutcome } from "./adapters/accounts";
 
 /** GET /accounts — the accounts the authenticated employee may see. */
 export const ACCOUNTS_PATH = "/accounts";
@@ -25,8 +25,28 @@ function accountActionPath(accountId: string, action: string): string {
  * The returned session id is deliberately discarded: the authoritative
  * connection state comes from refetching GET /accounts.
  */
-export async function startPortalLogin(accountId: string): Promise<void> {
-  await apiSend(accountActionPath(accountId, "login"), "POST", {});
+export type LoginStart =
+  | { readonly kind: "local" }
+  | { readonly kind: "onboarding"; readonly status: LoginStatus };
+
+/**
+ * Central mode answers with an onboarding status view (it carries `state`):
+ * the login happens asynchronously on the employee's workstation. The local
+ * Windows composition keeps its synchronous answer, which has no `state`.
+ */
+export async function startPortalLogin(accountId: string): Promise<LoginStart> {
+  const body = await apiSend(accountActionPath(accountId, "login"), "POST", {});
+  return isOnboardingBody(body) ? { kind: "onboarding", status: toLoginStatus(body) } : { kind: "local" };
+}
+
+/** GET /accounts/{id}/login-status — bounded progress of the current request. */
+export async function fetchLoginStatus(accountId: string, signal?: AbortSignal): Promise<LoginStatus> {
+  return toLoginStatus(await apiGet(accountActionPath(accountId, "login-status"), signal));
+}
+
+/** POST /accounts/{id}/login/cancel — idempotent. */
+export async function cancelPortalLogin(accountId: string): Promise<LoginStatus> {
+  return toLoginStatus(await apiSend(accountActionPath(accountId, "login/cancel"), "POST", {}));
 }
 
 /**

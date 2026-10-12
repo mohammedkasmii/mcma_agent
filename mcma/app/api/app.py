@@ -160,7 +160,16 @@ def create_api_app(
     execute_creation_available: bool = True,
     runner_registry: bool = False,
     execute_dispatch_enabled: bool = False,
+    notification_onboarding=None,
 ) -> FastAPI:
+    """`notification_onboarding` (central server only): the injected
+    mcma.app.runners.notification_onboarding service. It gives
+    POST /accounts/{id}/login a meaning on a headless server WITHOUT a
+    browser here: the request is queued durably and an employee's workstation
+    runner opens the visible window. It is mutually exclusive with
+    `portal_login_opener` (the synchronous local-Windows flow, unchanged)."""
+    if notification_onboarding is not None and portal_login_opener is not None:
+        raise ValueError("notification_onboarding and portal_login_opener are mutually exclusive")
     app = FastAPI(title="MCMA API")
     install_error_handlers(app)
     session_store = session_store or SessionStore()
@@ -290,6 +299,11 @@ def create_api_app(
         register_runner_routes(
             app, conn, get_principal, encryptor, execute_dispatch_enabled=execute_dispatch_enabled,
         )
+
+    if notification_onboarding is not None:
+        from mcma.app.api.notification_onboarding import register_notification_onboarding_routes
+
+        register_notification_onboarding_routes(app, conn, get_principal, notification_onboarding)
 
     # -- notifications (row-filtered list surfaces, review AR-H1) --------
 

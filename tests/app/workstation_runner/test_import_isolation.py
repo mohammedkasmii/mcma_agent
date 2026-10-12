@@ -41,6 +41,8 @@ import mcma.app.workstation_runner.browser_worker
 import mcma.app.workstation_runner.dry_run_executor
 import mcma.app.workstation_runner.execute_executor
 import mcma.app.workstation_runner.job_worker
+import mcma.app.workstation_runner.browser_gate
+import mcma.app.workstation_runner.notification_onboarding
 import mcma.app.workstation_runner.logging_setup
 forbidden = {forbidden!r}
 hit = [m for m in sys.modules if any(m == p or m.startswith(p + ".") for p in forbidden)]
@@ -54,7 +56,7 @@ _STRICT_CHECK_SCRIPT = _CHECK_SCRIPT.replace("{forbidden!r}", repr(_STRICT_FORBI
 
 _FULL_CHECK_SCRIPT = _CHECK_SCRIPT.replace(
     "import mcma.app.workstation_runner.logging_setup\n",
-    "import mcma.app.workstation_runner.logging_setup\nimport mcma.app.workstation_runner.gui\nimport mcma.app.workstation_runner.app\n",
+    "import mcma.app.workstation_runner.logging_setup\nimport mcma.app.workstation_runner.gui\nimport mcma.app.workstation_runner.notification_login\nimport mcma.app.workstation_runner.app\n",
 ).replace("{forbidden!r}", repr(_FULL_FORBIDDEN))
 
 

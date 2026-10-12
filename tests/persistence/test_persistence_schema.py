@@ -26,6 +26,7 @@ ALL_TABLES = {
     "runners",
     "runner_account_capabilities",
     "workstation_job_dispatch",  # migration 0006 -- workstation job dispatch
+    "notification_onboarding_requests",  # migration 0009 -- notification onboarding
     "poll_runs",
     "poll_run_categories",
     "unmatched_notifications",

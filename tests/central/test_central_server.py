@@ -191,7 +191,9 @@ def test_loopback_only_apps_are_not_mounted_on_the_lan_app(tmp_path, launcher):
     with _client(server) as client:   # even a loopback-looking client (reverse proxy on the same host)
         assert client.post("/bootstrap-app/bootstrap/tokens").status_code in (404, 405)
         assert client.post("/onboarding-app/anything").status_code in (404, 405)
-        assert client.post(f"/accounts/{OUJDA}/login").status_code in (404, 405)  # no interactive login
+        # No interactive login on the server itself; the route exists only as the
+        # queueing control plane for workstation runners, so it demands a session.
+        assert client.post(f"/accounts/{OUJDA}/login").status_code == 401
 
 
 def test_local_mode_still_mounts_the_loopback_apps(tmp_path):
@@ -359,3 +361,23 @@ def test_local_composition_still_processes_jobs_and_notifications(tmp_path, monk
     # Visible browser first (headful), then the headless notification browser.
     assert [browser.headless for browser in launcher.launches] == [False, True]
     assert all(browser.closed for browser in launcher.launches)
+
+
+def test_central_login_route_is_the_onboarding_control_plane_not_a_headed_browser(tmp_path, launcher):
+    """The old failure: the UI offered "Se connecter" but the route was absent (404).
+    Now it exists, is authenticated, and answers specifically -- with no headed
+    browser anywhere on the server."""
+    server = _server(tmp_path, notifications_enabled=False)
+    with _client(server) as client:
+        server.api_conn.execute(
+            "INSERT INTO users (user_id, username, password_hash, role, active) "
+            "VALUES ('u1', 'agent', ?, 'operator', 1)", (hash_password("pw-for-tests"),),
+        )
+        server.api_conn.execute(
+            "INSERT INTO user_account_access (user_id, account_id, granted_at) VALUES ('u1', ?, 'now')", (OUJDA,),
+        )
+        csrf = client.post("/auth/login", json={"username": "agent", "password": "pw-for-tests"}).json()["csrf_token"]
+        response = client.post(f"/accounts/{OUJDA}/login", headers={"X-CSRF-Token": csrf})
+        assert response.status_code == 409 and response.json()["error"] == "RUNNER_MISSING"   # no runner paired yet
+        assert client.get(f"/accounts/{OUJDA}/login-status").json()["state"] == "IDLE"
+    assert all(b.headless is True for b in launcher.launches)         # still only the headless notification browser

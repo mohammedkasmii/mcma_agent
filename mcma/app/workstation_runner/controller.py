@@ -17,6 +17,8 @@ from mcma.app.workstation_runner.heartbeat import HeartbeatWorker, LifecycleEven
 from mcma.app.workstation_runner.http_client import RegistryConnectionError, RegistryProtocolError
 from mcma.app.workstation_runner.job_worker import JobPollingWorker
 from mcma.app.workstation_runner.job_worker import LifecycleEvent as JobLifecycleEvent
+from mcma.app.workstation_runner.browser_gate import OWNER_ONBOARDING, BrowserOperationGate
+from mcma.app.workstation_runner.notification_onboarding import OnboardingEvent
 from mcma.app.workstation_runner.sessions import AccountState, VerificationScheduler, WorkstationSessionManager
 
 # Phase 1C-B, item F: a small, non-sensitive workstation job-status
@@ -98,6 +100,8 @@ class RunnerController:
         on_accounts_changed: Callable[[tuple], None] | None = None,
         job_lifecycle_factory: Callable[[object], object] | None = None,
         on_job_status: Callable[[str], None] | None = None,
+        onboarding_lifecycle_factory: Callable[[object], object] | None = None,
+        gate: BrowserOperationGate | None = None,
     ) -> None:
         self._config = config
         self._identity_store = identity_store
@@ -141,6 +145,15 @@ class RunnerController:
         # runs on. threading.Event is already safe to read/set from any
         # thread without extra locking.
         self._connected = threading.Event()
+        # Central notification-session onboarding: started alongside the
+        # job worker, on its OWN client, only when a factory is supplied
+        # (optional -- existing callers/tests are unaffected). `gate` is
+        # the runner-wide browser gate shared with the saved-session and
+        # job workers; the controller only reads it (to refuse a local
+        # login while an onboarding window is open).
+        self._onboarding_lifecycle_factory = onboarding_lifecycle_factory
+        self._onboarding_worker: JobPollingWorker | None = None
+        self._gate = gate
         if self._on_job_status is not None:
             self._on_job_status(_JOB_STATUS_IDLE_TEXT)
 
@@ -173,6 +186,8 @@ class RunnerController:
         """The GUI's only browser-session entry point. Never touches
         Playwright/portal code directly -- forwards to the already-owned
         BrowserSessionWorker, which does everything on its own thread."""
+        if self._gate is not None and self._gate.holder() == OWNER_ONBOARDING:
+            return False  # a notification login window is open: never a second one
         return self._browser_worker.request_login(account_id)
 
     def _current_sessions(self) -> tuple:
@@ -388,6 +403,7 @@ class RunnerController:
         self._emit(ControllerState.PAIRED_CONNECTING)
         worker.start()
         self._start_job_worker(runner_secret)
+        self._start_onboarding_worker(runner_secret)
 
     def _job_worker_is_ready(self) -> bool:
         """Claims no job while disconnected, shutting down, or before
@@ -420,6 +436,38 @@ class RunnerController:
             return
         self._job_worker = worker
         worker.start()
+
+    def _onboarding_is_ready(self) -> bool:
+        """Claims no onboarding request while disconnected or shutting
+        down. Deliberately NOT tied to MCMA agent-session readiness: the
+        four notification accounts (MAMDA included) are server-owned and
+        independent of the dossier sessions this runner reports."""
+        return not self._closing.is_set() and self._connected.is_set()
+
+    def _start_onboarding_worker(self, runner_secret: str) -> None:
+        """Own client (never shared), no-op without a factory and once
+        shutdown has begun -- a stopped worker is never resurrected."""
+        if self._onboarding_lifecycle_factory is None or self._closing.is_set():
+            return
+        client = None
+        try:
+            client = self._client_factory(self._config)
+            lifecycle = self._onboarding_lifecycle_factory(client)
+            worker = JobPollingWorker(lifecycle, runner_secret)
+        except Exception:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            self._log("notification_onboarding_worker_start_failed")
+            return
+        self._onboarding_worker = worker
+        worker.start()
+
+    def _handle_onboarding_event(self, event: OnboardingEvent) -> None:
+        """Fixed event names only -- never an account, token or text."""
+        self._log(f"notification_onboarding_{event.value.lower()}")
 
     def _handle_job_event(self, event: JobLifecycleEvent) -> None:
         """on_event for JobPollingLifecycle -- fixed, non-sensitive French
@@ -529,5 +577,10 @@ class RunnerController:
         if not job_worker_done:
             job_worker_done = self._job_worker.stop(timeout=timeout)
         if not job_worker_done:
+            return False
+        onboarding_done = self._onboarding_worker is None or not self._onboarding_worker.is_alive()
+        if not onboarding_done:
+            onboarding_done = self._onboarding_worker.stop(timeout=timeout)
+        if not onboarding_done:
             return False
         return self._browser_worker.stop(timeout=timeout)

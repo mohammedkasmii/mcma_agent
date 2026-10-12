@@ -147,3 +147,48 @@ export function toRefreshOutcome(body: unknown): RefreshOutcome {
         : "Actualisation terminée.",
   };
 }
+
+/** Central-mode notification onboarding (async login on the employee's workstation). */
+export const LOGIN_STATES = [
+  "IDLE",
+  "QUEUED",
+  "OPENING_WINDOW",
+  "WINDOW_OPENED",
+  "WAITING_FOR_LOGIN",
+  "SUCCEEDED",
+  "FAILED",
+  "CANCELLED",
+  "EXPIRED",
+] as const;
+export type LoginState = (typeof LOGIN_STATES)[number];
+
+export interface LoginStatus {
+  readonly accountId: string;
+  readonly requestId: string | null;
+  readonly state: LoginState;
+  readonly outcomeCode: string | null;
+}
+
+/** Only these states mean work is still in flight and polling is justified. */
+export function isLoginActive(state: LoginState | undefined): boolean {
+  return state === "QUEUED" || state === "OPENING_WINDOW" || state === "WINDOW_OPENED" || state === "WAITING_FOR_LOGIN";
+}
+
+/** True when a POST /login answer is the async onboarding view (it carries `state`). */
+export function isOnboardingBody(body: unknown): boolean {
+  return typeof body === "object" && body !== null && !Array.isArray(body) && "state" in body;
+}
+
+export function toLoginStatus(body: unknown): LoginStatus {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) fail();
+  const record = body as Record<string, unknown>;
+  const state = record["state"];
+  const accountId = record["account_id"];
+  const requestId = record["request_id"];
+  const outcome = record["outcome_code"];
+  if (typeof state !== "string" || !(LOGIN_STATES as readonly string[]).includes(state)) fail();
+  if (typeof accountId !== "string" || accountId.length === 0 || accountId.length > 64) fail();
+  if (requestId !== null && (typeof requestId !== "string" || requestId.length > 64)) fail();
+  if (outcome !== null && (typeof outcome !== "string" || outcome.length === 0 || outcome.length > 64)) fail();
+  return { accountId, requestId, state: state as LoginState, outcomeCode: outcome };
+}

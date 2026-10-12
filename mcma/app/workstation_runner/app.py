@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
+from mcma.app.workstation_runner.browser_gate import BrowserOperationGate
 from mcma.app.workstation_runner.browser_worker import BrowserSessionWorker
 from mcma.app.workstation_runner.config import ConfigError, RunnerConfig, build_config
 from mcma.app.workstation_runner.controller import RunnerController
@@ -28,6 +29,8 @@ from mcma.app.workstation_runner.http_client import RegistryHttpClient
 from mcma.app.workstation_runner.identity import IdentityStore, default_identity_path, select_production_crypto_backend
 from mcma.app.workstation_runner.job_worker import JobPollingLifecycle
 from mcma.app.workstation_runner.logging_setup import configure_logging, log_event
+from mcma.app.workstation_runner.notification_login import perform_notification_login
+from mcma.app.workstation_runner.notification_onboarding import NotificationOnboardingLifecycle
 from mcma.app.workstation_runner.session_store import (
     WorkstationSessionStore, default_sessions_dir,
     select_production_crypto_backend as select_session_crypto_backend,
@@ -433,10 +436,15 @@ def _run_with_mutex_held(config: RunnerConfig | None) -> int:
     def on_worker_update() -> None:
         controller._handle_worker_update()
 
+    # ONE runner-wide gate: the saved-session worker, the job worker and
+    # notification onboarding each hold it while they own a browser, so
+    # two windows can never compete. See browser_gate.py.
+    browser_gate = BrowserOperationGate()
+
     browser_worker = BrowserSessionWorker(
         session_manager=session_manager, session_store=session_store,
         perform_manual_login=perform_manual_login, verify_saved_session=verify_saved_session,
-        on_update=on_worker_update,
+        on_update=on_worker_update, gate=browser_gate,
     )
 
     def lifecycle_factory(client):
@@ -450,6 +458,18 @@ def _run_with_mutex_held(config: RunnerConfig | None) -> int:
         return JobPollingLifecycle(
             client, _run_dry_run_check, run_execute_check=_run_execute_check,
             is_ready=controller._job_worker_is_ready, on_event=controller._handle_job_event,
+            gate=browser_gate,
+        )
+
+    def onboarding_lifecycle_factory(client):
+        # Central notification-session onboarding: the visible login is
+        # perform_notification_login (mcma.portal, composition root only);
+        # the captured state is uploaded once and discarded -- it never
+        # reaches session_store, which is not even a parameter here.
+        return NotificationOnboardingLifecycle(
+            client, perform_notification_login,
+            gate=browser_gate, is_ready=controller._onboarding_is_ready,
+            on_event=controller._handle_onboarding_event,
         )
 
     controller = RunnerController(
@@ -458,6 +478,7 @@ def _run_with_mutex_held(config: RunnerConfig | None) -> int:
         session_manager=session_manager, session_store=session_store, browser_worker=browser_worker,
         verification_scheduler=verification_scheduler, on_accounts_changed=gui_app._enqueue_accounts,
         job_lifecycle_factory=job_lifecycle_factory, on_job_status=gui_app._enqueue_job_status,
+        onboarding_lifecycle_factory=onboarding_lifecycle_factory, gate=browser_gate,
     )
     gui_app.bind_controller(controller)
     gui_app.run()

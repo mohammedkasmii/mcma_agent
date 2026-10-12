@@ -457,6 +457,17 @@ def claim_job(
         ).fetchone()
         if already_active is not None:
             return None  # first pilot: one active job per runner
+        # The reverse of notification_onboarding's own check, made INSIDE this
+        # BEGIN IMMEDIATE transaction so SQLite serialization decides any race:
+        # a runner with a live notification-login request (queued or claimed,
+        # unexpired) owns the runner's only browser and must not take a job.
+        stamp = now.astimezone(timezone.utc).isoformat(timespec="microseconds")
+        if conn.execute(
+            "SELECT 1 FROM notification_onboarding_requests WHERE runner_id = ? AND status IN ('PENDING', 'CLAIMED') "
+            "AND expires_at > ? AND (lease_expires_at IS NULL OR lease_expires_at > ?)",
+            (principal.runner_id, stamp, stamp),
+        ).fetchone() is not None:
+            return None
         ready = _ready_accounts(conn, principal.runner_id)
         eligible_accounts = [a for a in _mcma_accounts_of(conn, runner_row["user_id"]) if a in ready]
         if not eligible_accounts:

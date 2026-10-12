@@ -53,7 +53,7 @@ def _too_large() -> ApiError:
     return ApiError(413, "PAYLOAD_TOO_LARGE", "corps trop volumineux")
 
 
-async def _read_bounded(request: Request) -> bytes:
+async def _read_bounded(request: Request, limit: int = MAX_BODY_BYTES) -> bytes:
     """Reads the body INCREMENTALLY and gives up the moment MAX_BODY_BYTES is
     crossed, so an arbitrarily large (or endless) upload -- notably on the
     unauthenticated /runner/enroll -- is never buffered. At most
@@ -64,20 +64,20 @@ async def _read_bounded(request: Request) -> bytes:
     is refused without touching the body, but a missing or falsely small one
     proves nothing, so the ACTUAL bytes are always counted."""
     declared = request.headers.get("content-length")
-    if declared is not None and (not declared.isdigit() or int(declared) > MAX_BODY_BYTES):
+    if declared is not None and (not declared.isdigit() or int(declared) > limit):
         raise _too_large()
     chunks: list = []
     total = 0
     async for chunk in request.stream():
         total += len(chunk)
-        if total > MAX_BODY_BYTES:
+        if total > limit:
             raise _too_large()                     # stop reading; nothing further is consumed
         chunks.append(chunk)
     return b"".join(chunks)
 
 
-async def _bounded_json(request: Request, allowed: set, required: set) -> dict:
-    raw = await _read_bounded(request)
+async def _bounded_json(request: Request, allowed: set, required: set, limit: int = MAX_BODY_BYTES) -> dict:
+    raw = await _read_bounded(request, limit)
     try:
         body = json.loads(raw)                     # from the bounded bytes; never request.json()
     except (ValueError, RecursionError):           # UnicodeDecodeError is a ValueError

@@ -58,6 +58,12 @@ const MESSAGES: Record<string, string> = {
   RUNNER_NOT_FOUND: "Ce poste agent est introuvable.",
   RUNNER_LABEL_INVALID:
     "Libellé invalide : 1 à 40 caractères (lettres, chiffres, espace, point, tiret, tiret bas).",
+  RUNNER_OFFLINE: "Votre poste de travail est hors ligne. Lancez l'application MCMA sur votre poste puis réessayez.",
+  RUNNER_MISSING: "Aucun poste de travail actif n'est associé à votre compte. Demandez à un administrateur de l'associer.",
+  RUNNER_BUSY: "Votre poste de travail est occupé par une autre opération. Réessayez dans un instant.",
+  ONBOARDING_IN_PROGRESS: "Une connexion est déjà en cours pour ce compte sur un autre poste. Réessayez dans quelques minutes.",
+  ACCOUNT_BUSY: "Compte occupé par une autre opération. Réessayez dans un instant.",
+  UNKNOWN_ACCOUNT: "Ce compte portail est introuvable.",
   NETWORK: "Le serveur est injoignable. Vérifiez que MCMA est démarré.",
   INVALID_RESPONSE: "Réponse inattendue du serveur. Rechargez la page.",
   CSRF_UNAVAILABLE: "Jeton de sécurité indisponible. Rechargez la page.",

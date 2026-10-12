@@ -59,6 +59,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Awaitable, Callable, Protocol
 
+from mcma.app.workstation_runner.browser_gate import OWNER_SESSION, BrowserOperationGate
 from mcma.app.workstation_runner.protocol import RUNNER_ACCOUNT_IDS
 from mcma.app.workstation_runner.sessions import ProbeOutcome, WorkstationSessionManager
 
@@ -149,7 +150,13 @@ class BrowserSessionWorker:
         perform_manual_login: PerformManualLogin,
         verify_saved_session: VerifySavedSession,
         on_update: OnUpdate | None = None,
+        gate: BrowserOperationGate | None = None,
     ) -> None:
+        # Runner-wide browser gate (see browser_gate.py). When given, a
+        # login/verification command only starts a browser while it can
+        # take the gate; otherwise it is dropped (never queued behind a
+        # possibly unbounded human login on another owner).
+        self._gate = gate
         self._session_manager = session_manager
         self._session_store = session_store
         self._perform_manual_login = perform_manual_login
@@ -400,6 +407,11 @@ class BrowserSessionWorker:
                 # launches a browser operation for it at all.
                 self._finish_command(command.account_id)
                 continue
+            if self._gate is not None and not self._gate.try_acquire(OWNER_SESSION):
+                # Another browser operation (notification onboarding or a
+                # job) owns the runner: no second window, ever.
+                self._finish_command(command.account_id)
+                continue
             if command.kind is _CommandKind.LOGIN:
                 coro = self._execute_login(command.account_id, command.generation)
             else:
@@ -441,6 +453,8 @@ class BrowserSessionWorker:
                 with self._lock:
                     self._active_task = None
                     self._active_account_id = None
+                if self._gate is not None:
+                    self._gate.release(OWNER_SESSION)
                 self._finish_command(command.account_id)
 
     # ------------------------------------------------------------- #

@@ -77,3 +77,26 @@ EXECUTE_FINISH_RESULTS = (
 # keep byte-for-byte identical to the server's.)
 MAX_CLAIM_RESPONSE_BYTES = 262_144  # 256 KiB
 MAX_TYPED_INPUT_DEPTH = 16
+
+# ----------------------------------------------------------------------- #
+# Central notification-session onboarding (server-owned notification
+# sessions captured through a visible login on THIS workstation).
+#
+# Deliberately SEPARATE from RUNNER_ACCOUNT_IDS above: RUNNER_ACCOUNT_IDS is
+# the set of accounts a runner may work dossiers on / report agent-session
+# readiness for (MCMA only). All four notification accounts may be
+# onboarded, but that must never widen job dispatch, heartbeat readiness or
+# form filling -- so this is its own constant, used by nothing else.
+# ----------------------------------------------------------------------- #
+NOTIFICATION_ONBOARDING_ACCOUNT_IDS = (
+    "acct-mcma-oujda", "acct-mcma-nador", "acct-mamda-oujda", "acct-mamda-nador",
+)
+ONBOARDING_CLAIM_TOKEN_PREFIX = "mcma_ot_"
+ONBOARDING_PHASES = ("OPENING_WINDOW", "WINDOW_OPENED", "WAITING_FOR_LOGIN")
+ONBOARDING_FAIL_REASONS = (
+    "LOGIN_TIMED_OUT", "LOGIN_WINDOW_CLOSED", "LOGIN_PAGE_UNREACHABLE", "UPLOAD_FAILED",
+    "RUNNER_SHUTDOWN", "CANCELLED", "INTERNAL_ERROR", "RUNNER_BUSY",
+)
+# The server accepts at most 512 KiB for the whole /complete body; the
+# client refuses to even send more than this serialized storage_state size.
+MAX_ONBOARDING_UPLOAD_BYTES = 500_000
