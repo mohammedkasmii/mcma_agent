@@ -15,6 +15,9 @@ Subcommands (all take --env-file):
   init            create the MCMA_DATA_ROOT layout (marker-protected)
   gen-keys        create the two DISTINCT 32-byte keys (never overwrites)
   install-tls     validate and install a provided certificate + private key
+  install-sinauto-client-cert P12  validate and install the SinAuto TLS client
+                  certificate (PKCS#12); its passphrase is typed twice at a
+                  hidden prompt and never accepted any other way
   gen-dev-cert    self-signed certificate for the DEVELOPMENT VM only
   show-cert       print the PUBLIC server certificate + SHA-256 fingerprint
   check           validate env, files, permissions, port, subnet, routes
@@ -35,8 +38,12 @@ written straight to a 0600 file.
 from __future__ import annotations
 
 import argparse
+import calendar
+import contextlib
+import getpass
 import gzip
 import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -57,6 +64,15 @@ from typing import Callable, Optional
 KEY_LENGTH = 32
 KEY_FILES = ("session-vault.key", "job-input.key")
 TLS_CERT, TLS_KEY = "server.crt", "server.key"
+
+# SinAuto mutual TLS: a PKCS#12 bundle and a SEPARATE passphrase file, both
+# 0600 and owned by MCMA_UID:MCMA_GID, mounted read-only into the container.
+# Limits and passphrase rules mirror mcma.core.client_certificate.
+SINAUTO_DIR = "sinauto-client"
+SINAUTO_PFX, SINAUTO_PASS = "sinauto-client.p12", "sinauto-client.pass"
+SINAUTO_MAX_PFX_BYTES = 64 * 1024
+SINAUTO_MAX_PASSPHRASE_BYTES = 1024
+SINAUTO_EXPIRY_WARNING_DAYS = 30
 
 # The ONE identity of this deployment.
 PROJECT = "mcma-central"
@@ -377,6 +393,7 @@ LAYOUT = {
     "keys": 0o700,
     "tls": 0o700,
     "config": 0o750,
+    "sinauto-client": 0o700,   # SinAuto client certificate; never part of a backup
     "backups": 0o700,   # root-owned: backups hold the database
 }
 
@@ -570,6 +587,302 @@ def cmd_install_tls(env: dict, cert_src: Path, key_src: Path) -> list:
     return [f"installed {tls_dir / TLS_CERT} (0644) and {tls_dir / TLS_KEY} (0600)"]
 
 
+# --------------------------------------------------------------------- #
+# SinAuto TLS client certificate (mTLS)
+# --------------------------------------------------------------------- #
+
+
+def passphrase_problem(passphrase: str) -> Optional[str]:
+    """The same rules the server applies when it reads the file."""
+    if not passphrase:
+        return "the passphrase must not be empty"
+    if len(passphrase.encode("utf-8")) > SINAUTO_MAX_PASSPHRASE_BYTES:
+        return f"the passphrase must be at most {SINAUTO_MAX_PASSPHRASE_BYTES} bytes"
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in passphrase):
+        return "the passphrase must not contain control characters"
+    return None
+
+
+def decode_passphrase_file(raw: bytes) -> str:
+    if raw.endswith(b"\r\n"):
+        raw = raw[:-2]
+    elif raw.endswith(b"\n"):
+        raw = raw[:-1]
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise DeployError("the SinAuto passphrase file is not valid UTF-8 text") from None
+
+
+def read_small_file(path: Path, label: str, max_bytes: int) -> bytes:
+    """A regular, non-symlink file of at most max_bytes, read through one
+    descriptor that was opened without following links."""
+    path = Path(path)
+    try:
+        before = os.lstat(path)
+    except FileNotFoundError:
+        raise DeployError(f"{label} not found: {path}") from None
+    except OSError:
+        raise DeployError(f"{label} cannot be inspected: {path}") from None
+    if stat.S_ISLNK(before.st_mode):
+        raise DeployError(f"{label} must not be a symlink: {path}")
+    if not stat.S_ISREG(before.st_mode):
+        raise DeployError(f"{label} must be a regular file: {path}")
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+    except OSError:
+        raise DeployError(f"{label} cannot be opened: {path}") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or (os.name == "posix" and info.st_ino != before.st_ino):
+            raise DeployError(f"{label} changed while it was being opened: {path}")
+        if info.st_size > max_bytes:
+            raise DeployError(f"{label} is larger than {max_bytes} bytes: {path}")
+        data = b""
+        while len(data) <= max_bytes:
+            chunk = os.read(fd, max_bytes + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        os.close(fd)
+    if len(data) > max_bytes:
+        raise DeployError(f"{label} is larger than {max_bytes} bytes: {path}")
+    if not data:
+        raise DeployError(f"{label} is empty: {path}")
+    return data
+
+
+def _openssl_with_passphrase(args: tuple, passphrase: str, stdin: bytes) -> subprocess.CompletedProcess:
+    """Runs openssl with the passphrase delivered through a private pipe
+    (`-passin fd:N`): never in argv, the environment or a file. Only the
+    descriptor NUMBER appears on the command line. POSIX only (the
+    deployment host)."""
+    read_fd, write_fd = os.pipe()
+    try:
+        try:
+            os.write(write_fd, passphrase.encode("utf-8") + b"\n")
+        finally:
+            os.close(write_fd)
+        try:
+            return subprocess.run(
+                ["openssl", *args, "-passin", f"fd:{read_fd}"],
+                input=stdin, capture_output=True, timeout=30, pass_fds=(read_fd,),
+            )
+        except FileNotFoundError:
+            raise DeployError("the openssl command is required on the host") from None
+    finally:
+        os.close(read_fd)
+
+
+def _pkcs12_extract(pfx: bytes, passphrase: str, *what: str) -> Optional[bytes]:
+    """Modern encoding first; then the legacy (RC2/3DES) one, which the
+    server re-encodes in memory before handing it to the browser."""
+    for legacy in ((), ("-legacy",)):
+        result = _openssl_with_passphrase(("pkcs12", *legacy, *what), passphrase, pfx)
+        if result.returncode == 0:
+            return result.stdout
+    return None
+
+
+def _openssl_date(text: str) -> Optional[int]:
+    """'Oct 29 10:00:00 2029 GMT' -> epoch seconds (openssl's fixed format)."""
+    try:
+        return calendar.timegm(time.strptime(text.strip(), "%b %d %H:%M:%S %Y %Z"))
+    except ValueError:
+        return None
+
+
+def inspect_pkcs12(pfx: bytes, passphrase: str, *, now: Optional[float] = None) -> tuple:
+    """(problems, metadata) for a PKCS#12 bundle: decryptable with the
+    passphrase, a private key matching its certificate, currently valid,
+    TLS Web Client Authentication. Metadata is public only (subject,
+    issuer, validity, SHA-256 fingerprint). The extracted private key
+    exists only in this process's memory and openssl's pipes."""
+    problem = passphrase_problem(passphrase)
+    if problem:
+        return [problem], {}
+    cert_pem = _pkcs12_extract(pfx, passphrase, "-nokeys", "-clcerts")
+    if cert_pem is None:
+        return ["the bundle could not be opened (wrong passphrase, or not a valid PKCS#12 file)"], {}
+    if b"BEGIN CERTIFICATE" not in cert_pem:
+        return ["the bundle contains no client certificate"], {}
+    key_pem = _pkcs12_extract(pfx, passphrase, "-nocerts", "-nodes")
+    if not key_pem or b"PRIVATE KEY" not in key_pem:
+        return ["the bundle contains no private key"], {}
+    key_pub = _openssl("pkey", "-pubout", stdin=key_pem)
+    del key_pem
+    cert_pub = _openssl("x509", "-noout", "-pubkey", stdin=cert_pem)
+    if key_pub.returncode != 0 or cert_pub.returncode != 0:
+        return ["the bundle's key or certificate could not be read"], {}
+    problems = []
+    if key_pub.stdout.strip() != cert_pub.stdout.strip():
+        problems.append("the private key in the bundle does not match its certificate")
+
+    info = _openssl(
+        "x509", "-noout", "-subject", "-issuer", "-startdate", "-enddate",
+        "-fingerprint", "-sha256", "-nameopt", "RFC2253", stdin=cert_pem,
+    )
+    if info.returncode != 0:
+        return problems + ["the certificate could not be read"], {}
+    metadata = {}
+    for line in info.stdout.decode("utf-8", "replace").splitlines():
+        name, _, value = line.partition("=")
+        key = name.strip().lower()
+        if key in ("subject", "issuer", "notbefore", "notafter") and key not in metadata:
+            metadata[key] = value.strip()
+        elif "fingerprint" in key:
+            metadata["sha256"] = value.strip()
+    now = time.time() if now is None else now
+    not_before = _openssl_date(metadata.get("notbefore", ""))
+    not_after = _openssl_date(metadata.get("notafter", ""))
+    if not_before is None or not_after is None:
+        problems.append("the certificate validity dates could not be read")
+    else:
+        if now < not_before:
+            problems.append("the certificate is not valid yet")
+        if now >= not_after:
+            problems.append("the certificate has expired")
+        metadata["expires_soon"] = not_after - now <= SINAUTO_EXPIRY_WARNING_DAYS * 86400
+
+    eku = _openssl("x509", "-noout", "-ext", "extendedKeyUsage", stdin=cert_pem)
+    if eku.returncode != 0 or b"TLS Web Client Authentication" not in eku.stdout:
+        problems.append("the certificate does not allow TLS Web Client Authentication (extended key usage)")
+    return problems, metadata
+
+
+def _write_secret_atomically(directory: Path, name: str, data: bytes, uid: int, gid: int) -> None:
+    """Temporary file (O_EXCL, 0600) in the same directory, owned by the
+    service user, fsynced, then renamed over the target. A failure leaves
+    the previous file untouched and no temporary file behind."""
+    fd, tmp = tempfile.mkstemp(prefix=f".{name}.", suffix=".new", dir=directory)
+    try:
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            if hasattr(os, "fchown"):
+                try:
+                    os.fchown(fd, uid, gid)
+                except PermissionError:
+                    raise DeployError(
+                        f"cannot assign ownership of {directory / name} to {uid}:{gid}; run as root (sudo)"
+                    ) from None
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, directory / name)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def _fsync_directory(directory: Path) -> None:
+    if os.name != "posix":
+        return
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def cmd_install_sinauto_client_cert(
+    env: dict, p12_src: Path, *,
+    prompt: Optional[Callable[[str], str]] = None, interactive: Optional[bool] = None,
+) -> list:
+    """Validates and installs the SinAuto client certificate. Safe for the
+    production starting state -- the bundle already sitting at
+    $MCMA_DATA_ROOT/sinauto-client/sinauto-client.p12, root-owned 0600:
+    the bytes are read first and the file is atomically REPLACED by an
+    identical one owned by MCMA_UID:MCMA_GID. The passphrase is typed twice
+    at a hidden prompt; nothing is written unless everything validates.
+    Output is public metadata only."""
+    problems = validate_env(env)
+    if problems:
+        raise DeployError(problems)
+    uid, gid = _ids(env)
+    directory = require_owned_root(env) / SINAUTO_DIR
+    if directory.is_symlink():
+        raise DeployError(f"{directory} is a symlink; refusing")
+    if not directory.is_dir():
+        raise DeployError(f"{directory} does not exist; run init first")
+    if interactive is None:
+        interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if not interactive:
+        raise DeployError(
+            "install-sinauto-client-cert must be run from an interactive terminal: "
+            "the passphrase is only ever typed at a hidden prompt"
+        )
+
+    source = Path(p12_src)
+    pfx = read_small_file(source, "the PKCS#12 bundle", SINAUTO_MAX_PFX_BYTES)
+    ask = prompt or getpass.getpass
+    passphrase = ask("SinAuto client certificate passphrase: ")
+    confirmation = ask("Repeat the passphrase: ")
+    if not hmac.compare_digest(passphrase.encode("utf-8"), confirmation.encode("utf-8")):
+        raise DeployError("the two passphrases do not match; nothing was written")
+    del confirmation
+    problems, metadata = inspect_pkcs12(pfx, passphrase)
+    if problems:
+        raise DeployError(problems + ["nothing was written"])
+
+    os.chmod(directory, 0o700)
+    _chown(directory, uid, gid)
+    _write_secret_atomically(directory, SINAUTO_PFX, pfx, uid, gid)
+    _write_secret_atomically(directory, SINAUTO_PASS, passphrase.encode("utf-8"), uid, gid)
+    _fsync_directory(directory)
+    del passphrase
+
+    lines = [
+        f"installed {directory / SINAUTO_PFX} and {directory / SINAUTO_PASS} (mode 0600, owner {uid}:{gid})",
+        f"subject:     {metadata.get('subject', '?')}",
+        f"issuer:      {metadata.get('issuer', '?')}",
+        f"valid until: {metadata.get('notafter', '?')}",
+        f"sha256:      {metadata.get('sha256', '?')}",
+    ]
+    if metadata.get("expires_soon"):
+        lines.append(f"WARNING: the certificate expires within {SINAUTO_EXPIRY_WARNING_DAYS} days; renew it")
+    if os.path.realpath(source) != os.path.realpath(directory / SINAUTO_PFX):
+        lines.append(f"the source file {source} was not modified; remove it if it is no longer needed")
+    lines.append("restart the platform (up) so the server loads the certificate")
+    return lines
+
+
+def sinauto_client_problems(root: Path, uid: int, *, posix: bool) -> list:
+    """check: both files present, regular, 0600, owned by MCMA_UID; then the
+    bundle is validated with the installed passphrase. Never prints it."""
+    directory = root / SINAUTO_DIR
+    if not directory.is_dir() or directory.is_symlink():
+        return []          # reported by the layout check
+    problems = []
+    files = {}
+    for name, limit in ((SINAUTO_PFX, SINAUTO_MAX_PFX_BYTES), (SINAUTO_PASS, SINAUTO_MAX_PASSPHRASE_BYTES)):
+        path = directory / name
+        if not path.exists() and not path.is_symlink():
+            problems.append(f"SinAuto client certificate file missing: {path} (run install-sinauto-client-cert)")
+            continue
+        try:
+            files[name] = read_small_file(path, "SinAuto client certificate file", limit)
+        except DeployError as exc:
+            problems += exc.problems
+            continue
+        if posix and (_mode(path) & 0o077 or os.stat(path).st_uid != uid):
+            problems.append(f"{path} must be mode 0600 and owned by uid {uid}")
+    if problems or len(files) != 2:
+        return problems
+    try:
+        passphrase = decode_passphrase_file(files[SINAUTO_PASS])
+    except DeployError as exc:
+        return exc.problems
+    found, _metadata = inspect_pkcs12(files[SINAUTO_PFX], passphrase)
+    return [f"SinAuto client certificate: {problem}" for problem in found]
+
+
 def cmd_gen_dev_cert(env: dict) -> list:
     """DEVELOPMENT ONLY. Production uses a certificate issued by the agency's
     internal CA (deploy/tls/README.md)."""
@@ -661,6 +974,8 @@ def filesystem_problems(env: dict) -> list:
     if key.is_file() and posix and (_mode(key) & 0o077 or os.stat(key).st_uid != uid):
         problems.append(f"{key} must be mode 0600 and owned by uid {uid}")
     problems += certificate_problems(cert, key, env.get("MCMA_TLS_SERVER_NAME"))
+
+    problems += sinauto_client_problems(root, uid, posix=posix)
 
     if not (root / "config" / "mcma.toml").is_file():
         problems.append("config/mcma.toml is missing (run init)")
@@ -1263,6 +1578,10 @@ def main(argv: Optional[list] = None) -> int:
     tls = sub.add_parser("install-tls")
     tls.add_argument("--cert", required=True, type=Path)
     tls.add_argument("--key", required=True, type=Path)
+    # Deliberately ONE positional argument: the passphrase has no flag, no
+    # environment variable and no file option -- only the hidden prompt.
+    client_cert = sub.add_parser("install-sinauto-client-cert")
+    client_cert.add_argument("p12", type=Path)
     check = sub.add_parser("check")
     check.add_argument("--no-host", action="store_true", help="skip Docker-network, route and port checks")
     health = sub.add_parser("wait-healthy")
@@ -1315,6 +1634,8 @@ def main(argv: Optional[list] = None) -> int:
                 return 0
             elif args.command == "install-tls":
                 lines = cmd_install_tls(env, args.cert, args.key)
+            elif args.command == "install-sinauto-client-cert":
+                lines = cmd_install_sinauto_client_cert(env, args.p12)
             elif args.command == "check":
                 lines = cmd_check(env, host=not args.no_host)
             elif args.command == "up":

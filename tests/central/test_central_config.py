@@ -42,6 +42,11 @@ def test_local_defaults_are_not_a_valid_central_configuration():
         ({"instance_lock_path": None}, "instance_lock_path is required"),
         ({"tls_cert_path": None}, "tls_cert_path is required"),
         ({"tls_key_path": None}, "tls_key_path is required"),
+        ({"sinauto_client_pfx_path": None}, "sinauto_client_pfx_path is required"),
+        ({"sinauto_client_passphrase_path": None}, "sinauto_client_passphrase_path is required"),
+        ({"sinauto_client_pfx_path": Path("rel") / "c.p12"}, "sinauto_client_pfx_path must be an absolute path"),
+        ({"sinauto_client_passphrase_path": Path("rel") / "c.pass"},
+         "sinauto_client_passphrase_path must be an absolute path"),
         ({"db_path": Path("var") / "mcma.sqlite3"}, "db_path must be an absolute path"),
         ({"vault_dir": Path("var") / "vault"}, "vault_dir must be an absolute path"),
         ({"api_host": "0.0.0.0"}, "wildcard"),
@@ -88,6 +93,8 @@ tls_key_path = "{root}/secrets/server.key"
 session_vault_key_path = "{root}/secrets/session.key"
 job_input_key_path = "{root}/secrets/inputs.key"
 instance_lock_path = "{root}/data/mcma.lock"
+sinauto_client_pfx_path = "{root}/sinauto-client/sinauto-client.p12"
+sinauto_client_passphrase_path = "{root}/sinauto-client/sinauto-client.pass"
 notification_category_codes = ["A", "B"]
 """
 
@@ -129,6 +136,8 @@ def test_environment_can_supply_everything_without_a_file(tmp_path):
         "MCMA_SESSION_VAULT_KEY_PATH": str(tmp_path / "s.key"),
         "MCMA_JOB_INPUT_KEY_PATH": str(tmp_path / "i.key"),
         "MCMA_INSTANCE_LOCK_PATH": str(tmp_path / "l"),
+        "MCMA_SINAUTO_CLIENT_PFX_PATH": str(tmp_path / "c.p12"),
+        "MCMA_SINAUTO_CLIENT_PASSPHRASE_PATH": str(tmp_path / "c.pass"),
     }
     assert load_central_settings(environ=env).runtime_mode is RuntimeMode.CENTRAL_SERVER
 
@@ -138,7 +147,10 @@ def test_missing_required_settings_are_all_reported_and_no_defaults_apply(tmp_pa
     path.write_text('api_host = "10.0.0.5"\n', encoding="utf-8")
     with pytest.raises(CentralConfigurationError) as info:
         load_central_settings(path, environ={})
-    assert len(info.value.problems) == 7  # every other required key
+    assert len(info.value.problems) == 9  # every other required key
+    problems = " | ".join(info.value.problems)
+    assert "sinauto_client_pfx_path is required" in problems
+    assert "sinauto_client_passphrase_path is required" in problems
 
 
 def test_unknown_and_derived_keys_are_errors(tmp_path):
@@ -167,3 +179,44 @@ def test_local_settings_are_unchanged_by_the_new_fields():
     assert settings.runtime_mode is RuntimeMode.LOCAL_WINDOWS
     assert settings.session_vault_key_path is None and settings.job_input_key_path is None
     assert settings.local_single_user_mode is True
+
+
+# --------------------------- SinAuto mutual TLS --------------------------- #
+
+
+@pytest.mark.parametrize("portal_host", [
+    "sinauto.mamda-mcma.ma:443", "sinauto.mamda-mcma.ma:8443", "*.mamda-mcma.ma", "SINAUTO.MAMDA-MCMA.MA",
+    "https://sinauto.mamda-mcma.ma", "sinauto.mamda-mcma.ma/", " sinauto.mamda-mcma.ma",
+    "other.mamda-mcma.ma", "127.0.0.1:8080", "",
+])
+def test_the_certificate_origin_must_be_exactly_the_sinauto_host(tmp_path, portal_host):
+    """mTLS is bound to the notification origin derived from portal_host --
+    never allowed_host -- and that host is never normalized."""
+    with pytest.raises(CentralConfigurationError, match="portal_host must be exactly sinauto.mamda-mcma.ma"):
+        validate_central_settings(central_settings(tmp_path, portal_host=portal_host))
+
+
+def test_allowed_host_plays_no_part_in_the_certificate_origin(tmp_path):
+    validate_central_settings(central_settings(tmp_path, allowed_host="sinauto.mamda-mcma.ma:9999"))
+
+
+def test_the_bundle_and_passphrase_must_be_different_files(tmp_path):
+    base = central_settings(tmp_path)
+    same = dataclasses.replace(base, sinauto_client_passphrase_path=base.sinauto_client_pfx_path)
+    with pytest.raises(CentralConfigurationError, match="sinauto_client_pfx_path and sinauto_client_passphrase_path"):
+        validate_central_settings(same)
+
+
+@pytest.mark.parametrize("name", ["sinauto_client_pfx_path", "sinauto_client_passphrase_path"])
+def test_client_certificate_files_may_not_live_in_a_served_directory(tmp_path, name):
+    served = repository_served_dirs()[0]
+    with pytest.raises(CentralConfigurationError, match=f"{name} must not be inside a publicly served"):
+        validate_central_settings(central_settings(tmp_path, **{name: served / "x"}))
+
+
+def test_local_settings_never_carry_a_client_certificate():
+    from mcma.app.main import local_settings
+
+    settings = local_settings()
+    assert settings.sinauto_client_pfx_path is None and settings.sinauto_client_passphrase_path is None
+    assert Settings().sinauto_client_pfx_path is None and Settings().sinauto_client_passphrase_path is None

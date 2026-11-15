@@ -410,6 +410,17 @@ def _report_session_state(observer, account_id: str, state: str) -> None:
         logger.warning("the session-state observer raised; the poll is unaffected", exc_info=True)
 
 
+# Chromium's net error for a client certificate the server refused.
+_CLIENT_CERT_REJECTED = "ERR_BAD_SSL_CLIENT_AUTH_CERT"
+
+
+def _client_certificate_rejected(exc: BaseException) -> bool:
+    try:
+        return _CLIENT_CERT_REJECTED in str(exc)
+    except Exception:
+        return False
+
+
 def _log_unavailable(stage: str, *, exc: BaseException | None = None, state: str | None = None) -> None:
     """Names the branch a PORTAL_UNAVAILABLE came from.
 
@@ -418,8 +429,17 @@ def _log_unavailable(stage: str, *, exc: BaseException | None = None, state: str
     browser did not open" from "the session probe could not decide" from
     "discovery threw". The exception TYPE is logged and its message is
     not: a portal failure page can carry the employee's username, and the
-    type is what tells an operator what happened."""
-    if exc is not None:
+    type is what tells an operator what happened.
+
+    One message token is recognised and reported as a fixed reason: the
+    browser's error code for a TLS client certificate the portal refused.
+    That is the central server's SinAuto mTLS failing, which an operator
+    must be able to tell apart from an ordinary outage."""
+    if exc is not None and _client_certificate_rejected(exc):
+        logger.warning(
+            "notification poll unavailable at %s: the portal rejected the TLS client certificate", stage,
+        )
+    elif exc is not None:
         logger.warning("notification poll unavailable at %s: %s", stage, type(exc).__name__)
     else:
         logger.warning("notification poll unavailable at %s: state=%s", stage, state)

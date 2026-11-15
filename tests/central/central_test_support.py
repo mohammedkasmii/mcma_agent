@@ -4,6 +4,7 @@ tmp_path, and fake browser launchers (no Playwright, no network)."""
 import os
 from pathlib import Path
 
+from client_cert_factory import TEST_PASSPHRASE, client_bundle, write_client_files
 from mcma.core.config import RuntimeMode, Settings
 
 KEY_A = bytes(range(32))
@@ -17,6 +18,17 @@ def write_key(path: Path, data: bytes) -> Path:
     return path
 
 
+_BUNDLE_CACHE: list = []
+
+
+def shared_client_bundle() -> bytes:
+    """One generated (throwaway) client bundle per test process."""
+    if not _BUNDLE_CACHE:
+        _BUNDLE_CACHE.append(client_bundle(TEST_PASSPHRASE))
+    return _BUNDLE_CACHE[0]
+
+
+
 def central_settings(tmp_path: Path, **overrides) -> Settings:
     """Valid central settings. Directories and key files are real; the TLS
     files are only paths (composition does not open them -- run_central_
@@ -27,6 +39,7 @@ def central_settings(tmp_path: Path, **overrides) -> Settings:
     if os.name == "posix":
         os.chmod(tmp_path / "vault", 0o700)
     write_key(tmp_path / "secrets" / "server.key", b"-----TLS PRIVATE KEY PLACEHOLDER-----")
+    pfx_path, passphrase_path = write_client_files(tmp_path / "sinauto-client", bundle=shared_client_bundle())
     values = dict(
         runtime_mode=RuntimeMode.CENTRAL_SERVER,
         api_host="10.0.0.5",
@@ -38,6 +51,8 @@ def central_settings(tmp_path: Path, **overrides) -> Settings:
         session_vault_key_path=write_key(tmp_path / "secrets" / "session.key", KEY_A),
         job_input_key_path=write_key(tmp_path / "secrets" / "inputs.key", KEY_B),
         instance_lock_path=tmp_path / "data" / "mcma.lock",
+        sinauto_client_pfx_path=pfx_path,
+        sinauto_client_passphrase_path=passphrase_path,
         headless_browser=True,
         allowed_host="sinauto.mamda-mcma.ma",
         mutex_name=f"mcma-central-test-{tmp_path.name}",
@@ -62,15 +77,18 @@ class FakeBrowser:
 
 
 class FakeLauncher:
-    """Stands in for launch_browser(headless=...). Records every launch."""
+    """Stands in for launch_browser(headless=..., client_certificate=...).
+    Records every launch and the certificate each one was given."""
 
     def __init__(self, fail_times=0):
         self.fail_times = fail_times
         self.launches = []
         self.closed_contexts = 0
+        self.client_certificates = []
 
-    def __call__(self, *, headless=False):
+    def __call__(self, *, headless=False, client_certificate=None):
         launcher = self
+        launcher.client_certificates.append(client_certificate)
 
         class _Context:
             browser = None

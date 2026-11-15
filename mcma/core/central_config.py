@@ -29,6 +29,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Mapping, Optional, Tuple
 
+from mcma.core.client_certificate import ClientCertificateError, sinauto_client_origin
 from mcma.core.config import RuntimeMode, Settings, _is_loopback_host
 
 CONFIG_FILE_ENV = "MCMA_CONFIG_FILE"
@@ -44,6 +45,8 @@ REQUIRED_KEYS: Tuple[str, ...] = (
     "session_vault_key_path",
     "job_input_key_path",
     "instance_lock_path",
+    "sinauto_client_pfx_path",
+    "sinauto_client_passphrase_path",
 )
 
 # Derived by the loader; the operator may not set them.
@@ -114,6 +117,8 @@ def validate_central_settings(settings: Settings) -> None:
         "instance_lock_path": settings.instance_lock_path,
         "tls_cert_path": settings.tls_cert_path,
         "tls_key_path": settings.tls_key_path,
+        "sinauto_client_pfx_path": settings.sinauto_client_pfx_path,
+        "sinauto_client_passphrase_path": settings.sinauto_client_passphrase_path,
     }
     for name, value in path_settings.items():
         if value is None:
@@ -131,12 +136,27 @@ def validate_central_settings(settings: Settings) -> None:
         # at startup, once the files can be inspected.
         problems.append("session_vault_key_path and job_input_key_path must be different files")
 
+    # SinAuto mutual TLS: the certificate is bound to the one notification
+    # origin derived from portal_host, which must be exactly the SinAuto
+    # host. The bundle and its passphrase are two different files.
+    try:
+        sinauto_client_origin(settings.portal_host)
+    except ClientCertificateError as exc:
+        problems.append(str(exc))
+    if (
+        settings.sinauto_client_pfx_path is not None
+        and settings.sinauto_client_passphrase_path is not None
+        and _resolved(settings.sinauto_client_pfx_path) == _resolved(settings.sinauto_client_passphrase_path)
+    ):
+        problems.append("sinauto_client_pfx_path and sinauto_client_passphrase_path must be different files")
+
     served = repository_served_dirs() + tuple(Path(p) for p in settings.public_static_dirs)
     # Confidential paths only: the TLS PRIVATE key is one, the public
     # certificate is not (it is meant to be handed to clients).
     for name in (
         "db_path", "vault_dir", "session_vault_key_path", "job_input_key_path",
         "instance_lock_path", "tls_key_path",
+        "sinauto_client_pfx_path", "sinauto_client_passphrase_path",
     ):
         value = path_settings[name]
         if value is not None and any(_is_inside(value, directory) for directory in served):

@@ -153,6 +153,12 @@ class Settings:
     # repository's own (frontend/dist, static, mcma/web). The database,
     # vault and key paths may not resolve inside any of them.
     public_static_dirs: Tuple[Path, ...] = ()
+    # SinAuto mutual TLS (central server only; required there, never read
+    # by any local/workstation composition). PATHS to a PKCS#12 bundle and
+    # to a separate file holding its passphrase -- both owner-only (0600)
+    # files of the service user. The secrets are never settings.
+    sinauto_client_pfx_path: Optional[Path] = None
+    sinauto_client_passphrase_path: Optional[Path] = None
 
 
 class UnsafeDevModeConfiguration(Exception):

@@ -74,11 +74,16 @@ def _is_connected(browser) -> bool:
         return False
 
 
-def _default_launcher():
+def _default_launcher(client_certificate=None):
     # Looked up at call time so the module attribute can be replaced.
     # headless=True is hard-coded, not a parameter: this service has no
     # legitimate reason to ever show a window.
-    return launch_browser(headless=True)
+    if client_certificate is None:
+        # Local composition: unchanged.
+        return launch_browser(headless=True)
+    # Central server: every context this browser opens carries the SinAuto
+    # client certificate (mcma.portal.browser.ClientCertificateBrowser).
+    return launch_browser(headless=True, client_certificate=client_certificate)
 
 
 class NotificationService:
@@ -92,12 +97,18 @@ class NotificationService:
         browser_launcher: Optional[Callable[[], Any]] = None,
         on_browser_ready: Optional[Callable[[Any], None]] = None,
         on_browser_lost: Optional[Callable[[], None]] = None,
+        client_certificate=None,
     ) -> None:
         self._conn = conn
         self._settings = settings
         self._crypto_backend = crypto_backend
         self._session_observer = session_observer
-        self._launcher = browser_launcher or _default_launcher
+        if browser_launcher is not None:
+            self._launcher = browser_launcher
+        elif client_certificate is not None:
+            self._launcher = lambda: _default_launcher(client_certificate)
+        else:
+            self._launcher = _default_launcher
         self._on_browser_ready = on_browser_ready
         self._on_browser_lost = on_browser_lost
         self._since_attempt = 0.0

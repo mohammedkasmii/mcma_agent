@@ -292,7 +292,14 @@ def test_rendered_compose_meets_the_isolation_and_hardening_contract():
         assert volume["source"].startswith("/data/mcma-dev/") and "docker.sock" not in volume["source"]
         assert volume["bind"]["create_host_path"] is False
     read_only_targets = {v["target"] for v in service["volumes"] if v.get("read_only")}
-    assert read_only_targets == {"/etc/mcma/keys", "/etc/mcma/tls", "/etc/mcma/config"}
+    assert read_only_targets == {
+        "/etc/mcma/keys", "/etc/mcma/tls", "/etc/mcma/config", "/etc/mcma/sinauto-client",
+    }
+    # SinAuto mTLS: the container gets PATHS into the read-only mount, never a secret.
+    environment = service["environment"]
+    assert environment["MCMA_SINAUTO_CLIENT_PFX_PATH"] == "/etc/mcma/sinauto-client/sinauto-client.p12"
+    assert environment["MCMA_SINAUTO_CLIENT_PASSPHRASE_PATH"] == "/etc/mcma/sinauto-client/sinauto-client.pass"
+    assert not any("PASSWORD" in name or name.endswith("PASSPHRASE") for name in environment)
 
     # Private network created for this project only, static address, no host network.
     assert list(config["networks"]) == ["mcma-net"]
@@ -446,11 +453,30 @@ def test_gen_keys_makes_two_distinct_private_32_byte_files_and_never_overwrites(
     assert first.read_bytes() == before
 
 
+_CLIENT_PASSPHRASE = "artifact-test-passphrase"
+
+
+def _install_test_client_cert(env, tmp_path):
+    """A generated (throwaway) SinAuto client bundle, installed exactly as an
+    operator would, with the passphrase supplied to the hidden prompt."""
+    spec = importlib.util.spec_from_file_location(
+        "mcma_test_client_cert_factory", Path(__file__).resolve().parents[1] / "central" / "client_cert_factory.py")
+    factory = sys.modules.get(spec.name) or importlib.util.module_from_spec(spec)
+    if spec.name not in sys.modules:
+        sys.modules[spec.name] = factory
+        spec.loader.exec_module(factory)
+    source = tmp_path / "client-bundle.p12"
+    source.write_bytes(factory.client_bundle(_CLIENT_PASSPHRASE))
+    typed = [_CLIENT_PASSPHRASE, _CLIENT_PASSPHRASE]
+    tool.cmd_install_sinauto_client_cert(env, source, interactive=True, prompt=lambda _p: typed.pop(0))
+
+
 def _ready_root(tmp_path):
     env = make_env(tmp_path)
     tool.cmd_init(env)
     tool.cmd_gen_keys(env)
     tool.cmd_gen_dev_cert(env)
+    _install_test_client_cert(env, tmp_path)
     return env, Path(env["MCMA_DATA_ROOT"])
 
 
@@ -463,9 +489,12 @@ def test_a_correctly_provisioned_root_passes_preflight(tmp_path):
 
 @posix_user
 @needs_openssl
-def test_the_provisioned_layout_satisfies_the_real_central_startup_checks(tmp_path):
+def test_the_provisioned_layout_satisfies_the_real_central_startup_checks(tmp_path, monkeypatch):
     """What deploytool produces is exactly what mcma.app.central_server
-    demands (vault 0700 owned by the service user, 0600 keys/TLS key, ...)."""
+    demands (vault 0700 owned by the service user, 0600 keys/TLS key, the
+    SinAuto client bundle + passphrase, ...)."""
+    for name in ("DEBUG", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)   # would (correctly) refuse a central start
     from mcma.app.central_server import create_central_server
     from mcma.core.central_config import load_central_settings
 
@@ -480,6 +509,8 @@ def test_the_provisioned_layout_satisfies_the_real_central_startup_checks(tmp_pa
         "MCMA_TLS_KEY_PATH": str(root / "tls" / "server.key"),
         "MCMA_SESSION_VAULT_KEY_PATH": str(root / "keys" / "session-vault.key"),
         "MCMA_JOB_INPUT_KEY_PATH": str(root / "keys" / "job-input.key"),
+        "MCMA_SINAUTO_CLIENT_PFX_PATH": str(root / "sinauto-client" / "sinauto-client.p12"),
+        "MCMA_SINAUTO_CLIENT_PASSPHRASE_PATH": str(root / "sinauto-client" / "sinauto-client.pass"),
         "MCMA_MUTEX_NAME": f"mcma-deploy-{tmp_path.name}",
     })
     create_central_server(settings, _test_only_portable_mutex=True).close()
@@ -488,7 +519,8 @@ def test_the_provisioned_layout_satisfies_the_real_central_startup_checks(tmp_pa
 @posix_user
 @needs_openssl
 @pytest.mark.parametrize("break_it", ["key_mode", "keys_dir_mode", "vault_mode", "key_length",
-                                       "identical_keys", "missing_key", "tls_key_mode", "missing_tls"])
+                                       "identical_keys", "missing_key", "tls_key_mode", "missing_tls",
+                                       "client_pass_mode", "missing_client_cert", "client_dir_mode"])
 def test_preflight_fails_for_unsafe_or_missing_files(tmp_path, break_it):
     env, root = _ready_root(tmp_path)
     keys = root / "keys"
@@ -508,6 +540,12 @@ def test_preflight_fails_for_unsafe_or_missing_files(tmp_path, break_it):
         os.chmod(root / "tls" / "server.key", 0o640)
     elif break_it == "missing_tls":
         (root / "tls" / "server.crt").unlink()
+    elif break_it == "client_pass_mode":
+        os.chmod(root / "sinauto-client" / "sinauto-client.pass", 0o640)
+    elif break_it == "missing_client_cert":
+        (root / "sinauto-client" / "sinauto-client.p12").unlink()
+    elif break_it == "client_dir_mode":
+        os.chmod(root / "sinauto-client", 0o750)
     with pytest.raises(tool.DeployError):
         tool.cmd_check(env, host=False)
 

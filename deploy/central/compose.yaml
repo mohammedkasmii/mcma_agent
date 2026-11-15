@@ -66,6 +66,11 @@ services:
       MCMA_TLS_KEY_PATH: /etc/mcma/tls/server.key
       MCMA_SESSION_VAULT_KEY_PATH: /etc/mcma/keys/session-vault.key
       MCMA_JOB_INPUT_KEY_PATH: /etc/mcma/keys/job-input.key
+      # SinAuto mutual TLS: PATHS only. The bundle and its passphrase live in
+      # owner-only files installed by `mcma-deploy.sh install-sinauto-client-cert`;
+      # no secret is ever an environment value or part of the image.
+      MCMA_SINAUTO_CLIENT_PFX_PATH: /etc/mcma/sinauto-client/sinauto-client.p12
+      MCMA_SINAUTO_CLIENT_PASSPHRASE_PATH: /etc/mcma/sinauto-client/sinauto-client.pass
       # healthcheck only (see healthcheck.py): the name/IP present in the certificate
       MCMA_HEALTHCHECK_SERVER_NAME: ${MCMA_TLS_SERVER_NAME:?set MCMA_TLS_SERVER_NAME}
       MCMA_HEALTHCHECK_CA_FILE: ${MCMA_HEALTHCHECK_CA_FILE:-/etc/mcma/tls/server.crt}
@@ -93,6 +98,11 @@ services:
       - type: bind
         source: ${MCMA_DATA_ROOT}/config
         target: /etc/mcma/config
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${MCMA_DATA_ROOT}/sinauto-client
+        target: /etc/mcma/sinauto-client       # SinAuto client certificate + passphrase (0600)
         read_only: true
         bind: {create_host_path: false}
 

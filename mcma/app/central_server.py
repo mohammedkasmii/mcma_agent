@@ -32,6 +32,9 @@ Startup order (each step fails closed; nothing is served on any failure):
   1. validate_central_settings()  -- unsafe/missing configuration stops here
   2. TLS certificate/key validated -- there is no plaintext listener
   3. single-instance lock         -- a second server refuses to start
+  2b. SinAuto client certificate -- the PKCS#12 bundle and passphrase file
+      are read once and validated (owner-only, matching key, currently
+      valid, clientAuth); any problem stops here
   4. encryption keys loaded       -- missing/insecure/short key stops here
   5. open_database() + canonical account provisioning (forward-only
      migrations run inside open_database)
@@ -71,6 +74,13 @@ from mcma.app.serve import TlsConfig, build_ssl_context, serve
 from mcma.core.central_config import CentralConfigurationError, load_central_settings, validate_central_settings
 from mcma.core.config import Settings
 from mcma.core.aead import key_file_permission_problem, load_key_file
+from mcma.core.client_certificate import (
+    EXPIRY_WARNING_DAYS,
+    ClientCertificateError,
+    SinautoClientCertificate,
+    environment_problems,
+    load_sinauto_client_certificate,
+)
 from mcma.core.mutex import create_single_instance_mutex
 from mcma.execution.inputs import AesGcmInputEncryptor
 from mcma.notifications.service import NotificationService
@@ -143,6 +153,33 @@ def _verify_filesystem(settings: Settings) -> None:
         raise CentralConfigurationError(problems)
 
 
+def _load_client_certificate(settings: Settings) -> SinautoClientCertificate:
+    """SinAuto requires mutual TLS. The bundle and its passphrase are read
+    ONCE, here, before anything opens; any problem refuses startup with a
+    fixed sentence that carries no secret. Process-environment settings
+    that would print the passphrase (Playwright protocol logging) or divert
+    the certificate-bearing connection (proxy variables) refuse it too."""
+    problems = environment_problems(os.environ)
+    if problems:
+        raise CentralConfigurationError(problems)
+    try:
+        certificate = load_sinauto_client_certificate(
+            settings.sinauto_client_pfx_path, settings.sinauto_client_passphrase_path, settings.portal_host,
+        )
+    except ClientCertificateError as exc:
+        raise CentralConfigurationError([str(exc)]) from None
+    if certificate.expires_within(EXPIRY_WARNING_DAYS):
+        logger.warning(
+            "the SinAuto client certificate expires on %s; renew it before then",
+            certificate.not_after.date().isoformat(),
+        )
+    logger.info(
+        "SinAuto client certificate loaded for %s (sha256 %s..., valid until %s)",
+        certificate.origin, certificate.fingerprint_sha256[:16], certificate.not_after.date().isoformat(),
+    )
+    return certificate
+
+
 class _Lifecycle:
     shutting_down = False
 
@@ -159,6 +196,7 @@ def create_central_server(
     validate_central_settings(settings)
 
     _verify_filesystem(settings)
+    client_certificate = _load_client_certificate(settings)
 
     resources: list = []
     try:
@@ -199,6 +237,10 @@ def create_central_server(
             crypto_backend=crypto_backend,
             session_observer=make_session_observer(tracker),
             browser_launcher=notification_browser_launcher,
+            # The ONLY browser this server owns: headless, and every context
+            # it opens carries the SinAuto client certificate for exactly
+            # https://sinauto.mamda-mcma.ma (see mcma.portal.browser).
+            client_certificate=client_certificate,
             on_browser_ready=supervisor.mark_notification_ready,
             on_browser_lost=supervisor.mark_notification_lost,
         )

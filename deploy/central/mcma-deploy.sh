@@ -13,6 +13,9 @@
 #   init                      create the data root (refuses unmarked non-empty dirs)
 #   gen-keys                  create the two distinct 32-byte keys
 #   install-tls CERT KEY      validate + install a provided certificate/key
+#   install-sinauto-client-cert P12
+#                             validate + install the SinAuto mTLS client bundle;
+#                             passphrase typed twice at a hidden prompt
 #   gen-dev-cert              self-signed cert, DEVELOPMENT VM ONLY
 #   show-cert                 print the PUBLIC certificate (stdout) + fingerprint (stderr)
 #   check                     preflight: env, files, permissions, port, subnets, routes
@@ -63,6 +66,10 @@ case "$CMD" in
     tool create-first-admin "$1" ;;
   install-tls)  [[ $# -eq 2 ]] || { echo "usage: install-tls CERT KEY" >&2; exit 2; }
                 tool install-tls --cert "$1" --key "$2" ;;
+  install-sinauto-client-cert)
+    # The passphrase is typed twice at a hidden prompt -- never an argument.
+    [[ $# -eq 1 ]] || { echo "usage: install-sinauto-client-cert P12_PATH  (the passphrase is typed at a hidden prompt)" >&2; exit 2; }
+    tool install-sinauto-client-cert "$1" ;;
   build)
     [[ "$(get MCMA_ALLOW_BUILD)" == "true" ]] \
       || { echo "build is disabled here (MCMA_ALLOW_BUILD is not true). Build on the VM and use import-image." >&2; exit 1; }
