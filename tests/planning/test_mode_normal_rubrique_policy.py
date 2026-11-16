@@ -263,8 +263,11 @@ def test_an_explicit_exception_rubrique_is_accepted_when_semantics_agree():
         tax_amount="20", total_cost="100", final_cost="120",
     )
     plan = _plan(payload)
-    assert list(plan.needs_review) == []
     assert [step.rubrique_id.value for step in plan.steps] == ["22"]
+    # The rubrique is accepted; only the tax treatment is unconfirmed for
+    # 22, so the plan fails closed on that alone (never guessed).
+    assert [item.reason.value for item in plan.needs_review] == ["UNCONFIRMED_TAX_PROFILE"]
+    assert not plan.is_writeable
 
 
 def test_rubrique_9_is_refused_even_when_stated_explicitly():

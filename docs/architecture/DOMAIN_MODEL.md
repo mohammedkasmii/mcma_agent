@@ -35,6 +35,8 @@ A single shared normalizer (strip accents, lowercase, collapse punctuation/hyphe
 - **`part_type` is origin only** — never used to infer glass family.
 
 **Painting (B.2):** materials/products/ingredients → 16; painting labour → 12; a physical painting-related part → origin 1/2/3; never 10/11.
+Mode Normal only: the agency-confirmed paint-material term **apprêt** (normalized `appret`, whole word) → 16 even when
+Wexia labels its `part_type` as recuperation. No other term is inferred; an explicit `mcma_rubric_id` that disagrees fails closed.
 
 **Labour (B.7, structured-first):** typed boundary over `lignes_pieces[].item_type`, `lignes_mo[].operation_type`,
 `lignes_mo[].labor_type_id`. Structured fields decide the `LabourFamily`; text heuristics may only **validate**, never
@@ -46,11 +48,17 @@ The old unrestricted `"mo"` substring is removed.
 
 ## 4. Mapping result algebra
 `MapLineResult = Mapped(RubriqueLine) | NeedsReview(reason_code)` where reason_code ∈
-{INVALID_TAX_ALLOCATION, AMBIGUOUS_GLASS, UNKNOWN_RUBRIC_ID, UNKNOWN_LABOUR, CONTRADICTORY_LABOUR, UNKNOWN_PART_ORIGIN}.
+{INVALID_TAX_ALLOCATION, AMBIGUOUS_GLASS, UNKNOWN_RUBRIC_ID, UNKNOWN_LABOUR, CONTRADICTORY_LABOUR, UNKNOWN_PART_ORIGIN,
+INVALID_RESPONSIBILITY_RATE, UNCONFIRMED_TAX_PROFILE}.
 
 ## 5. Money & tax (B.3, B.6)
 - All sums in `Money`; per-group tax remainder allocation preserves totals to **0.01 MAD** (no 0.05 tolerance).
 - **Negative line TVA is invalid.** Initial policy: do **not** clamp, do **not** redistribute → `NeedsReview(INVALID_TAX_ALLOCATION)`.
+- **Mode Normal TVA profile (agency-confirmed, `MODE_NORMAL_TVA_RATES`):** rubriques 1, 2, 7, 8, 12, 28 → 20 %;
+  3 and 16 → 0 %. The declared total TVA is allocated only across the 20 % rows (deterministic remainder on the last,
+  0.01 MAD bound); 0 % rows keep 0.00. A row whose rubrique has no confirmed profile → `NeedsReview(UNCONFIRMED_TAX_PROFILE)`
+  (never guessed); a declared total that cannot reconcile with the profile → `NeedsReview(INVALID_TAX_ALLOCATION)`.
+  Garage Conventionné keeps the single-rate allocation.
 - **Charge mutuelle:** portal-native calculation is authoritative in both modes; the domain never produces a write for
   `MontantChargeSocietaire`/`MontantChargeMutuelle`, and the plan cannot contain one (see §6).
 

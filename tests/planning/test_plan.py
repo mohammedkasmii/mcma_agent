@@ -34,12 +34,23 @@ def _input(**overrides):
     return raw
 
 
+def _mode_normal_input(**overrides):
+    """The shared fixture (also the frozen legacy-mapper golden) declares
+    TVA 400 = 20 % of all 2000 HT, including its 300 occasion part. Under
+    the agency-confirmed Mode Normal TVA profile occasion parts carry 0 %,
+    so the consistent declaration is 240 + 0 + 100 = 340 (TTC 2340)."""
+    raw = _input(**overrides)
+    raw["chiffrages"][0]["tax_amount"] = 340
+    raw["chiffrages"][0]["final_cost"] = 2340
+    return raw
+
+
 def _build(raw):
     return default_registry().get("mission_normal")(parse_wexia(raw))
 
 
 def test_plan_builds_from_synthetic_fixture():
-    plan = _build(_input())
+    plan = _build(_mode_normal_input())
     assert isinstance(plan, ProposedPlan)
     assert plan.needs_review == ()
     assert plan.is_writeable
@@ -135,7 +146,7 @@ def test_absent_mode_signal_fails_closed():
 def test_pec_matches_only_as_standalone_word():
     """G1 review H1: 'inspection'/'respecter' must not trip the PEC token."""
     plan = _build(
-        _input(**{"dossier.incident_description": "inspection du vehicule procedure normale"})
+        _mode_normal_input(**{"dossier.incident_description": "inspection du vehicule procedure normale"})
     )
     assert plan.is_writeable
 
@@ -237,7 +248,7 @@ def test_rowop_source_pointers_invariants():
 def test_explicit_rubrique_versus_semantic_classification():
     """Explicit ID alone cannot provide missing semantic evidence and conflicting explicit ID fails closed."""
     # original ordinary part + explicit 4 -> NeedsReview
-    raw = _input()
+    raw = _mode_normal_input()
     line = raw["chiffrages"][0]["lignes_pieces"][0]
     line["is_original"] = True
     line["mcma_rubric_id"] = "4"
@@ -255,14 +266,18 @@ def test_explicit_rubrique_versus_semantic_classification():
     plan = _build(raw)
     assert plan.is_writeable
 
-    # corroborated pare-brise replacement + explicit 22 -> accepted
-    raw = _input()
+    # corroborated pare-brise replacement + explicit 22 -> mapping accepted,
+    # but 22 has no agency-confirmed Mode Normal TVA profile yet, so the
+    # plan fails closed on tax (never guessed) rather than on the rubrique.
+    raw = _mode_normal_input()
     line = raw["chiffrages"][0]["lignes_pieces"][0]
     line["item_name"] = "pare-brise"
     line["operation_type"] = "remplacement"
     line["mcma_rubric_id"] = "22"
     plan = _build(raw)
-    assert plan.is_writeable
+    assert "22" in [op.rubrique_id.value for op in plan.steps]
+    assert [r.reason.value for r in plan.needs_review] == ["UNCONFIRMED_TAX_PROFILE"]
+    assert not plan.is_writeable
 
     # pare-brise replacement + explicit 20 -> NeedsReview
     raw["chiffrages"][0]["lignes_pieces"][0]["mcma_rubric_id"] = "20"

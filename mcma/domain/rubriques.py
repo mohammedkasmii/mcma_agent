@@ -13,6 +13,7 @@ mcma.domain.rubriques — catalog + corrected classification rules
 - out-of-catalogue rubric id fails closed (F14).
 """
 
+from decimal import Decimal
 from typing import Optional
 
 from mcma.domain.enums import GlassComponent, GlassOperation, LabourFamily, Origin
@@ -374,6 +375,24 @@ def classify_peinture_materials(description: Optional[str]) -> Optional[Rubrique
     return None
 
 
+# Agency-confirmed individual paint-material terms (Mode Normal only). Each
+# entry is a single normalized WORD matched against whole words of the item
+# name -- never a substring, never fuzzy. "appret" covers "apprêt" after
+# normalization. Add a term here only once the agency has confirmed it.
+_CONFIRMED_PAINT_MATERIAL_WORDS = frozenset({"appret"})
+
+
+def classify_confirmed_paint_material(description: Optional[str]) -> Optional[RubriqueId]:
+    """Agency-confirmed paint-material term -> 16, whatever origin Wexia put
+    on the line (Wexia has been seen labelling apprêt as recuperation).
+    Deliberately separate from classify_peinture_materials so it can be
+    scoped to Mode Normal by the planner."""
+    words = set(normalize_text(description).split())
+    if words & _CONFIRMED_PAINT_MATERIAL_WORDS:
+        return RubriqueId("16")
+    return None
+
+
 # Rubrique 9 (MONTANT TOTAL) is an aggregate row — never a line target
 # (G1 review M3).
 _LINE_ASSIGNABLE_RUBRIQUES = frozenset(RUBRIQUE_CATALOG) - {"9"}
@@ -444,3 +463,26 @@ MODE_NORMAL_ALLOWED_RUBRIQUES = (
 MODE_NORMAL_FORBIDDEN_RUBRIQUES = frozenset(
     RubriqueId(code) for code in RUBRIQUE_CATALOG
 ) - MODE_NORMAL_ALLOWED_RUBRIQUES
+
+
+# ---------------------------------------------------------------------------
+# Mode Normal TVA profile (agency-confirmed)
+# ---------------------------------------------------------------------------
+# Per-rubrique TVA rate for automatically planned Mode Normal rows. A
+# rubrique absent from this table has NO confirmed tax treatment: the
+# planner must fail closed (NeedsReview) rather than guess one -- notably
+# 17, 18, 19-24 and 25-27 are allowed mapping targets but are not yet
+# tax-profiled.
+_TVA_20 = Decimal("0.20")
+_TVA_0 = Decimal("0")
+
+MODE_NORMAL_TVA_RATES: dict[RubriqueId, Decimal] = {
+    RubriqueId("1"): _TVA_20,   # pieces d'origine
+    RubriqueId("2"): _TVA_20,   # pieces adaptables
+    RubriqueId("3"): _TVA_0,    # pieces occasion / recuperables
+    RubriqueId("7"): _TVA_20,   # MO carrosserie
+    RubriqueId("8"): _TVA_20,   # MO mecanique
+    RubriqueId("12"): _TVA_20,  # MO peinture
+    RubriqueId("28"): _TVA_20,  # MO electrique
+    RubriqueId("16"): _TVA_0,   # peintures et ingredients
+}

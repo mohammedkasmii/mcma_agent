@@ -24,7 +24,9 @@ from mcma.domain.normalize import normalize_text
 from mcma.domain.results import Mapped, NeedsReview, ReasonCode, tva_allocation_result
 from mcma.domain.rubriques import (
     MODE_NORMAL_ALLOWED_RUBRIQUES,
+    MODE_NORMAL_TVA_RATES,
     classify_colle,
+    classify_confirmed_paint_material,
     classify_glass_line,
     classify_labour_line,
     classify_ordinary_part,
@@ -415,9 +417,10 @@ def _build_form_field_intents(typed_input, chiffrage) -> Tuple[Tuple[FormFieldIn
     return tuple(intents), extra_reviews
 
 
-def _classify_piece(line):
-    """Classification order: explicit id → structured labour → colle → glass →
-    ordinary part (origin only)."""
+def _classify_piece(line, workflow: RepairWorkflow = RepairWorkflow.GARAGE_CONVENTIONNE):
+    """Classification order: explicit id → structured labour → colle →
+    [Mode Normal: agency-confirmed paint-material term] → paint materials →
+    glass → ordinary part (origin only)."""
     if line.is_labour:
         sem_result = classify_labour_line(
             operation_type=line.operation_type,
@@ -430,7 +433,13 @@ def _classify_piece(line):
         if colle is not None:
             sem_result = colle
         else:
-            peinture = classify_peinture_materials(line.item_name)
+            peinture = None
+            if workflow == RepairWorkflow.MODE_NORMAL:
+                # Agency-confirmed term ("apprêt") wins over Wexia's part_type,
+                # which has been seen mislabelling it as recuperation.
+                peinture = classify_confirmed_paint_material(line.item_name)
+            if peinture is None:
+                peinture = classify_peinture_materials(line.item_name)
             if peinture is not None:
                 sem_result = Mapped(peinture)
             elif has_glass_signal(_glass_signal_text(line)):
@@ -452,6 +461,62 @@ def _classify_piece(line):
         return explicit_result
 
     return sem_result
+
+
+def _allocate_mode_normal_tva(ordered, total_tva: Money) -> Tuple[list, list]:
+    """Mode Normal TVA by agency-confirmed per-rubrique profile.
+
+    `ordered` is the deterministic (rubrique_value, entry) step order. Rows
+    whose profile rate is 0 keep TVA 0.00; the declared total is allocated
+    only across the taxable rows (deterministic remainder on the last one,
+    0.01 MAD bound, never negative -- allocate_tax). Fails closed, with
+    every row's TVA left at 0.00 and the plan therefore non-writeable, when:
+      - any row's rubrique has no confirmed profile (never guessed);
+      - the declared total cannot reconcile with the profile (including a
+        non-zero total with no taxable rows, or zero with taxable rows).
+    Returns (tva_amounts, reviews)."""
+    zeros = [Money.ZERO] * len(ordered)
+    if not ordered:
+        # No mapped row: nothing to allocate, and a zero-step plan is
+        # already non-writeable (mirrors allocate_tax([]) -> []).
+        return zeros, []
+    rates = [MODE_NORMAL_TVA_RATES.get(RubriqueId(value)) for value, _ in ordered]
+
+    unconfirmed = sorted({value for (value, _), rate in zip(ordered, rates) if rate is None}, key=int)
+    if unconfirmed:
+        return zeros, [
+            NeedsReview(
+                ReasonCode.UNCONFIRMED_TAX_PROFILE,
+                detail=f"no agency-confirmed TVA profile for rubrique(s) {unconfirmed} — fail closed, never guessed",
+            )
+        ]
+
+    taxable = [i for i, rate in enumerate(rates) if rate > 0]
+    taxable_rates = {rates[i] for i in taxable}
+    if total_tva.is_negative:
+        problem = f"declared TVA {total_tva} is negative"
+    elif not taxable:
+        problem = None if total_tva == Money.ZERO else (
+            f"declared TVA {total_tva} but no row carries a taxable TVA profile"
+        )
+    elif total_tva == Money.ZERO:
+        problem = "declared TVA 0.00 but taxable rows are present"
+    elif len(taxable_rates) > 1:
+        problem = f"multiple taxable rates {sorted(taxable_rates)} are not supported"
+    else:
+        result = tva_allocation_result(
+            [ordered[i][1]["ht"] for i in taxable], total_tva, rate=next(iter(taxable_rates))
+        )
+        if isinstance(result, NeedsReview):
+            return zeros, [result]
+        amounts = list(zeros)
+        for i, amount in zip(taxable, result.value):
+            amounts[i] = amount
+        return amounts, []
+
+    if problem is None:
+        return zeros, []
+    return zeros, [NeedsReview(ReasonCode.INVALID_TAX_ALLOCATION, detail=f"{problem} — fail closed")]
 
 
 def _build_plan_core(typed_input, expected_workflow: RepairWorkflow) -> ProposedPlan:
@@ -511,7 +576,7 @@ def _build_plan_core(typed_input, expected_workflow: RepairWorkflow) -> Proposed
         if line.subtotal == 0:
             continue
         pointer = _content_pointer("piece", line, seen_pointers)
-        result = _classify_piece(line)
+        result = _classify_piece(line, expected_workflow)
         if isinstance(result, NeedsReview):
             reviews.append(result)
         else:
@@ -550,13 +615,18 @@ def _build_plan_core(typed_input, expected_workflow: RepairWorkflow) -> Proposed
         ht_sum = sum((entry["ht"].amount for _, entry in ordered), Decimal("0"))
         _validate_chiffrage_totals(chiffrage, ht_sum)
 
-    line_hts = [entry["ht"] for _, entry in ordered]
-    tva_result = tva_allocation_result(line_hts, Money.of(chiffrage.tax_amount))
-    if isinstance(tva_result, NeedsReview):
-        reviews.append(tva_result)
-        tva_amounts: Sequence[Money] = [Money.ZERO] * len(ordered)
+    tva_amounts: Sequence[Money]
+    if expected_workflow == RepairWorkflow.MODE_NORMAL:
+        tva_amounts, tva_reviews = _allocate_mode_normal_tva(ordered, Money.of(chiffrage.tax_amount))
+        reviews.extend(tva_reviews)
     else:
-        tva_amounts = tva_result.value
+        line_hts = [entry["ht"] for _, entry in ordered]
+        tva_result = tva_allocation_result(line_hts, Money.of(chiffrage.tax_amount))
+        if isinstance(tva_result, NeedsReview):
+            reviews.append(tva_result)
+            tva_amounts = [Money.ZERO] * len(ordered)
+        else:
+            tva_amounts = tva_result.value
 
     steps = tuple(
         RowOp(
