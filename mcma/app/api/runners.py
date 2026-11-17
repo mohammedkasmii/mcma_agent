@@ -91,6 +91,7 @@ async def _bounded_json(request: Request, allowed: set, required: set, limit: in
 
 def register_runner_routes(
     app: FastAPI, conn, get_principal, encryptor: InputEncryptor, *, execute_dispatch_enabled: bool = False,
+    mode_normal_canary_enabled: bool = False,
 ) -> None:
     """`execute_dispatch_enabled` (Phase 1C-C): a composition-root-only
     parameter, threaded down from mcma.app.api.app.create_api_app -- never
@@ -201,6 +202,7 @@ def register_runner_routes(
                 dispatch.claim_job, conn, principal,
                 protocol_version=body["protocol_version"], app_version=body["app_version"], encryptor=encryptor,
                 execute_dispatch_enabled=execute_dispatch_enabled,
+                mode_normal_canary_enabled=mode_normal_canary_enabled,
             )
         except UserInputError as exc:
             raise _as_api_error(exc) from None
@@ -257,6 +259,7 @@ def register_runner_routes(
                 claim_token=body["claim_token"], generation=body["generation"],
                 workflow_registry=_workflow_registry, encryptor=encryptor,
                 execute_dispatch_enabled=execute_dispatch_enabled,
+                mode_normal_canary_enabled=mode_normal_canary_enabled,
             )
         except UserInputError as exc:
             raise _as_api_error(exc) from None
@@ -273,6 +276,7 @@ def register_runner_routes(
                 dispatch.finish_job, conn, principal, job_id=job_id,
                 claim_token=body["claim_token"], generation=body["generation"], result=body["result"],
                 execute_dispatch_enabled=execute_dispatch_enabled,
+                mode_normal_canary_enabled=mode_normal_canary_enabled,
             )
         except UserInputError as exc:
             raise _as_api_error(exc) from None

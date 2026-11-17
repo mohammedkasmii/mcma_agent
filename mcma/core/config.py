@@ -87,6 +87,19 @@ class Settings:
     # handoff requires the employee to see and close the window themselves.
     headless_browser: bool = False
 
+    # SUPERVISED MODE NORMAL GOLDEN CANARY -- server-owned opt-in, OFF by
+    # default (docs/implementation/execution/MODE_NORMAL_GOLDEN_CANARY.md).
+    # Read only by mcma.app.central_server at startup, from the central
+    # TOML file or MCMA_MODE_NORMAL_GOLDEN_CANARY_ENABLED; never from a
+    # request, never from a runner, never from the frontend. When true, and
+    # only then: EXECUTE creation/claim/start/finish are permitted for
+    # MODE_NORMAL plans on MCMA Oujda/Nador whose every rubrique has a
+    # confirmed TVA profile, one canary at a time globally, and the
+    # workstation runs the separate bounded canary adapter
+    # (mcma.portal.mode_normal_canary). The generic writer's loopback/mock
+    # protections and every other policy are unaffected either way.
+    mode_normal_golden_canary_enabled: bool = False
+
     # DEV MODE means one thing only: form filling targets the loopback
     # mock rather than the real portal. It used to ALSO decide how job
     # inputs and portal sessions were stored, which meant the normal

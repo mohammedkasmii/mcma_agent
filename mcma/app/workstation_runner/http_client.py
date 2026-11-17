@@ -18,7 +18,8 @@ from urllib.parse import urlsplit
 import httpx
 
 from mcma.app.workstation_runner.protocol import (
-    APP_VERSION, CLAIM_TOKEN_PREFIX, EXECUTE_FINISH_RESULTS, FINISH_RESULTS, JOB_MODES, MAX_CLAIM_RESPONSE_BYTES,
+    APP_VERSION, CLAIM_TOKEN_PREFIX, EXECUTE_FINISH_RESULTS, EXECUTION_PROFILE_MODE_NORMAL_GOLDEN_CANARY,
+    FINISH_RESULTS, JOB_MODES, MAX_CLAIM_RESPONSE_BYTES,
     MAX_CLAIM_TOKEN_LENGTH, MAX_HEARTBEAT_INTERVAL_SECONDS, MAX_OFFLINE_AFTER_SECONDS, MAX_ONBOARDING_UPLOAD_BYTES,
     MAX_RUNNER_SECRET_LENGTH, MAX_TYPED_INPUT_DEPTH, MIN_HEARTBEAT_INTERVAL_SECONDS, MIN_OFFLINE_AFTER_SECONDS,
     NOTIFICATION_ONBOARDING_ACCOUNT_IDS, ONBOARDING_CLAIM_TOKEN_PREFIX, ONBOARDING_FAIL_REASONS, ONBOARDING_PHASES,
@@ -128,6 +129,9 @@ class ClaimedJob:
     lease_expires_at: str
     claim_token: str = field(repr=False)
     typed_input: dict = field(repr=False)
+    # Server-owned; present ONLY on a supervised Mode Normal canary EXECUTE
+    # envelope (EXECUTION_PROFILE_MODE_NORMAL_GOLDEN_CANARY), else None.
+    execution_profile: str | None = None
 
 
 @dataclass(frozen=True)
@@ -556,7 +560,15 @@ class RegistryHttpClient:
         )
         if body is None:
             return None  # 204: no eligible work right now
-        if set(body) != self._CLAIM_RESPONSE_FIELDS:
+        keys = set(body)
+        execution_profile = None
+        if keys == self._CLAIM_RESPONSE_FIELDS | {"execution_profile"}:
+            # Accepted ONLY as the one known canary profile on an EXECUTE
+            # envelope; anything else is a protocol violation, never ignored.
+            if body.get("mode") != "EXECUTE" or body.get("execution_profile") != EXECUTION_PROFILE_MODE_NORMAL_GOLDEN_CANARY:
+                raise RegistryProtocolError("claim response failed validation")
+            execution_profile = EXECUTION_PROFILE_MODE_NORMAL_GOLDEN_CANARY
+        elif keys != self._CLAIM_RESPONSE_FIELDS:
             raise RegistryProtocolError("claim response failed validation")
         if (
             not _valid_bounded_str(body.get("job_id"), _MAX_JOB_ID_LENGTH)
@@ -575,6 +587,7 @@ class RegistryHttpClient:
             workflow_name=body["workflow_name"], input_hash=body["input_hash"],
             generation=body["generation"], lease_expires_at=body["lease_expires_at"],
             claim_token=body["claim_token"], typed_input=body["typed_input"],
+            execution_profile=execution_profile,
         )
 
     def renew_job(self, runner_secret: str, *, job_id: str, claim_token: str, generation: int) -> RenewResult:

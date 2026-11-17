@@ -269,6 +269,13 @@ def create_central_server(
                 await service.stop()
                 server.close()
 
+        if settings.mode_normal_golden_canary_enabled:
+            # Loud on purpose: an operator must never leave this on unnoticed.
+            logger.warning(
+                "SUPERVISED MODE NORMAL GOLDEN CANARY IS ENABLED: EXECUTE is admitted for "
+                "canary-eligible Mode Normal plans on MCMA Oujda/Nador, one at a time. "
+                "Disable mode_normal_golden_canary_enabled and restart once the supervised test is over."
+            )
         app = build_app(
             api_conn, settings, encryptor,
             lifespan=_lifespan, supervisor=supervisor, connection_tracker=tracker,
@@ -288,7 +295,13 @@ def create_central_server(
             # Neither flag is a client-visible setting -- both are fixed at
             # composition time by this module alone.
             dry_run_creation_available=True,
-            execute_creation_available=False,
+            # Supervised Mode Normal golden canary: the ONE server-owned
+            # opt-in (Settings.mode_normal_golden_canary_enabled, default
+            # False). Off: EXECUTE stays refused exactly as before. On:
+            # EXECUTE is admitted only for canary-eligible Mode Normal
+            # plans, one at a time (see mcma.app.runners.dispatch).
+            execute_creation_available=settings.mode_normal_golden_canary_enabled,
+            mode_normal_canary_enabled=settings.mode_normal_golden_canary_enabled,
             # Runner registry (enrollment, identity, heartbeat, readiness,
             # revocation): DB rows and HTTP only. No browser, no background
             # thread -- online/offline is derived from server time on read.

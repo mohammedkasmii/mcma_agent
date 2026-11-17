@@ -59,6 +59,11 @@ from mcma.execution.jobs import (
 )
 from mcma.mapping.wexia import parse_wexia
 from mcma.planning.plan import PlanBuildError, detect_workflow
+from mcma.planning.canary import (
+    MODE_NORMAL_CANARY_WORKFLOW_NAME,
+    REFUSAL_WRONG_WORKFLOW,
+    mode_normal_canary_refusal,
+)
 from mcma.planning.registry import default_registry, workflow_name_for
 from mcma.persistence.repositories.audit import EmployeeActionsRepository
 from mcma.persistence.repositories.accounts import AccountsRepository
@@ -161,6 +166,7 @@ def create_api_app(
     runner_registry: bool = False,
     execute_dispatch_enabled: bool = False,
     notification_onboarding=None,
+    mode_normal_canary_enabled: bool = False,
 ) -> FastAPI:
     """`notification_onboarding` (central server only): the injected
     mcma.app.runners.notification_onboarding service. It gives
@@ -298,6 +304,7 @@ def create_api_app(
 
         register_runner_routes(
             app, conn, get_principal, encryptor, execute_dispatch_enabled=execute_dispatch_enabled,
+            mode_normal_canary_enabled=mode_normal_canary_enabled,
         )
 
     if notification_onboarding is not None:
@@ -928,6 +935,19 @@ def create_api_app(
 
         parent_input_row = conn.execute("SELECT ciphertext, pii_class FROM job_inputs WHERE job_id = ?", (dry_run_job_id,)).fetchone()
         parent_typed_input_bytes = encryptor.decrypt(bytes(parent_input_row["ciphertext"]))
+        if mode_normal_canary_enabled and not execute_dispatch_enabled:
+            # Supervised Mode Normal golden canary: EXECUTE exists on this
+            # server ONLY for canary-eligible plans. Refused here, before
+            # anything is enqueued, with a fixed reason code.
+            if parent["workflow_name"] != MODE_NORMAL_CANARY_WORKFLOW_NAME:
+                raise ApiError(409, REFUSAL_WRONG_WORKFLOW, "only Mode Normal may be executed by the supervised canary")
+            try:
+                canary_plan = plan_builder(parse_wexia(json.loads(parent_typed_input_bytes)))
+            except PlanBuildError as exc:
+                raise ApiError(409, "PLAN_BUILD_FAILED", "the retained input could not be re-planned") from exc
+            refusal = mode_normal_canary_refusal(canary_plan)
+            if refusal is not None:
+                raise ApiError(409, refusal, "this plan is not eligible for the supervised canary")
         execute_job_id = enqueue_execute(
             conn,
             account_id=parent["account_id"],

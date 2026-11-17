@@ -49,6 +49,11 @@ RELEASE_REASONS = ("CANCELLED_BEFORE_EXECUTION", "RUNNER_SHUTDOWN", "EXECUTION_N
 # envelope may ever report.
 JOB_MODES = ("DRY_RUN", "EXECUTE")
 
+# The ONE execution profile a claim envelope may carry (EXECUTE only) --
+# byte-identical to mcma.planning.canary.EXECUTION_PROFILE_MODE_NORMAL_GOLDEN_CANARY.
+# Set by the central server alone, when its supervised canary opt-in is on.
+EXECUTION_PROFILE_MODE_NORMAL_GOLDEN_CANARY = "MODE_NORMAL_GOLDEN_CANARY"
+
 # mirrors mcma.app.runners.dispatch.FINISH_RESULTS (Phase 1C-B: the fixed,
 # closed enum /runner/jobs/{job_id}/finish accepts -- never arbitrary
 # client status/error text).

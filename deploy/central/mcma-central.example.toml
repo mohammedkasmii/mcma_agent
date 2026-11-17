@@ -23,3 +23,7 @@ job_input_key_path = "/etc/mcma/keys/job-input.key"
 # notification_category_codes = []
 # subnet_allowlist = ["10.0.0.0/24"]   # defence in depth only
 # public_static_dirs = []               # extra served dirs the data paths must avoid
+
+# SUPERVISED MODE NORMAL GOLDEN CANARY -- keep false outside an announced,
+# supervised test window. See docs/implementation/execution/MODE_NORMAL_GOLDEN_CANARY.md.
+# mode_normal_golden_canary_enabled = false

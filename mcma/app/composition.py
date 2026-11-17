@@ -97,6 +97,7 @@ def build_app(
     execute_creation_available: bool = True,
     runner_registry_enabled: bool = False,
     notification_onboarding=None,
+    mode_normal_canary_enabled: bool = False,
 ):
     """Assembles the one ASGI app: authenticated API + the built employee
     UI + the two loopback-only sub-apps. The sub-apps enforce their own loopback checks
@@ -201,6 +202,7 @@ def build_app(
         dry_run_creation_available=dry_run_creation_available,
         execute_creation_available=execute_creation_available,
         runner_registry=runner_registry_enabled,
+        mode_normal_canary_enabled=mode_normal_canary_enabled,
         notification_onboarding=notification_onboarding,
     )
     if lifespan is not None:

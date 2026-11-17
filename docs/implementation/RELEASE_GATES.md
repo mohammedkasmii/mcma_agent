@@ -12,10 +12,33 @@ fail-closed — absence of evidence blocks progression.
 | **G4** Authenticated TLS API | INC-18 | Phase 6 | TLS-only (refuse without cert); per-account authorized API; server-derived audit |
 | **G3** (portal session credentials — see below) | INC-13 | storing/using a real encrypted portal session | DPAPI LocalMachine, **verified** service-account-only NTFS ACL, account binding, atomic storage, rotation/revocation, fail-closed decryption. **Portal session credentials are governed by G3, NOT G-PDR** — once G3 passes, encrypted sessions are usable and are never "blocked until G-PDR". |
 | **G-PDR** Production-data-readiness | INC-20 + INC-21 | **any persistence/emission of real production claimant data**: claim/notification records, screenshots, exports, logs, plan snapshots, and backups (**not** portal session credentials, which are G3) | DB outside served directories; BitLocker **or** SQLCipher condition satisfied; strict NTFS ACL verified; encrypted backup destination verified; PII-safe logging **and** screenshot behavior verified. No production claimant data is stored/emitted before this gate — INC-14 stays fixture/mock-only until it passes. |
-| **G5** Live-write gate | INC-23 | any live row write | confirmed row-op contracts from approved evidence — **the exact Mode Normal native trigger + summary-verification contract confirmed (currently UNCONFIRMED, `PORTAL_ROW_WORKFLOWS.md` §3.1) and the exact PEC row (`updateDevisDet`) + native (`DevisCalculerMontantCharge`) contracts confirmed; `confirmed_row_ops` records are commit-bound (valid only for the exact deployed commit); no live writer is constructible before all evidence is approved**; full safety suite green; write-enable gate satisfied; final endpoints still blocked; **explicit owner approval** before the supervised canary |
+| **G5** Live-write gate | INC-23 | any live row write | confirmed row-op contracts from approved evidence — **the exact Mode Normal native trigger + summary-verification contract confirmed (currently UNCONFIRMED, `PORTAL_ROW_WORKFLOWS.md` §3.1) and the exact PEC row (`updateDevisDet`) + native (`DevisCalculerMontantCharge`) contracts confirmed; `confirmed_row_ops` records are commit-bound (valid only for the exact deployed commit); no general live writer is constructible before all evidence is approved**; full safety suite green; write-enable gate satisfied; final endpoints still blocked; **explicit owner approval** before the supervised canary |
+
+### Narrow evidence-canary exception (does not pass G5)
+
+Before the exact Mode Normal row-save request is known, one separately
+implemented, **owner-approved supervised evidence canary** may be used to
+collect its metadata. It is not a general writer and does not open G5. It
+must be server-disabled by default and must enforce all of the following:
+
+- Mode Normal only; MCMA Oujda/Nador only; a fully writeable,
+  review-free, TVA-profiled plan; one active canary globally;
+- a visible paired employee workstation, re-verified identity/workflow and
+  a valid lease before and during the run;
+- final actions and charge-split writes permanently blocked; a human does
+  any final portal action in their normal session;
+- a bounded, pinned-host network policy which permits the portal's unknown
+  row-save traffic only inside a per-row window, records redacted metadata,
+  and converts every unexpected request into `WRITE_ABORTED`;
+- the setting is turned off immediately after the supervised run. The
+  captured evidence must be reviewed and converted to an exact,
+  commit-bound contract before any broader live-write capability is
+  considered.
 
 ## Standing prohibitions (apply throughout, not just at a gate)
-- **No live form filling** until G5 passes with owner approval. Endpoint names in the baseline never authorize writes.
+- **No live form filling** until G5 passes with owner approval, except for
+  the narrow supervised evidence canary described above. Endpoint names in
+  the baseline never authorize writes.
 - **Baseline containment (INC-00, from day one):** the baseline's own live-write entrypoints (`fill-dossier`,
   `process_workflow`, Mode-Normal forced charge-mutuelle) are structurally disabled and its API is bound to loopback with
   the `profile=any` firewall rule removed, for the entire rebuild. The "no live form filling" prohibition binds the

@@ -71,6 +71,11 @@ services:
       # no secret is ever an environment value or part of the image.
       MCMA_SINAUTO_CLIENT_PFX_PATH: /etc/mcma/sinauto-client/sinauto-client.p12
       MCMA_SINAUTO_CLIENT_PASSPHRASE_PATH: /etc/mcma/sinauto-client/sinauto-client.pass
+      # Supervised Mode Normal canary.  This remains false unless the
+      # operator explicitly sets it in the deployment env file; the value
+      # is passed through so the central configuration loader can enforce
+      # the server-owned opt-in.
+      MCMA_MODE_NORMAL_GOLDEN_CANARY_ENABLED: ${MCMA_MODE_NORMAL_GOLDEN_CANARY_ENABLED:-false}
       # healthcheck only (see healthcheck.py): the name/IP present in the certificate
       MCMA_HEALTHCHECK_SERVER_NAME: ${MCMA_TLS_SERVER_NAME:?set MCMA_TLS_SERVER_NAME}
       MCMA_HEALTHCHECK_CA_FILE: ${MCMA_HEALTHCHECK_CA_FILE:-/etc/mcma/tls/server.crt}

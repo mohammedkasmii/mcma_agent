@@ -71,6 +71,11 @@ from mcma.execution.jobs import (
     transition_on_browser_closed,
 )
 from mcma.mapping.wexia import parse_wexia
+from mcma.planning.canary import (
+    EXECUTION_PROFILE_MODE_NORMAL_GOLDEN_CANARY,
+    MODE_NORMAL_CANARY_WORKFLOW_NAME,
+    mode_normal_canary_refusal,
+)
 from mcma.planning.registry import WorkflowRegistry
 
 CLAIM_TOKEN_PREFIX = "mcma_ct_"
@@ -119,6 +124,31 @@ EXECUTE_DISPATCH_ENABLED = False
 # never a hidden env var, never client-settable): every production call
 # site omits the parameter and gets EXECUTE_DISPATCH_ENABLED (False) here,
 # unchanged from before this was a function.
+# Supervised Mode Normal golden canary (Settings.mode_normal_golden_canary_
+# enabled, threaded from mcma.app.central_server only -- never a request
+# field). When the canary flag is the ONLY thing enabling EXECUTE, an
+# EXECUTE job is claimable only if it is a mission_normal job AND no EXECUTE
+# dispatch is CLAIMED/RUNNING anywhere (one active canary globally). That
+# condition is evaluated inside claim_job's BEGIN IMMEDIATE transaction, so
+# SQLite serialization decides any race between two runners.
+assert MODE_NORMAL_CANARY_WORKFLOW_NAME.replace("_", "").isalnum()
+_CANARY_EXECUTE_SQL = (
+    f" OR (j.mode = 'EXECUTE' AND j.status = 'PLANNED' "
+    f"AND j.workflow_name = '{MODE_NORMAL_CANARY_WORKFLOW_NAME}' "
+    f"AND NOT EXISTS (SELECT 1 FROM workstation_job_dispatch d2 "
+    f"JOIN automation_jobs j2 ON j2.job_id = d2.job_id "
+    f"WHERE j2.mode = 'EXECUTE' AND d2.status IN ('CLAIMED', 'RUNNING')))"
+)
+
+
+def _execute_admitted(execute_dispatch_enabled: bool, mode_normal_canary_enabled: bool) -> bool:
+    return bool(execute_dispatch_enabled or mode_normal_canary_enabled)
+
+
+def _canary_only(execute_dispatch_enabled: bool, mode_normal_canary_enabled: bool) -> bool:
+    return bool(mode_normal_canary_enabled and not execute_dispatch_enabled)
+
+
 def _dispatchable_mode_status(execute_dispatch_enabled: bool) -> frozenset:
     return frozenset(
         {("DRY_RUN", "QUEUED")} | ({("EXECUTE", "PLANNED")} if execute_dispatch_enabled else set())
@@ -128,10 +158,12 @@ def _dispatchable_mode_status(execute_dispatch_enabled: bool) -> frozenset:
 # The SQL fragment mirroring _dispatchable_mode_status exactly -- built
 # from the SAME gate, so the candidate-selection query and the defensive
 # Python re-check below can never drift apart from each other.
-def _mode_status_sql(execute_dispatch_enabled: bool) -> str:
+def _mode_status_sql(execute_dispatch_enabled: bool, mode_normal_canary_enabled: bool = False) -> str:
     sql = "(j.mode = 'DRY_RUN' AND j.status = 'QUEUED')"
     if execute_dispatch_enabled:
         sql += " OR (j.mode = 'EXECUTE' AND j.status = 'PLANNED')"
+    elif mode_normal_canary_enabled:
+        sql += _CANARY_EXECUTE_SQL
     return sql
 
 _RELEASE_REASONS = frozenset({"CANCELLED_BEFORE_EXECUTION", "RUNNER_SHUTDOWN", "EXECUTION_NOT_AVAILABLE"})
@@ -292,14 +324,20 @@ class JobEnvelope:
     lease_expires_at: str
     claim_token: str = field(repr=False)
     typed_input: dict = field(repr=False)
+    # Set ONLY on a canary EXECUTE envelope; absent from the wire otherwise,
+    # so DRY_RUN and generic EXECUTE envelopes are byte-for-byte unchanged.
+    execution_profile: Optional[str] = None
 
     def to_response_dict(self) -> dict:
-        return {
+        body = {
             "job_id": self.job_id, "mode": self.mode, "account_id": self.account_id,
             "workflow_name": self.workflow_name, "input_hash": self.input_hash,
             "generation": self.generation, "claim_token": self.claim_token,
             "lease_expires_at": self.lease_expires_at, "typed_input": self.typed_input,
         }
+        if self.execution_profile is not None:
+            body["execution_profile"] = self.execution_profile
+        return body
 
 
 def _runner_online(row, now: datetime) -> bool:
@@ -426,6 +464,7 @@ def claim_job(
     conn, principal: RunnerPrincipal, *, protocol_version: object, app_version: object,
     encryptor: InputEncryptor, now: Optional[datetime] = None,
     execute_dispatch_enabled: bool = EXECUTE_DISPATCH_ENABLED,
+    mode_normal_canary_enabled: bool = False,
 ) -> Optional[JobEnvelope]:
     """Returns the claimed job's immutable envelope, or None when no
     eligible work exists (the caller maps None to HTTP 204).
@@ -436,8 +475,11 @@ def claim_job(
     never a value the request body can influence. Tests construct an
     explicitly-enabled call by passing True directly."""
     now = now or utcnow()
-    dispatchable_mode_status = _dispatchable_mode_status(execute_dispatch_enabled)
-    mode_status_sql = _mode_status_sql(execute_dispatch_enabled)
+    dispatchable_mode_status = _dispatchable_mode_status(
+        _execute_admitted(execute_dispatch_enabled, mode_normal_canary_enabled)
+    )
+    mode_status_sql = _mode_status_sql(execute_dispatch_enabled, mode_normal_canary_enabled)
+    canary_only = _canary_only(execute_dispatch_enabled, mode_normal_canary_enabled)
     _validated_versions(protocol_version, app_version)
     expire_stale_assignments(conn, now=now)  # opportunistic recovery, own transaction -- see docstring above
 
@@ -516,6 +558,10 @@ def claim_job(
                     workflow_name=candidate["workflow_name"], input_hash=candidate["input_hash"],
                     generation=generation, lease_expires_at=_iso(lease_expires),
                     claim_token=claim_token, typed_input=typed_input,
+                    execution_profile=(
+                        EXECUTION_PROFILE_MODE_NORMAL_GOLDEN_CANARY
+                        if canary_only and candidate["mode"] == "EXECUTE" else None
+                    ),
                 )
                 # The FULL response envelope, including overhead (field
                 # names, claim token, quoting/escaping) -- not just
@@ -751,6 +797,7 @@ def start_job(
     conn, principal: RunnerPrincipal, *, job_id: str, claim_token: object, generation: object,
     workflow_registry: WorkflowRegistry, encryptor: InputEncryptor, now: Optional[datetime] = None,
     execute_dispatch_enabled: bool = EXECUTE_DISPATCH_ENABLED,
+    mode_normal_canary_enabled: bool = False,
 ) -> dict:
     """CLAIMED -> RUNNING (browser work about to begin), or straight to a
     terminal SUCCEEDED/NEEDS_REVIEW_NO_BROWSER when planning alone already
@@ -814,7 +861,7 @@ def start_job(
     if mode == "DRY_RUN":
         if job_row["status"] != "QUEUED":
             raise _err(*_JOB_NOT_STARTABLE)
-    elif mode == "EXECUTE" and execute_dispatch_enabled:
+    elif mode == "EXECUTE" and _execute_admitted(execute_dispatch_enabled, mode_normal_canary_enabled):
         if job_row["status"] != "PLANNED":
             raise _err(*_JOB_NOT_STARTABLE)
         _require_execute_parent(conn, job_row)
@@ -847,6 +894,22 @@ def start_job(
             # parent already resolved that. Treated as a planning failure,
             # never silently admitted.
             raise ValueError("EXECUTE plan unexpectedly needs review")
+        if mode == "EXECUTE" and _canary_only(execute_dispatch_enabled, mode_normal_canary_enabled):
+            # Supervised canary: re-derived, never trusted from creation.
+            # Any refusal fails the job closed (ERROR) before the runner
+            # is ever told RUNNING -- no browser, no mutation.
+            if job_row["workflow_name"] != MODE_NORMAL_CANARY_WORKFLOW_NAME:
+                raise ValueError("canary EXECUTE requires the mission_normal workflow")
+            refusal = mode_normal_canary_refusal(plan)
+            if refusal is not None:
+                raise ValueError(f"canary plan refused: {refusal}")
+            other_active = conn.execute(
+                "SELECT 1 FROM workstation_job_dispatch d JOIN automation_jobs j ON j.job_id = d.job_id "
+                "WHERE j.mode = 'EXECUTE' AND d.status IN ('CLAIMED', 'RUNNING') AND d.job_id <> ?",
+                (job_row["job_id"],),
+            ).fetchone()
+            if other_active is not None:
+                raise ValueError("another canary execution is already active")
     except Exception as exc:
         reason_code = f"RUNNER_EXCEPTION_{type(exc).__name__}"
         with write_transaction(conn):
@@ -1094,6 +1157,7 @@ def finish_job(
     conn, principal: RunnerPrincipal, *, job_id: str, claim_token: object, generation: object,
     result: object, now: Optional[datetime] = None,
     execute_dispatch_enabled: bool = EXECUTE_DISPATCH_ENABLED,
+    mode_normal_canary_enabled: bool = False,
 ) -> dict:
     """RUNNING -> a terminal SUCCEEDED/FAILED dispatch outcome, atomic with
     the corresponding automation_jobs transition -- ONE write_transaction
@@ -1152,7 +1216,7 @@ def finish_job(
         job_row = _start_eligibility_checks(conn, principal, row, now=now)
         mode = job_row["mode"]
         try:
-            if mode == "EXECUTE" and execute_dispatch_enabled:
+            if mode == "EXECUTE" and _execute_admitted(execute_dispatch_enabled, mode_normal_canary_enabled):
                 if result not in EXECUTE_FINISH_RESULTS:
                     raise _err("BAD_REQUEST", "Résultat invalide.")
                 new_status, terminal = _finish_execute_transitions(conn, job_id, result, now=now)

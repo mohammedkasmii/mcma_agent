@@ -299,6 +299,10 @@ def test_rendered_compose_meets_the_isolation_and_hardening_contract():
     environment = service["environment"]
     assert environment["MCMA_SINAUTO_CLIENT_PFX_PATH"] == "/etc/mcma/sinauto-client/sinauto-client.p12"
     assert environment["MCMA_SINAUTO_CLIENT_PASSPHRASE_PATH"] == "/etc/mcma/sinauto-client/sinauto-client.pass"
+    # The Docker env file is the explicit central-server control point for
+    # the supervised canary.  Compose must forward it; otherwise changing
+    # the env file would silently leave the feature disabled in the process.
+    assert environment["MCMA_MODE_NORMAL_GOLDEN_CANARY_ENABLED"] == "false"
     assert not any("PASSWORD" in name or name.endswith("PASSPHRASE") for name in environment)
 
     # Private network created for this project only, static address, no host network.

@@ -10,9 +10,11 @@ mcma.portal (see tests/app/workstation_runner/test_import_isolation.py's
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -37,12 +39,15 @@ from mcma.app.workstation_runner.session_store import (
 )
 from mcma.app.workstation_runner.sessions import VerificationScheduler, WorkstationSessionManager
 from mcma.core.mutex import MutexAcquisitionError, create_single_instance_mutex
+from mcma.app.workstation_runner.protocol import EXECUTION_PROFILE_MODE_NORMAL_GOLDEN_CANARY
+from mcma.planning.canary import mode_normal_canary_refusal
 from mcma.planning.registry import default_registry
 from mcma.portal.capabilities import SearchIdentifiers
 from mcma.portal.identity import ExpectedIdentity as PortalExpectedIdentity
 from mcma.portal.pilot_contracts import DEFAULT_PILOT_HOST, pilot_allowed_host
 from mcma.portal.pilot_contracts import write_contracts as pilot_write_contracts
 from mcma.portal.sinauto_contracts import DEFAULT_SINAUTO_HOST, identity_read_contracts
+from mcma.portal.mode_normal_canary import run_mode_normal_golden_canary
 from mcma.portal.workstation_execute import run_workstation_execute_write
 from mcma.portal.workstation_sessions import (
     perform_dry_run_identity_check, perform_manual_login, verify_saved_session,
@@ -422,10 +427,86 @@ def _run_with_mutex_held(config: RunnerConfig | None) -> int:
             on_phase=on_phase,
         )
 
+    # Supervised Mode Normal golden canary. Reached ONLY when the central
+    # server -- whose own opt-in (Settings.mode_normal_golden_canary_enabled)
+    # is the sole switch -- dispatched an envelope carrying the canary
+    # profile. This runner has no setting of its own that could enable it.
+    # The canary adapter is a SEPARATE path (mcma.portal.mode_normal_canary):
+    # _perform_execute_write above, and the generic writer's loopback/mock
+    # protections, are untouched.
+    _canary_logger = logging.getLogger("mcma.runner.canary")
+
+    def _canary_evidence_dir() -> Path:
+        return default_sessions_dir().parent / "canary_evidence"
+
+    def _record_canary_evidence(evidence: dict) -> None:
+        # Safe metadata only (see mcma.portal.canary_network): methods,
+        # normalized paths, resource types, decisions, timings, statuses,
+        # body field NAMES. Never values, cookies or claimant data.
+        try:
+            directory = _canary_evidence_dir()
+            directory.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            (directory / f"canary-{stamp}.json").write_text(
+                json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8",
+            )
+        except Exception:
+            pass
+        log_event(
+            _canary_logger, "canary_finished", outcome=evidence.get("outcome"),
+            reason=evidence.get("reason"), rows_written=evidence.get("rows_written"),
+            records=len(evidence.get("records") or ()),
+        )
+
+    async def _perform_canary_write(
+        account_id: str, storage_state: dict, plan, permit, on_ready_for_review, on_phase,
+    ) -> str:
+        # Runner-side re-check of the plan-level rule the server already
+        # applied at creation and at start -- never trusted, re-derived.
+        refusal = mode_normal_canary_refusal(plan)
+        if refusal is not None:
+            _record_canary_evidence(
+                {"outcome": "WRITE_ABORTED", "reason": f"PRECONDITION_{refusal}", "rows_written": 0, "records": []}
+            )
+            return "WRITE_ABORTED"
+        expected = plan.expected_identity
+        expected_identity = PortalExpectedIdentity(
+            registration=expected.registration,
+            insurer_reference=expected.insurer_reference,
+            id_sinistre=expected.id_sinistre,
+        )
+        writer_plan = WriterPlanData(
+            repair_workflow=plan.repair_workflow,
+            row_intents=tuple(
+                PortalRowIntent(rubrique_id=step.rubrique_id, ht=step.ht, tva=step.tva, vetuste=step.vetuste)
+                for step in plan.steps
+            ),
+            form_field_intents=tuple(plan.form_field_intents),
+        )
+        return await run_mode_normal_golden_canary(
+            storage_state,
+            expected_identity=expected_identity,
+            writer_plan=writer_plan,
+            identifiers=SearchIdentifiers(matricule=expected.registration.raw),
+            writer_account=_writer_account_for(account_id),
+            permit=permit,
+            on_ready_for_review=on_ready_for_review,
+            on_phase=on_phase,
+            on_evidence=_record_canary_evidence,
+        )
+
+    def _select_execute_write(claimed_job):
+        profile = getattr(claimed_job, "execution_profile", None)
+        if profile is None:
+            return _perform_execute_write
+        if profile == EXECUTION_PROFILE_MODE_NORMAL_GOLDEN_CANARY:
+            return _perform_canary_write
+        raise ValueError("unknown execution profile")  # executor -> INTERNAL_EXECUTION_ERROR
+
     async def _run_execute_check(claimed_job, plan_hash: str, permit: ExecutionPermit, on_ready_for_review, on_phase) -> str:
         return await run_execute_check(
             claimed_job, expected_plan_hash=plan_hash, session_store=session_store,
-            workflow_registry=_workflow_registry, perform_execute_write=_perform_execute_write,
+            workflow_registry=_workflow_registry, perform_execute_write=_select_execute_write(claimed_job),
             permit=permit, on_ready_for_review=on_ready_for_review, on_phase=on_phase,
         )
 
